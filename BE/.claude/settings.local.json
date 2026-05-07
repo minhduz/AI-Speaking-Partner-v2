@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\minhd\\\\OneDrive\\\\Desktop\\\\FPT Document\\\\Final Project\\\\code\\\\BE\" -Recurse -Force | Select-Object FullName | Sort-Object FullName | ForEach-Object { $_.FullName })"
+    ]
+  }
+}

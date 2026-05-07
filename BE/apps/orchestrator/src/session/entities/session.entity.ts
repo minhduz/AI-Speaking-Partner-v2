@@ -1,0 +1,17 @@
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { User } from '../../user/entities/user.entity';
+
+@Entity({ schema: 'speaking_app', name: 'sessions' })
+export class Session {
+  @PrimaryGeneratedColumn('uuid') id: string;
+  @Column({ name: 'user_id' }) userId: string;
+  @ManyToOne(() => User) @JoinColumn({ name: 'user_id' }) user: User;
+  @Column({ nullable: true }) title: string;
+  @Column({ default: 'active' }) status: string;
+  @Column({ name: 'total_tokens', default: 0 }) totalTokens: number;
+  @Column({ name: 'avg_pronunciation_score', type: 'float', default: 0 }) avgPronunciationScore: number;
+  @Column({ name: 'is_archived', default: false }) isArchived: boolean;
+  @Column({ name: 'archived_at', nullable: true }) archivedAt: Date;
+  @CreateDateColumn({ name: 'started_at' }) startedAt: Date;
+  @Column({ name: 'ended_at', nullable: true }) endedAt: Date;
+}
