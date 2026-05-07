@@ -1,0 +1,41 @@
+export interface Session {
+  id: string;
+  title: string;
+  status: 'active' | 'ended';
+  pronunciation_score: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TurnData {
+  user_text?: string;
+  ai_text?: string;
+  pronunciation_score?: number;
+  audio_base64?: string;
+}
+
+export interface Turn {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  data: TurnData;
+  created_at: string;
+}
+
+export interface HistoryGroup {
+  label: 'Today' | 'Yesterday' | 'Older Conversations';
+  sessions: Session[];
+}
+
+export type GreetingEvent =
+  | { type: 'text'; chunk: string }
+  | { type: 'audio'; audio_b64: string }
+  | { type: 'done'; greeting: string }
+  | { type: 'error'; message: string };
+
+export interface ChatMessage {
+  role: 'ai' | 'user';
+  text: string;
+  pronunciationScore?: number;
+  pending?: boolean;
+}

@@ -1,0 +1,125 @@
+version: "3.9"
+
+services:
+  # ─── DATABASES ───────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: speaking_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: speaking_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./BE/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - speaking_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: speaking_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - speaking_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── NESTJS SERVICES ─────────────────────────────────────────
+  orchestrator:
+    build:
+      context: ./BE/apps/orchestrator
+      dockerfile: Dockerfile
+    container_name: speaking_orchestrator
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: ./BE/apps/orchestrator/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  billing-service:
+    build:
+      context: ./BE/apps/billing-service
+      dockerfile: Dockerfile
+    container_name: speaking_billing
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file: ./BE/apps/billing-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  llm-gateway:
+    build:
+      context: ./BE/apps/llm-gateway
+      dockerfile: Dockerfile
+    container_name: speaking_llm_gateway
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    env_file: ./BE/apps/llm-gateway/.env
+    networks:
+      - speaking_net
+
+  # ─── PYTHON SERVICES ─────────────────────────────────────────
+  memory-service:
+    build:
+      context: ./BE/services/memory-service
+      dockerfile: Dockerfile
+    container_name: speaking_memory
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file: ./BE/services/memory-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  speech-service:
+    build:
+      context: ./BE/services/speech-service
+      dockerfile: Dockerfile
+    container_name: speaking_speech
+    restart: unless-stopped
+    ports:
+      - "8010:8010"
+    env_file: ./BE/services/speech-service/.env
+    networks:
+      - speaking_net
+
+  # ─── FRONTEND ────────────────────────────────────────────────
+
+networks:
+  speaking_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
