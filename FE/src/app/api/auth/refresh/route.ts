@@ -38,13 +38,9 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  const { access_token, refresh_token } = data;
+  const { access_token } = data;
 
   const response = NextResponse.json({ access_token });
-  response.cookies.set('refresh_token', refresh_token, {
-    ...DEV_COOKIE_OPTIONS,
-    secure: true,
-  });
 
   return response;
 }
