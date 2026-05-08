@@ -49,18 +49,54 @@ export function useChat(): UseChatReturn {
   // Prevent double-init from React StrictMode
   const initializedRef = useRef(false);
 
+  const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
+  const isPlayingRef = useRef(false);
+
+  const processAudioQueue = useCallback(async () => {
+    if (isPlayingRef.current) return;
+    isPlayingRef.current = true;
+    while (audioQueueRef.current.length > 0) {
+      const item = audioQueueRef.current.shift()!;
+      
+      if (item.text) {
+        if (item.isGreeting) {
+          setStreamingText((prev) => prev + item.text);
+        } else {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastAiMsgIndex = newMessages.findLastIndex((m) => m.role === 'ai');
+            if (lastAiMsgIndex >= 0) {
+              const currentText = newMessages[lastAiMsgIndex].text;
+              newMessages[lastAiMsgIndex] = { 
+                ...newMessages[lastAiMsgIndex], 
+                text: currentText ? currentText + ' ' + item.text : item.text! 
+              };
+            }
+            return newMessages;
+          });
+        }
+      }
+
+      try {
+        await playAudioB64(item.b64);
+      } catch (err) {
+        console.error('Audio playback error', err);
+      }
+    }
+    isPlayingRef.current = false;
+  }, []);
+
   const runGreeting = useCallback(async (sessionId: string) => {
     setStatus('greeting');
     setStreamingText('');
     try {
       const stream = await sessionService.streamGreeting(sessionId);
-      let accText = '';
       for await (const event of stream) {
         if (event.type === 'text') {
-          accText += event.chunk;
-          setStreamingText(accText);
+          // backend no longer sends raw text chunks, it sends text with audio
         } else if (event.type === 'audio') {
-          playAudioB64(event.audio_b64).catch(console.error);
+          audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
+          processAudioQueue();
         } else if (event.type === 'done') {
           setMessages((prev) => [...prev, { role: 'ai', text: event.greeting }]);
           setStreamingText('');
@@ -70,10 +106,6 @@ export function useChat(): UseChatReturn {
           throw new Error(event.message);
         }
       }
-      // Stream closed without a 'done' event — use whatever text accumulated
-      if (accText) {
-        setMessages((prev) => [...prev, { role: 'ai', text: accText }]);
-      }
     } catch (err) {
       // Non-fatal: log but let user still talk
       console.error('[greeting]', err);
@@ -81,7 +113,7 @@ export function useChat(): UseChatReturn {
       setStreamingText('');
       setStatus('ready');
     }
-  }, []);
+  }, [processAudioQueue]);
 
   const initSession = useCallback(async () => {
     setStatus('idle');
@@ -107,6 +139,9 @@ export function useChat(): UseChatReturn {
     initSession();
   }, [authLoading, isAuthenticated, initSession]);
 
+  const hasSpokenRef = useRef(false);
+  const checkVolumeIntervalRef = useRef<number | null>(null);
+
   const startRecording = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
@@ -117,6 +152,29 @@ export function useChat(): UseChatReturn {
     analyserNode.fftSize = 256;
     source.connect(analyserNode);
     setAnalyser(analyserNode);
+    
+    hasSpokenRef.current = false;
+    let spokenFrames = 0;
+    const dataArray = new Uint8Array(analyserNode.fftSize);
+    checkVolumeIntervalRef.current = window.setInterval(() => {
+      analyserNode.getByteTimeDomainData(dataArray);
+      let sum = 0;
+      for (let i = 0; i < dataArray.length; i++) {
+        const amplitude = (dataArray[i] - 128) / 128;
+        sum += amplitude * amplitude;
+      }
+      const rms = Math.sqrt(sum / dataArray.length);
+      
+      // RMS > 0.03 is considered speech. 
+      // We require at least 3 frames (~300ms) to filter out mouse clicks and brief static.
+      if (rms > 0.03) {
+        spokenFrames++;
+        if (spokenFrames >= 3) {
+          hasSpokenRef.current = true;
+        }
+      }
+    }, 100);
+
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
     chunksRef.current = [];
@@ -127,6 +185,10 @@ export function useChat(): UseChatReturn {
 
   const stopRecording = useCallback((): Promise<Blob> => {
     return new Promise((resolve) => {
+      if (checkVolumeIntervalRef.current !== null) {
+        window.clearInterval(checkVolumeIntervalRef.current);
+        checkVolumeIntervalRef.current = null;
+      }
       const recorder = recorderRef.current!;
       recorder.onstop = () => resolve(new Blob(chunksRef.current, { type: 'audio/webm' }));
       recorder.stop();
@@ -146,37 +208,73 @@ export function useChat(): UseChatReturn {
     setMessages((prev) => [...prev, { role: 'user', text: '', pending: true }]);
 
     try {
-      const result = await sessionService.sendTurn(sessionId, audioBlob);
+      const stream = await sessionService.streamTurn(sessionId, audioBlob);
 
-      // Replace the pending bubble with the real transcript, then append AI response
-      setMessages((prev) => {
-        const withoutPending = prev.filter((m) => !m.pending);
-        return [
-          ...withoutPending,
-          {
-            role: 'user',
-            text: result.transcript,
-            pronunciationScore: result.pronunciation?.score ?? undefined,
-          },
-          { role: 'ai', text: result.response_text },
-        ];
-      });
-
-      if (result.audio_b64) {
-        playAudioB64(result.audio_b64).catch(console.error);
+      for await (const event of stream) {
+        if (event.type === 'transcript') {
+          setMessages((prev) => {
+            const withoutPending = prev.filter((m) => !m.pending);
+            return [
+              ...withoutPending,
+              { role: 'user', text: event.text },
+              { role: 'ai', text: '', pending: true }, // placeholder for AI response
+            ];
+          });
+        } else if (event.type === 'pronunciation') {
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastUserIndex = newMessages.findLastIndex((m) => m.role === 'user');
+            if (lastUserIndex >= 0) {
+              const userMsg = newMessages[lastUserIndex];
+              if (userMsg.text && userMsg.text.trim().length > 0) {
+                newMessages[lastUserIndex] = { 
+                  ...userMsg, 
+                  pronunciationScore: event.data.score ?? undefined 
+                };
+              }
+            }
+            return newMessages;
+          });
+        } else if (event.type === 'text') {
+          // Text arrives with audio chunks instead
+        } else if (event.type === 'audio') {
+          audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
+          processAudioQueue();
+          setMessages((prev) => {
+            const newMessages = [...prev];
+            const lastAiMsgIndex = newMessages.findLastIndex((m) => m.role === 'ai');
+            if (lastAiMsgIndex >= 0) {
+              newMessages[lastAiMsgIndex] = { ...newMessages[lastAiMsgIndex], pending: false };
+            }
+            return newMessages;
+          });
+        } else if (event.type === 'done') {
+          setStatus('ready');
+          return;
+        } else if (event.type === 'error') {
+          throw new Error(event.message);
+        }
       }
-
       setStatus('ready');
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.pending));
       setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
       setStatus('error');
     }
-  }, []);
+  }, [processAudioQueue]);
 
   const toggleMic = useCallback(() => {
     if (status === 'recording') {
-      stopRecording().then(processTurn).catch(console.error);
+      stopRecording()
+        .then((blob) => {
+          if (!hasSpokenRef.current) {
+            setErrorMessage("You didn't say anything. Please try again.");
+            setStatus('ready');
+            return;
+          }
+          return processTurn(blob);
+        })
+        .catch(console.error);
     } else if (status === 'ready') {
       startRecording().catch(console.error);
     }

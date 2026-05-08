@@ -29,7 +29,7 @@ export interface HistoryGroup {
 
 export type GreetingEvent =
   | { type: 'text'; chunk: string }
-  | { type: 'audio'; audio_b64: string }
+  | { type: 'audio'; audio_b64: string; text?: string }
   | { type: 'done'; greeting: string }
   | { type: 'error'; message: string };
 

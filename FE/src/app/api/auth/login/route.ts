@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   const response = NextResponse.json({ access_token });
   response.cookies.set('refresh_token', refresh_token, {
     ...DEV_COOKIE_OPTIONS,
-    secure: true,
+    secure: process.env.NODE_ENV === 'production',
   });
 
   return response;

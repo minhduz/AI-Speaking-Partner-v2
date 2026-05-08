@@ -84,7 +84,11 @@ export default function ChatPage() {
 
           {/* Error banner */}
           {errorMessage && (
-            <div className="text-center text-sm text-red-500 py-1">{errorMessage}</div>
+            <div className="flex justify-center my-2">
+              <div className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-full text-sm font-medium shadow-sm border border-red-100">
+                {errorMessage}
+              </div>
+            </div>
           )}
 
           <div ref={messagesEndRef} />
@@ -141,14 +145,8 @@ function MessageBubble({ message, streaming }: { message: ChatMessage; streaming
 
 function ThinkingDots() {
   return (
-    <div className="flex gap-1 items-center h-5">
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          className="w-2 h-2 rounded-full bg-gray-300 animate-bounce"
-          style={{ animationDelay: `${i * 0.15}s` }}
-        />
-      ))}
+    <div className="flex gap-1 items-center h-5 text-gray-400 font-medium animate-pulse">
+      Thinking...
     </div>
   );
 }

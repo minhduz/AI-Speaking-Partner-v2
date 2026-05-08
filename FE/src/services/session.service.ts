@@ -44,6 +44,14 @@ export interface TurnResult {
   tokens_used: number;
 }
 
+export type TurnEvent =
+  | { type: 'transcript'; text: string }
+  | { type: 'pronunciation'; data: { score?: number; [key: string]: unknown } }
+  | { type: 'text'; chunk: string }
+  | { type: 'audio'; audio_b64: string; text?: string }
+  | { type: 'done'; tokens_used: number }
+  | { type: 'error'; message: string };
+
 export const sessionService = {
   start: async (): Promise<{ session_id: string }> => {
     log('POST /session/start');
@@ -68,6 +76,32 @@ export const sessionService = {
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
       for await (const event of parseSSE<GreetingEvent>(res)) {
         log(`greeting event ←`, event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        yield event;
+      }
+    }
+    return wrapped();
+  },
+
+  streamTurn: async (sessionId: string, audioBlob: Blob): Promise<AsyncGenerator<TurnEvent>> => {
+    log(`POST /turn/${sessionId}/stream`, { blobSize: audioBlob.size, type: audioBlob.type });
+    const formData = new FormData();
+    formData.append('audio', audioBlob, 'recording.webm');
+    
+    const res = await fetch(`${API_BASE}/turn/${sessionId}/stream`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData,
+    });
+    
+    if (!res.ok) {
+      const body = await res.text().catch(() => res.statusText);
+      log(`POST /turn/${sessionId}/stream → ERROR`, { status: res.status, body });
+      throw new Error(`Turn stream failed: ${res.status}`);
+    }
+
+    async function* wrapped(): AsyncGenerator<TurnEvent> {
+      for await (const event of parseSSE<TurnEvent>(res)) {
+        log(`turn event ←`, event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
         yield event;
       }
     }

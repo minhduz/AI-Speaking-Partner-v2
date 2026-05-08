@@ -38,10 +38,12 @@ export class TurnController {
     return this.turnService.processTurn(sessionId, req.user.id, file.buffer, file.mimetype);
   }
 
-  // GET /turn/:session_id/stream — SSE streaming variant
-  @Get(':session_id/stream')
+  // POST /turn/:session_id/stream — SSE streaming variant
+  @Post(':session_id/stream')
+  @UseInterceptors(FileInterceptor('audio'))
   async streamTurn(
     @Param('session_id') sessionId: string,
+    @UploadedFile() file: Express.Multer.File,
     @Req() req,
     @Res() res: Response,
   ) {
@@ -50,10 +52,11 @@ export class TurnController {
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-    const audioB64 = req.query.audio as string;
-    if (!audioB64) { send({ type: 'error', message: 'No audio provided' }); res.end(); return; }
-
-    const audioBuffer = Buffer.from(audioB64, 'base64');
+    if (!file) {
+      send({ type: 'error', message: 'No audio provided' });
+      res.end();
+      return;
+    }
 
     try {
       await this.turnService.checkQuota(req.user.id);
@@ -63,7 +66,7 @@ export class TurnController {
       const llmUrl    = this.cfg.get('LLM_GATEWAY_URL');
 
       const formData = new FormData();
-      formData.append('audio', new Blob([audioBuffer.buffer as ArrayBuffer], { type: 'audio/webm' }), 'audio.webm');
+      formData.append('audio', new Blob([file.buffer as any], { type: file.mimetype || 'audio/webm' }), 'audio.webm');
       const sttRes = await this.http.axiosRef.post(`${speechUrl}/stt`, formData);
       const { transcript, confidence, pronunciation } = sttRes.data;
       send({ type: 'transcript', text: transcript });
@@ -80,22 +83,50 @@ export class TurnController {
       );
 
       let fullText = '';
+      let sentenceBuffer = '';
+      let ttsChain: Promise<void> = Promise.resolve();
+
       llmStream.data.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         fullText += text;
-        send({ type: 'text', chunk: text });
+        sentenceBuffer += text;
+        // removed send({ type: 'text' }) so frontend syncs with audio
+
+        const match = sentenceBuffer.match(/^([\s\S]*?[.!?]+[\s\n]+)/);
+        if (match) {
+          const sentence = match[1];
+          sentenceBuffer = sentenceBuffer.slice(sentence.length);
+          const cleanSentence = sentence.trim();
+          if (cleanSentence.length > 0) {
+            const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: cleanSentence })
+              .catch(e => { console.error('[TTS Stream Error]', e?.message); return null; });
+            ttsChain = ttsChain.then(async () => {
+              const ttsRes = await ttsPromise;
+              if (ttsRes) send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: cleanSentence });
+            });
+          }
+        }
       });
 
       llmStream.data.on('end', async () => {
-        try {
-          const ttsRes = await this.http.axiosRef.post(`${speechUrl}/tts`, { text: fullText });
-          send({ type: 'audio', audio_b64: ttsRes.data.audio_b64 });
-        } catch { /* non-critical */ }
+        const remaining = sentenceBuffer.trim();
+        if (remaining.length > 0) {
+          const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
+            .catch(e => { console.error('[TTS Stream Error]', e?.message); return null; });
+          ttsChain = ttsChain.then(async () => {
+            const ttsRes = await ttsPromise;
+            if (ttsRes) send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
+          });
+        }
+
+        await ttsChain;
 
         const tokensUsed = Math.ceil((transcript.length + fullText.length) / 4);
-        await this.turnService.persistStreamedTurn(sessionId, req.user.id, turnIndex, {
-          transcript, confidence, pronunciation, response_text: fullText, tokens_used: tokensUsed,
-        });
+        try {
+          await this.turnService.persistStreamedTurn(sessionId, req.user.id, turnIndex, {
+            transcript, confidence, pronunciation, response_text: fullText, tokens_used: tokensUsed,
+          });
+        } catch (e) { console.error('[Turn Persist Error]', e?.message); }
 
         send({ type: 'done', tokens_used: tokensUsed });
         res.end();
