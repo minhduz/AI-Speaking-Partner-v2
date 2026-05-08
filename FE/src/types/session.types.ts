@@ -1,3 +1,10 @@
+export interface SessionSummary {
+  id: string;
+  title: string | null;
+  status: string;
+  startedAt: string;
+}
+
 export interface Session {
   id: string;
   title: string;

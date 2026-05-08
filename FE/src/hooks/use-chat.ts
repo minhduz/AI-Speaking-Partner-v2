@@ -14,6 +14,7 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
+  currentSessionId: string | null;
   toggleMic: () => void;
   startNewSession: () => void;
 }
@@ -40,13 +41,13 @@ export function useChat(): UseChatReturn {
   const [streamingText, setStreamingText] = useState('');
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  // Prevent double-init from React StrictMode
   const initializedRef = useRef(false);
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
@@ -57,7 +58,7 @@ export function useChat(): UseChatReturn {
     isPlayingRef.current = true;
     while (audioQueueRef.current.length > 0) {
       const item = audioQueueRef.current.shift()!;
-      
+
       if (item.text) {
         if (item.isGreeting) {
           setStreamingText((prev) => prev + item.text);
@@ -67,9 +68,9 @@ export function useChat(): UseChatReturn {
             const lastAiMsgIndex = newMessages.findLastIndex((m) => m.role === 'ai');
             if (lastAiMsgIndex >= 0) {
               const currentText = newMessages[lastAiMsgIndex].text;
-              newMessages[lastAiMsgIndex] = { 
-                ...newMessages[lastAiMsgIndex], 
-                text: currentText ? currentText + ' ' + item.text : item.text! 
+              newMessages[lastAiMsgIndex] = {
+                ...newMessages[lastAiMsgIndex],
+                text: currentText ? currentText + ' ' + item.text : item.text!
               };
             }
             return newMessages;
@@ -86,19 +87,17 @@ export function useChat(): UseChatReturn {
     isPlayingRef.current = false;
   }, []);
 
-  const runGreeting = useCallback(async (sessionId: string) => {
+  // Greeting does not require a session — it's a pre-session welcome stream
+  const runGreeting = useCallback(async () => {
     setStatus('greeting');
     setStreamingText('');
     try {
-      const stream = await sessionService.streamGreeting(sessionId);
+      const stream = await sessionService.streamGreetingAnon();
       for await (const event of stream) {
-        if (event.type === 'text') {
-          // backend no longer sends raw text chunks, it sends text with audio
-        } else if (event.type === 'audio') {
+        if (event.type === 'audio') {
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
           processAudioQueue();
         } else if (event.type === 'done') {
-          setMessages((prev) => [...prev, { role: 'ai', text: event.greeting }]);
           setStreamingText('');
           setStatus('ready');
           return;
@@ -107,7 +106,6 @@ export function useChat(): UseChatReturn {
         }
       }
     } catch (err) {
-      // Non-fatal: log but let user still talk
       console.error('[greeting]', err);
     } finally {
       setStreamingText('');
@@ -121,15 +119,8 @@ export function useChat(): UseChatReturn {
     setStreamingText('');
     setErrorMessage(null);
     sessionIdRef.current = null;
-    try {
-      const { session_id } = await sessionService.start();
-      sessionIdRef.current = session_id;
-      await runGreeting(session_id);
-    } catch (err) {
-      console.error('[initSession]', err);
-      setErrorMessage(err instanceof Error ? err.message : 'Failed to start session');
-      setStatus('error');
-    }
+    setCurrentSessionId(null);
+    await runGreeting();
   }, [runGreeting]);
 
   useEffect(() => {
@@ -152,7 +143,7 @@ export function useChat(): UseChatReturn {
     analyserNode.fftSize = 256;
     source.connect(analyserNode);
     setAnalyser(analyserNode);
-    
+
     hasSpokenRef.current = false;
     let spokenFrames = 0;
     const dataArray = new Uint8Array(analyserNode.fftSize);
@@ -164,8 +155,8 @@ export function useChat(): UseChatReturn {
         sum += amplitude * amplitude;
       }
       const rms = Math.sqrt(sum / dataArray.length);
-      
-      // RMS > 0.03 is considered speech. 
+
+      // RMS > 0.03 is considered speech.
       // We require at least 3 frames (~300ms) to filter out mouse clicks and brief static.
       if (rms > 0.03) {
         spokenFrames++;
@@ -204,7 +195,6 @@ export function useChat(): UseChatReturn {
     setStatus('processing');
     setErrorMessage(null);
 
-    // Show a pending user bubble immediately so the user sees something happened
     setMessages((prev) => [...prev, { role: 'user', text: '', pending: true }]);
 
     try {
@@ -217,7 +207,7 @@ export function useChat(): UseChatReturn {
             return [
               ...withoutPending,
               { role: 'user', text: event.text },
-              { role: 'ai', text: '', pending: true }, // placeholder for AI response
+              { role: 'ai', text: '', pending: true },
             ];
           });
         } else if (event.type === 'pronunciation') {
@@ -227,16 +217,14 @@ export function useChat(): UseChatReturn {
             if (lastUserIndex >= 0) {
               const userMsg = newMessages[lastUserIndex];
               if (userMsg.text && userMsg.text.trim().length > 0) {
-                newMessages[lastUserIndex] = { 
-                  ...userMsg, 
-                  pronunciationScore: event.data.score ?? undefined 
+                newMessages[lastUserIndex] = {
+                  ...userMsg,
+                  pronunciationScore: event.data.score ?? undefined
                 };
               }
             }
             return newMessages;
           });
-        } else if (event.type === 'text') {
-          // Text arrives with audio chunks instead
         } else if (event.type === 'audio') {
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
@@ -276,7 +264,20 @@ export function useChat(): UseChatReturn {
         })
         .catch(console.error);
     } else if (status === 'ready') {
-      startRecording().catch(console.error);
+      // Create session on first mic click, then start recording
+      const ensureSession = sessionIdRef.current
+        ? Promise.resolve()
+        : sessionService.start().then(({ session_id }) => {
+            sessionIdRef.current = session_id;
+            setCurrentSessionId(session_id);
+          });
+
+      ensureSession
+        .then(() => startRecording())
+        .catch((err) => {
+          console.error('[createSession]', err);
+          setErrorMessage('Failed to start session');
+        });
     }
   }, [status, startRecording, stopRecording, processTurn]);
 
@@ -292,6 +293,7 @@ export function useChat(): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
+    currentSessionId,
     toggleMic,
     startNewSession,
   };

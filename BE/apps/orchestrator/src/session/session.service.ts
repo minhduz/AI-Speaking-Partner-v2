@@ -46,6 +46,17 @@ export class SessionService {
     } catch { return ''; }
   }
 
+  async list(userId: string, page: number, limit: number) {
+    const [items, total] = await this.repo.findAndCount({
+      where: { userId, isArchived: false },
+      order: { startedAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+      select: ['id', 'title', 'status', 'startedAt'],
+    });
+    return { items, total, page, limit, hasMore: (page - 1) * limit + items.length < total };
+  }
+
   private async triggerConsolidation(userId: string, sessionId: string) {
     await firstValueFrom(
       this.http.post(`${this.cfg.get('MEMORY_SERVICE_URL')}/consolidate/${userId}`, {

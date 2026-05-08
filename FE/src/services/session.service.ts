@@ -1,5 +1,5 @@
 import { getAccessToken } from '@/lib/http-client';
-import type { GreetingEvent } from '@/types/session.types';
+import type { GreetingEvent, SessionSummary } from '@/types/session.types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
@@ -63,6 +63,30 @@ export const sessionService = {
     const data = await res.json();
     log('POST /session/start →', data);
     return data;
+  },
+
+  streamGreetingAnon: async (): Promise<AsyncGenerator<GreetingEvent>> => {
+    log('GET /session/greeting/stream');
+    const res = await fetch(`${API_BASE}/session/greeting/stream`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
+    async function* wrapped(): AsyncGenerator<GreetingEvent> {
+      for await (const event of parseSSE<GreetingEvent>(res)) {
+        log('greeting event ←', event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        yield event;
+      }
+    }
+    return wrapped();
+  },
+
+  list: async (page: number, limit = 25): Promise<{ items: SessionSummary[]; total: number; hasMore: boolean }> => {
+    log(`GET /session/list page=${page}`);
+    const res = await fetch(`${API_BASE}/session/list?page=${page}&limit=${limit}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to fetch sessions');
+    return res.json();
   },
 
   streamGreeting: async (sessionId: string): Promise<AsyncGenerator<GreetingEvent>> => {
