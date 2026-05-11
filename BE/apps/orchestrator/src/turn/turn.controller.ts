@@ -62,7 +62,7 @@ export class TurnController {
       await this.turnService.checkQuota(req.user.id);
       const turnIndex = await this.turnService.getTurnIndex(sessionId);
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
-      const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+      // const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL'); // TODO: re-enable with memory service
       const llmUrl    = this.cfg.get('LLM_GATEWAY_URL');
 
       const formData = new FormData();
@@ -72,13 +72,14 @@ export class TurnController {
       send({ type: 'transcript', text: transcript });
       send({ type: 'pronunciation', data: pronunciation });
 
-      const promptRes = await this.http.axiosRef.post(`${memoryUrl}/build-prompt/${req.user.id}`, {
-        query: transcript, session_id: sessionId,
-      });
+      // TODO: re-enable memory service after testing
+      // const promptRes = await this.http.axiosRef.post(`${memoryUrl}/build-prompt/${req.user.id}`, {
+      //   query: transcript, session_id: sessionId,
+      // });
 
       const llmStream = await this.http.axiosRef.post(
         `${llmUrl}/stream`,
-        { system: promptRes.data.system_prompt, messages: [{ role: 'user', content: transcript }] },
+        { system: 'You are a friendly English speaking coach.', messages: [{ role: 'user', content: transcript }] },
         { responseType: 'stream' },
       );
 
@@ -90,32 +91,53 @@ export class TurnController {
         const text = chunk.toString();
         fullText += text;
         sentenceBuffer += text;
-        // removed send({ type: 'text' }) so frontend syncs with audio
+        console.log(`[Turn] text chunk: ${JSON.stringify(text)}`);
+        send({ type: 'text', chunk: text });
 
-        const match = sentenceBuffer.match(/^([\s\S]*?[.!?]+[\s\n]+)/);
-        if (match) {
+        let match: RegExpMatchArray | null;
+        let matched = false;
+        while ((match = sentenceBuffer.match(/^([\s\S]*?[.!?]+[\s\n]+)/))) {
+          matched = true;
           const sentence = match[1];
           sentenceBuffer = sentenceBuffer.slice(sentence.length);
           const cleanSentence = sentence.trim();
+          console.log(`[Turn][TTS] sentence matched: "${cleanSentence}"`);
           if (cleanSentence.length > 0) {
             const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: cleanSentence })
-              .catch(e => { console.error('[TTS Stream Error]', e?.message); return null; });
+              .catch(e => { console.error(`[Turn][TTS] FAILED: "${cleanSentence}" —`, e?.message); return null; });
             ttsChain = ttsChain.then(async () => {
+              console.log(`[Turn][TTS] awaiting TTS for: "${cleanSentence}"`);
               const ttsRes = await ttsPromise;
-              if (ttsRes) send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: cleanSentence });
+              if (ttsRes) {
+                console.log(`[Turn][TTS] OK — b64 len: ${ttsRes.data.audio_b64?.length ?? 0} → sending audio event`);
+                send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: cleanSentence });
+              } else {
+                console.warn(`[Turn][TTS] skipped — TTS returned null for: "${cleanSentence}"`);
+              }
             });
           }
+        }
+        if (!matched) {
+          console.log(`[Turn][TTS] no sentence boundary yet — buffer: "${sentenceBuffer.slice(0, 60)}"`);
         }
       });
 
       llmStream.data.on('end', async () => {
+        console.log(`[Turn] ── full LLM text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
         const remaining = sentenceBuffer.trim();
+        console.log(`[Turn][TTS] remaining after stream: "${remaining}"`);
         if (remaining.length > 0) {
           const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
-            .catch(e => { console.error('[TTS Stream Error]', e?.message); return null; });
+            .catch(e => { console.error(`[Turn][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
           ttsChain = ttsChain.then(async () => {
+            console.log(`[Turn][TTS] awaiting TTS for remaining: "${remaining}"`);
             const ttsRes = await ttsPromise;
-            if (ttsRes) send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
+            if (ttsRes) {
+              console.log(`[Turn][TTS] OK remaining — b64 len: ${ttsRes.data.audio_b64?.length ?? 0} → sending audio event`);
+              send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
+            } else {
+              console.warn(`[Turn][TTS] skipped remaining — TTS returned null`);
+            }
           });
         }
 

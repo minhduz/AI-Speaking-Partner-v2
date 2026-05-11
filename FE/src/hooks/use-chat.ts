@@ -10,7 +10,7 @@ export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processi
 export interface UseChatReturn {
   messages: ChatMessage[];
   status: ChatStatus;
-  streamingText: string;
+  greetingSentences: string[];
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
@@ -19,18 +19,34 @@ export interface UseChatReturn {
   startNewSession: () => void;
 }
 
-async function playAudioB64(b64: string): Promise<void> {
+async function playAudioWithSentence(
+  ctx: AudioContext,
+  b64: string,
+  text: string | undefined,
+  onText: ((t: string) => void) | undefined,
+): Promise<void> {
+  console.log(`[Audio] playAudioWithSentence — ctx state: ${ctx.state}, b64 len: ${b64?.length ?? 0}, text: "${text?.slice(0, 40) ?? 'none'}"`);
+  if (ctx.state === 'suspended') {
+    console.warn('[Audio] shared ctx still suspended — skipping audio, showing text');
+    if (text && onText) onText(text);
+    return;
+  }
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const ctx = new AudioContext();
-  const buffer = await ctx.decodeAudioData(bytes.buffer);
+  const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+  console.log(`[Audio] decoded — duration: ${audioBuffer.duration.toFixed(2)}s`);
+  if (text && onText) onText(text);
   const source = ctx.createBufferSource();
-  source.buffer = buffer;
+  source.buffer = audioBuffer;
   source.connect(ctx.destination);
   source.start(0);
+  console.log('[Audio] source.start(0) called — playing');
   return new Promise((resolve) => {
-    source.onended = () => { ctx.close(); resolve(); };
+    source.onended = () => {
+      console.log('[Audio] source.onended — playback finished');
+      resolve();
+    };
   });
 }
 
@@ -38,7 +54,7 @@ export function useChat(): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
-  const [streamingText, setStreamingText] = useState('');
+  const [greetingSentences, setGreetingSentences] = useState<string[]>([]);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -52,53 +68,60 @@ export function useChat(): UseChatReturn {
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
+  const sharedPlaybackCtxRef = useRef<AudioContext | null>(null);
 
   const processAudioQueue = useCallback(async () => {
-    if (isPlayingRef.current) return;
+    const ctx = sharedPlaybackCtxRef.current;
+    console.log(`[Audio] processAudioQueue called — isPlaying: ${isPlayingRef.current}, queue length: ${audioQueueRef.current.length}, ctx state: ${ctx?.state ?? 'none'}`);
+    if (isPlayingRef.current) {
+      console.log('[Audio] already playing — skipping');
+      return;
+    }
+    if (!ctx) {
+      console.warn('[Audio] no shared AudioContext yet — skipping');
+      return;
+    }
     isPlayingRef.current = true;
     while (audioQueueRef.current.length > 0) {
       const item = audioQueueRef.current.shift()!;
-
-      if (item.text) {
-        if (item.isGreeting) {
-          setStreamingText((prev) => prev + item.text);
-        } else {
-          setMessages((prev) => {
-            const newMessages = [...prev];
-            const lastAiMsgIndex = newMessages.findLastIndex((m) => m.role === 'ai');
-            if (lastAiMsgIndex >= 0) {
-              const currentText = newMessages[lastAiMsgIndex].text;
-              newMessages[lastAiMsgIndex] = {
-                ...newMessages[lastAiMsgIndex],
-                text: currentText ? currentText + ' ' + item.text : item.text!
-              };
-            }
-            return newMessages;
-          });
-        }
-      }
-
+      console.log(`[Audio] dequeued item — queue remaining: ${audioQueueRef.current.length}`);
+      const onText = item.text
+        ? item.isGreeting
+          ? (t: string) => setGreetingSentences((prev) => [...prev, t])
+          : (t: string) => setMessages((prev) => {
+              const msgs = [...prev];
+              const idx = msgs.findLastIndex((m) => m.role === 'ai');
+              if (idx >= 0) {
+                const existing = msgs[idx];
+                const sentences = [...(existing.sentences ?? []), t];
+                msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
+              }
+              return msgs;
+            })
+        : undefined;
       try {
-        await playAudioB64(item.b64);
+        await playAudioWithSentence(ctx, item.b64, item.text, onText);
       } catch (err) {
-        console.error('Audio playback error', err);
+        console.error('[Audio] playback error:', err);
+        if (item.text && onText) onText(item.text);
       }
     }
+    console.log('[Audio] queue empty — isPlaying reset to false');
     isPlayingRef.current = false;
-  }, []);
+  }, [setMessages, setGreetingSentences]);
 
   // Greeting does not require a session — it's a pre-session welcome stream
   const runGreeting = useCallback(async () => {
     setStatus('greeting');
-    setStreamingText('');
+    setGreetingSentences([]);
     try {
       const stream = await sessionService.streamGreetingAnon();
       for await (const event of stream) {
         if (event.type === 'audio') {
+          console.log(`[Audio][greeting] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
           processAudioQueue();
         } else if (event.type === 'done') {
-          setStreamingText('');
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -108,7 +131,6 @@ export function useChat(): UseChatReturn {
     } catch (err) {
       console.error('[greeting]', err);
     } finally {
-      setStreamingText('');
       setStatus('ready');
     }
   }, [processAudioQueue]);
@@ -116,7 +138,7 @@ export function useChat(): UseChatReturn {
   const initSession = useCallback(async () => {
     setStatus('idle');
     setMessages([]);
-    setStreamingText('');
+    setGreetingSentences([]);
     setErrorMessage(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
@@ -129,6 +151,30 @@ export function useChat(): UseChatReturn {
     initializedRef.current = true;
     initSession();
   }, [authLoading, isAuthenticated, initSession]);
+
+  // Create one shared AudioContext on mount; resume it on every user gesture so it's
+  // running by the time any audio plays (Chrome blocks autoplay without a user gesture).
+  useEffect(() => {
+    const ctx = new AudioContext();
+    sharedPlaybackCtxRef.current = ctx;
+    console.log(`[Audio] shared AudioContext created — state: ${ctx.state}`);
+
+    const resume = () => {
+      if (ctx.state === 'suspended') {
+        ctx.resume().then(() => {
+          console.log(`[Audio] shared AudioContext resumed — state: ${ctx.state}`);
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('click', resume);
+    window.addEventListener('keydown', resume);
+    return () => {
+      window.removeEventListener('click', resume);
+      window.removeEventListener('keydown', resume);
+      ctx.close();
+      sharedPlaybackCtxRef.current = null;
+    };
+  }, []);
 
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
@@ -226,16 +272,9 @@ export function useChat(): UseChatReturn {
             return newMessages;
           });
         } else if (event.type === 'audio') {
+          console.log(`[Audio][turn] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
-          setMessages((prev) => {
-            const newMessages = [...prev];
-            const lastAiMsgIndex = newMessages.findLastIndex((m) => m.role === 'ai');
-            if (lastAiMsgIndex >= 0) {
-              newMessages[lastAiMsgIndex] = { ...newMessages[lastAiMsgIndex], pending: false };
-            }
-            return newMessages;
-          });
         } else if (event.type === 'done') {
           setStatus('ready');
           return;
@@ -289,7 +328,7 @@ export function useChat(): UseChatReturn {
   return {
     messages,
     status,
-    streamingText,
+    greetingSentences,
     isRecording: status === 'recording',
     analyser,
     errorMessage,
