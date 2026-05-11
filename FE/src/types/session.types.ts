@@ -43,6 +43,7 @@ export type GreetingEvent =
 export interface ChatMessage {
   role: 'ai' | 'user';
   text: string;
+  sentences?: string[];
   pronunciationScore?: number;
   pending?: boolean;
 }

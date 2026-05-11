@@ -29,14 +29,17 @@ export class SessionController {
 
   // GET /session/greeting/stream → SSE (no session ID, called before any session is created)
   @Get('greeting/stream')
-  async greetingStreamAnon(@Req() req, @Res() res: Response) {
+  async greetingStreamAnon(@Req() _req, @Res() res: Response) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
+      // TODO: re-enable memory service after testing
+      // const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
+      const urgentContext = null;
+      const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
 
       const llmRes = await this.http.axiosRef.post(
         `${this.cfg.get('LLM_GATEWAY_URL')}/stream`,
@@ -50,20 +53,57 @@ Greet the user warmly and open the session. Max 2 sentences.`,
       );
 
       let fullText = '';
+      let sentenceBuffer = '';
+      let ttsChain: Promise<void> = Promise.resolve();
+
       llmRes.data.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         fullText += text;
+        sentenceBuffer += text;
         send({ type: 'text', chunk: text });
+
+        let match: RegExpMatchArray | null;
+        while ((match = sentenceBuffer.match(/^([\s\S]*?[.!?]+\s)/))) {
+          const sentence = match[1];
+          sentenceBuffer = sentenceBuffer.slice(sentence.length);
+          const clean = sentence.trim();
+          if (clean) {
+            console.log(`[Greeting][TTS] sentence matched: "${clean}"`);
+            const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: clean })
+              .catch(e => { console.error(`[Greeting][TTS] FAILED: "${clean}" —`, e?.message); return null; });
+            ttsChain = ttsChain.then(async () => {
+              console.log(`[Greeting][TTS] awaiting TTS for: "${clean}"`);
+              const r = await p;
+              if (r) {
+                console.log(`[Greeting][TTS] OK — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
+                send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
+              } else {
+                console.warn(`[Greeting][TTS] skipped — TTS returned null for: "${clean}"`);
+              }
+            });
+          }
+        }
       });
 
       llmRes.data.on('end', async () => {
-        try {
-          const ttsRes = await this.http.axiosRef.post(
-            `${this.cfg.get('SPEECH_SERVICE_URL')}/tts`,
-            { text: fullText },
-          );
-          send({ type: 'audio', audio_b64: ttsRes.data.audio_b64 });
-        } catch { /* TTS failure non-critical */ }
+        console.log(`[Greeting] ── full text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
+        const remaining = sentenceBuffer.trim();
+        console.log(`[Greeting][TTS] remaining after stream: "${remaining}"`);
+        if (remaining) {
+          const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
+            .catch(e => { console.error(`[Greeting][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
+          ttsChain = ttsChain.then(async () => {
+            console.log(`[Greeting][TTS] awaiting TTS for remaining: "${remaining}"`);
+            const r = await p;
+            if (r) {
+              console.log(`[Greeting][TTS] OK remaining — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
+              send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
+            } else {
+              console.warn(`[Greeting][TTS] skipped remaining — TTS returned null`);
+            }
+          });
+        }
+        await ttsChain;
         send({ type: 'done', greeting: fullText });
         res.end();
       });
@@ -75,17 +115,18 @@ Greet the user warmly and open the session. Max 2 sentences.`,
 
   // GET /session/:id/greeting/stream → SSE
   @Get(':id/greeting/stream')
-  async greetingStream(@Param('id') sessionId: string, @Req() req, @Res() res: Response) {
+  async greetingStream(@Param('id') _sessionId: string, @Req() _req, @Res() res: Response) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      // 1. Fetch urgent memory context (exam, appointments)
-      const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
+      // TODO: re-enable memory service after testing
+      // const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
+      const urgentContext = null;
+      const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
 
-      // 2. Stream greeting from LLM gateway
       const llmRes = await this.http.axiosRef.post(
         `${this.cfg.get('LLM_GATEWAY_URL')}/stream`,
         {
@@ -98,20 +139,57 @@ Greet the user warmly and open the session. Max 2 sentences.`,
       );
 
       let fullText = '';
+      let sentenceBuffer = '';
+      let ttsChain: Promise<void> = Promise.resolve();
+
       llmRes.data.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         fullText += text;
+        sentenceBuffer += text;
         send({ type: 'text', chunk: text });
+
+        let match: RegExpMatchArray | null;
+        while ((match = sentenceBuffer.match(/^([\s\S]*?[.!?]+\s)/))) {
+          const sentence = match[1];
+          sentenceBuffer = sentenceBuffer.slice(sentence.length);
+          const clean = sentence.trim();
+          if (clean) {
+            console.log(`[Greeting][TTS] sentence matched: "${clean}"`);
+            const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: clean })
+              .catch(e => { console.error(`[Greeting][TTS] FAILED: "${clean}" —`, e?.message); return null; });
+            ttsChain = ttsChain.then(async () => {
+              console.log(`[Greeting][TTS] awaiting TTS for: "${clean}"`);
+              const r = await p;
+              if (r) {
+                console.log(`[Greeting][TTS] OK — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
+                send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
+              } else {
+                console.warn(`[Greeting][TTS] skipped — TTS returned null for: "${clean}"`);
+              }
+            });
+          }
+        }
       });
 
       llmRes.data.on('end', async () => {
-        try {
-          const ttsRes = await this.http.axiosRef.post(
-            `${this.cfg.get('SPEECH_SERVICE_URL')}/tts`,
-            { text: fullText },
-          );
-          send({ type: 'audio', audio_b64: ttsRes.data.audio_b64 });
-        } catch { /* TTS failure non-critical */ }
+        console.log(`[Greeting] ── full text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
+        const remaining = sentenceBuffer.trim();
+        console.log(`[Greeting][TTS] remaining after stream: "${remaining}"`);
+        if (remaining) {
+          const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
+            .catch(e => { console.error(`[Greeting][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
+          ttsChain = ttsChain.then(async () => {
+            console.log(`[Greeting][TTS] awaiting TTS for remaining: "${remaining}"`);
+            const r = await p;
+            if (r) {
+              console.log(`[Greeting][TTS] OK remaining — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
+              send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
+            } else {
+              console.warn(`[Greeting][TTS] skipped remaining — TTS returned null`);
+            }
+          });
+        }
+        await ttsChain;
         send({ type: 'done', greeting: fullText });
         res.end();
       });

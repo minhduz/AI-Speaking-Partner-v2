@@ -17,3 +17,19 @@ body {
 * {
   box-sizing: border-box;
 }
+
+@keyframes reveal {
+  from {
+    width: 0;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+@utility animate-reveal {
+  overflow: hidden;
+  white-space: nowrap;
+  display: inline-block;
+  animation: reveal 2.5s steps(40, end) forwards;
+}

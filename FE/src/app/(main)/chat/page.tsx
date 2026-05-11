@@ -18,7 +18,7 @@ export default function ChatPage() {
   const {
     messages,
     status,
-    streamingText,
+    greetingSentences,
     isRecording,
     analyser,
     errorMessage,
@@ -33,7 +33,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingText]);
+  }, [messages, greetingSentences]);
 
   // Increment sidebar refresh key whenever a new session is created
   useEffect(() => {
@@ -65,18 +65,22 @@ export default function ChatPage() {
         </header>
 
         <div className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3">
-          {/* Pre-session: greeting text streams in the center, large */}
-          {!hasSession && streamingText && (
-            <div className="flex-1 flex flex-col items-center justify-center px-8 text-center">
-              <p className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
-                {streamingText}
-                <span className="inline-block w-2 h-5 bg-current ml-1 animate-pulse rounded-sm align-middle" />
-              </p>
+          {/* Pre-session: greeting sentences appear one by one with fade-in */}
+          {!hasSession && greetingSentences.length > 0 && (
+            <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-3">
+              {greetingSentences.map((sentence, i) => (
+                <p key={i} className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl animate-reveal">
+                  {sentence}
+                </p>
+              ))}
+              {status === 'ready' && (
+                <p className="text-sm text-gray-400 animate-reveal">Press the mic button and start speaking.</p>
+              )}
             </div>
           )}
 
-          {/* Pre-session: greeting done, waiting for mic press */}
-          {!hasSession && !streamingText && status === 'ready' && messages.length === 0 && (
+          {/* Pre-session: greeting failed or skipped — fallback */}
+          {!hasSession && greetingSentences.length === 0 && status === 'ready' && messages.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
               <p className="text-xl font-semibold text-gray-700">Ready when you are</p>
               <p className="text-sm text-gray-400">Press the mic button and start speaking.</p>
@@ -84,7 +88,7 @@ export default function ChatPage() {
           )}
 
           {/* Loading while greeting starts */}
-          {!hasSession && status === 'greeting' && !streamingText && (
+          {!hasSession && status === 'greeting' && greetingSentences.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-3">
               <div className="w-8 h-8 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
             </div>
@@ -125,7 +129,7 @@ export default function ChatPage() {
   );
 }
 
-function MessageBubble({ message, streaming }: { message: ChatMessage; streaming?: boolean }) {
+function MessageBubble({ message }: { message: ChatMessage }) {
   const isAi = message.role === 'ai';
   return (
     <div className={`flex ${isAi ? 'justify-start' : 'justify-end'}`}>
@@ -138,13 +142,14 @@ function MessageBubble({ message, streaming }: { message: ChatMessage; streaming
       >
         {message.pending ? (
           <ThinkingDots />
+        ) : isAi && message.sentences && message.sentences.length > 0 ? (
+          <div className="flex flex-col gap-1">
+            {message.sentences.map((s, i) => (
+              <p key={i} className="animate-reveal">{s}</p>
+            ))}
+          </div>
         ) : (
-          <p>
-            {message.text}
-            {streaming && (
-              <span className="inline-block w-1.5 h-3.5 bg-current ml-0.5 animate-pulse rounded-sm align-middle" />
-            )}
-          </p>
+          <p>{message.text}</p>
         )}
         {!message.pending && message.pronunciationScore !== undefined && (
           <p className={`text-xs mt-1 font-medium ${isAi ? 'text-gray-400' : 'text-green-200'}`}>
