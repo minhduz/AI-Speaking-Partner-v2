@@ -86,17 +86,19 @@ CREATE TABLE IF NOT EXISTS billing.subscriptions (
 );
 
 CREATE TABLE IF NOT EXISTS billing.payment_orders (
-  id             UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id        UUID      NOT NULL,
-  plan_id        UUID      NOT NULL REFERENCES billing.plans(id),
-  status         VARCHAR   NOT NULL DEFAULT 'pending',
-  amount_vnd     INT       NOT NULL,
-  content_code   VARCHAR   UNIQUE NOT NULL,
-  transaction_id VARCHAR   UNIQUE,
-  qr_url         VARCHAR,
-  expires_at     TIMESTAMP NOT NULL,
-  paid_at        TIMESTAMP,
-  created_at     TIMESTAMP DEFAULT NOW()
+  id               UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          UUID      NOT NULL,
+  plan_id          UUID      REFERENCES billing.plans(id),
+  order_type       VARCHAR   NOT NULL DEFAULT 'subscription',
+  addon_package_id UUID,
+  status           VARCHAR   NOT NULL DEFAULT 'pending',
+  amount_vnd       INT       NOT NULL,
+  content_code     VARCHAR   UNIQUE NOT NULL,
+  transaction_id   VARCHAR   UNIQUE,
+  qr_url           VARCHAR,
+  expires_at       TIMESTAMP NOT NULL,
+  paid_at          TIMESTAMP,
+  created_at       TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS billing.usage (
@@ -116,13 +118,62 @@ CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id  ON billing.payment_orders
 CREATE INDEX IF NOT EXISTS idx_payment_content_code    ON billing.payment_orders(content_code);
 CREATE INDEX IF NOT EXISTS idx_usage_user_period       ON billing.usage(user_id, period_start);
 
+CREATE TABLE IF NOT EXISTS billing.billing_events (
+  id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  sepay_transaction_id BIGINT    UNIQUE,
+  user_id              UUID,
+  event_type           VARCHAR   NOT NULL,
+  reference_code       VARCHAR,
+  payload              JSONB,
+  created_at           TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_billing_events_sepay_txn
+  ON billing.billing_events(sepay_transaction_id)
+  WHERE sepay_transaction_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS billing.addon_packages (
+  id           UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         VARCHAR NOT NULL,
+  token_amount BIGINT  NOT NULL,
+  price_vnd    INT     NOT NULL,
+  is_active    BOOLEAN DEFAULT TRUE,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS billing.user_addons (
+  id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          UUID    NOT NULL,
+  addon_package_id UUID    REFERENCES billing.addon_packages(id),
+  tokens_purchased BIGINT  NOT NULL,
+  tokens_remaining BIGINT  NOT NULL,
+  payment_order_id UUID,
+  expires_at       TIMESTAMP,
+  created_at       TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_addons_user_active
+  ON billing.user_addons(user_id) WHERE tokens_remaining > 0;
+
 -- Seed plans
 INSERT INTO billing.plans (name, interval, price_vnd, token_limit, session_limit)
 VALUES
   ('free',        'forever', 0,       50000, 10),
-  ('pro_monthly', 'month',   199000,  -1,    -1),
-  ('pro_yearly',  'year',    1990000, -1,    -1)
+  ('pro_monthly', 'month',   199000,  5000000, -1),
+  ('pro_yearly',  'year',    1990000, 5000000, -1)
 ON CONFLICT DO NOTHING;
+
+-- Seed add-on packages
+INSERT INTO billing.addon_packages (name, token_amount, price_vnd)
+VALUES
+  ('Starter Pack',  500000,  49000),
+  ('Value Pack',   2000000, 149000),
+  ('Power Pack',   5000000, 299000)
+ON CONFLICT DO NOTHING;
+
+-- ─── MIGRATIONS for existing databases ───────────────────────
+-- Safe to run multiple times (ADD COLUMN IF NOT EXISTS is idempotent)
+ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
+ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
+ALTER TABLE billing.payment_orders ALTER COLUMN plan_id DROP NOT NULL;
 
 -- ─── MEMORY SCHEMA ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory.memory_facts (

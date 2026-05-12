@@ -72,11 +72,12 @@ export class SubscriptionService {
     const sub = await this.getActive(userId);
     if (!sub) return null;
     return {
-      plan:               sub.plan,
-      status:             sub.status,
-      current_period_end: sub.currentPeriodEnd,
-      auto_renew:         sub.autoRenew,
-      cancelled_at:       sub.cancelledAt,
+      plan:                 sub.plan,
+      status:               sub.status,
+      current_period_start: sub.currentPeriodStart,
+      current_period_end:   sub.currentPeriodEnd,
+      auto_renew:           sub.autoRenew,
+      cancelled_at:         sub.cancelledAt,
     };
   }
 

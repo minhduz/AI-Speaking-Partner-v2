@@ -40,6 +40,20 @@ export type GreetingEvent =
   | { type: 'done'; greeting: string }
   | { type: 'error'; message: string };
 
+export type TurnEvent =
+  | { type: 'transcript'; text: string }
+  | { type: 'pronunciation'; data: { score?: number } }
+  | { type: 'text'; chunk: string }
+  | { type: 'audio'; audio_b64: string; text?: string }
+  | { type: 'done'; tokens_used: number }
+  | { type: 'quota_warning'; percent_used: number; upgrade_url: string }
+  | { type: 'error'; message: string };
+
+export interface QuotaWarning {
+  percent_used: number;
+  upgrade_url: string;
+}
+
 export interface ChatMessage {
   role: 'ai' | 'user';
   text: string;

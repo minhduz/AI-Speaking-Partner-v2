@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
@@ -7,13 +7,21 @@ import { firstValueFrom } from 'rxjs';
 import { Turn } from './entities/turn.entity';
 import { Session } from '../session/entities/session.entity';
 
+export interface QuotaInfo {
+  tokens_used: number;
+  tokens_limit: number;
+  addon_balance: number;
+  percent_used: number;
+  reset_date: string;
+}
+
 @Injectable()
 export class TurnService {
   constructor(
-    @InjectRepository(Turn) private turnRepo: Repository<Turn>,
-    @InjectRepository(Session) private sessionRepo: Repository<Session>,
-    private http: HttpService,
-    private cfg: ConfigService,
+    @InjectRepository(Turn) private readonly turnRepo: Repository<Turn>,
+    @InjectRepository(Session) private readonly sessionRepo: Repository<Session>,
+    private readonly http: HttpService,
+    private readonly cfg: ConfigService,
   ) {}
 
   async processTurn(sessionId: string, userId: string, audioBuffer: Buffer, mimetype: string) {
@@ -150,8 +158,31 @@ export class TurnService {
     return turn;
   }
 
-  async checkQuota(_userId: string) {
-    // TODO: re-enable billing quota enforcement after testing
+  async checkQuota(userId: string): Promise<QuotaInfo> {
+    const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
+    try {
+      const { data } = await firstValueFrom(
+        this.http.get<any>(`${billingUrl}/internal/quota/${userId}`),
+      );
+      if (!data.allowed) {
+        throw new HttpException(
+          { error: 'QUOTA_EXCEEDED', limit: data.tokens_limit, used: data.tokens_used, reset_date: data.reset_date },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      return {
+        tokens_used:   data.tokens_used   ?? 0,
+        tokens_limit:  data.tokens_limit  ?? -1,
+        addon_balance: data.addon_balance ?? 0,
+        percent_used:  data.percent_used  ?? 0,
+        reset_date:    data.reset_date    ?? '',
+      };
+    } catch (err) {
+      if (err instanceof HttpException) throw err;
+      // Fail open when billing service is unreachable
+      console.warn('[Quota] Billing service unreachable, allowing turn:', err.message);
+      return { tokens_used: 0, tokens_limit: -1, addon_balance: 0, percent_used: 0, reset_date: '' };
+    }
   }
 
   private async updateSessionTotals(sessionId: string, tokens: number, score: number) {

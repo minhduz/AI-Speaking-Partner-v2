@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
-import type { ChatMessage } from '@/types/session.types';
+import type { ChatMessage, QuotaWarning } from '@/types/session.types';
 
 export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processing' | 'error';
 
@@ -14,9 +14,11 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
+  quotaWarning: QuotaWarning | null;
   currentSessionId: string | null;
   toggleMic: () => void;
   startNewSession: () => void;
+  dismissQuotaWarning: () => void;
 }
 
 async function playAudioWithSentence(
@@ -58,6 +60,8 @@ export function useChat(): UseChatReturn {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
+  const [quotaWarning, setQuotaWarning] = useState<QuotaWarning | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -275,6 +279,8 @@ export function useChat(): UseChatReturn {
           console.log(`[Audio][turn] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
+        } else if (event.type === 'quota_warning') {
+          setQuotaWarning({ percent_used: event.percent_used, upgrade_url: event.upgrade_url });
         } else if (event.type === 'done') {
           setStatus('ready');
           return;
@@ -320,6 +326,8 @@ export function useChat(): UseChatReturn {
     }
   }, [status, startRecording, stopRecording, processTurn]);
 
+  const dismissQuotaWarning = useCallback(() => setQuotaWarning(null), []);
+
   const startNewSession = useCallback(() => {
     initializedRef.current = false;
     initSession().then(() => { initializedRef.current = true; });
@@ -332,8 +340,10 @@ export function useChat(): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
+    quotaWarning,
     currentSessionId,
     toggleMic,
     startNewSession,
+    dismissQuotaWarning,
   };
 }

@@ -22,9 +22,11 @@ export default function ChatPage() {
     isRecording,
     analyser,
     errorMessage,
+    quotaWarning,
     currentSessionId,
     toggleMic,
     startNewSession,
+    dismissQuotaWarning,
   } = useChat();
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -98,6 +100,24 @@ export default function ChatPage() {
           {messages.map((msg, i) => (
             <MessageBubble key={i} message={msg} />
           ))}
+
+          {/* Quota warning banner */}
+          {quotaWarning && (
+            <div className="flex justify-center my-2">
+              <div className="flex items-center gap-3 bg-amber-50 text-amber-700 px-4 py-2.5 rounded-2xl text-sm font-medium shadow-sm border border-amber-200 max-w-md">
+                <span>You&apos;ve used {quotaWarning.percent_used}% of your monthly quota.</span>
+                <a
+                  href={quotaWarning.upgrade_url}
+                  className="shrink-0 px-3 py-1 bg-[#4A6741] text-white rounded-lg text-xs font-semibold hover:bg-[#3D5535] transition-colors"
+                >
+                  Upgrade
+                </a>
+                <button onClick={dismissQuotaWarning} className="shrink-0 text-amber-400 hover:text-amber-600 transition-colors">
+                  ✕
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Error banner */}
           {errorMessage && (
