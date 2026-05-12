@@ -9,7 +9,7 @@ import { ConfigService } from '@nestjs/config';
 
 class EndSessionDto { @IsString() session_id: string; }
 
-function formatDatetimeInTimezone(timezone: string): string {
+function formatDatetimeInTimezone(date: Date, timezone: string): string {
   try {
     return new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
@@ -20,10 +20,22 @@ function formatDatetimeInTimezone(timezone: string): string {
       hour: '2-digit',
       minute: '2-digit',
       hour12: true,
-    }).format(new Date());
+    }).format(date);
   } catch {
-    return new Date().toUTCString();
+    return date.toUTCString();
   }
+}
+
+function resolveClientDatetime(queryDatetime: string | undefined, timezone: string): string {
+  if (queryDatetime) {
+    try {
+      const clientDate = new Date(queryDatetime);
+      if (!isNaN(clientDate.getTime())) {
+        return formatDatetimeInTimezone(clientDate, timezone);
+      }
+    } catch { /* fall through */ }
+  }
+  return formatDatetimeInTimezone(new Date(), timezone);
 }
 
 @Controller('session')
@@ -48,7 +60,7 @@ export class SessionController {
 
   // GET /session/greeting/stream → SSE (no session ID, called before any session is created)
   @Get('greeting/stream')
-  async greetingStreamAnon(@Req() req, @Res() res: Response) {
+  async greetingStreamAnon(@Req() req, @Res() res: Response, @Query('datetime') clientDatetime?: string) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -60,19 +72,24 @@ export class SessionController {
         this.sessionService.getGreetingContext(req.user.id),
       ]);
 
-      const formattedDatetime = formatDatetimeInTimezone(user?.timezone ?? 'UTC');
+      const formattedDatetime = resolveClientDatetime(clientDatetime, user?.timezone ?? 'UTC');
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
+
+      console.log(`[Greeting] user=${user?.name} datetime="${formattedDatetime}" context=${greetingContext ? `"${greetingContext.slice(0, 80)}..."` : 'none'}`);
 
       const systemPrompt = [
         `You are a friendly and encouraging ${user?.targetLanguage ?? 'English'} speaking coach.`,
-        `Today is ${formattedDatetime}.`,
+        `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
         user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
         greetingContext
-          ? `Important user context — use this to personalise your greeting:\n${greetingContext}`
+          ? `User context from memory:\n${greetingContext}`
           : '',
         '',
         'Greet the user warmly by name if you know it.',
-        'If the context mentions an upcoming or recent event relevant to today\'s date (e.g. an exam, appointment, or goal), naturally ask about it.',
+        'IMPORTANT — temporal reasoning: memory facts may use relative time ("in 10 minutes", "tomorrow", "soon").',
+        'Compare each fact against the current time above to decide if the event is still upcoming or has already passed.',
+        'If an event has already passed → ask how it went (e.g. "How did your exam go?").',
+        'If an event is still upcoming → acknowledge it (e.g. "Good luck with your exam later!").',
         'Keep your greeting to 2 sentences maximum.',
       ].filter(Boolean).join('\n');
 
@@ -137,7 +154,7 @@ export class SessionController {
 
   // GET /session/:id/greeting/stream → SSE
   @Get(':id/greeting/stream')
-  async greetingStream(@Param('id') sessionId: string, @Req() req, @Res() res: Response) {
+  async greetingStream(@Param('id') sessionId: string, @Req() req, @Res() res: Response, @Query('datetime') clientDatetime?: string) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -149,19 +166,24 @@ export class SessionController {
         this.sessionService.getGreetingContext(req.user.id),
       ]);
 
-      const formattedDatetime = formatDatetimeInTimezone(user?.timezone ?? 'UTC');
+      const formattedDatetime = resolveClientDatetime(clientDatetime, user?.timezone ?? 'UTC');
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
+
+      console.log(`[Greeting][session=${sessionId}] user=${user?.name} datetime="${formattedDatetime}" context=${greetingContext ? `"${greetingContext.slice(0, 80)}..."` : 'none'}`);
 
       const systemPrompt = [
         `You are a friendly and encouraging ${user?.targetLanguage ?? 'English'} speaking coach.`,
-        `Today is ${formattedDatetime}.`,
+        `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
         user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
         greetingContext
-          ? `Important user context — use this to personalise your greeting:\n${greetingContext}`
+          ? `User context from memory:\n${greetingContext}`
           : '',
         '',
         'Greet the user warmly by name if you know it.',
-        'If the context mentions an upcoming or recent event relevant to today\'s date (e.g. an exam, appointment, or goal), naturally ask about it.',
+        'IMPORTANT — temporal reasoning: memory facts may use relative time ("in 10 minutes", "tomorrow", "soon").',
+        'Compare each fact against the current time above to decide if the event is still upcoming or has already passed.',
+        'If an event has already passed → ask how it went (e.g. "How did your exam go?").',
+        'If an event is still upcoming → acknowledge it (e.g. "Good luck with your exam later!").',
         'Keep your greeting to 2 sentences maximum.',
       ].filter(Boolean).join('\n');
 

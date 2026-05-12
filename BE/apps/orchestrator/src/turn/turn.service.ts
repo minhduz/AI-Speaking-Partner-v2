@@ -19,7 +19,7 @@ export interface QuotaInfo {
 
 const VALID_MEMORY_LAYERS = new Set(['short_term', 'long_term', 'urgent']);
 
-function getCurrentDatetime(timezone: string): string {
+function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
     return new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
@@ -30,9 +30,9 @@ function getCurrentDatetime(timezone: string): string {
       hour: '2-digit',
       minute: '2-digit',
       hour12: true,
-    }).format(new Date());
+    }).format(date);
   } catch {
-    return new Date().toUTCString();
+    return date.toUTCString();
   }
 }
 

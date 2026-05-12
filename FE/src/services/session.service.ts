@@ -68,8 +68,9 @@ export const sessionService = {
   },
 
   streamGreetingAnon: async (): Promise<AsyncGenerator<GreetingEvent>> => {
+    const dt = encodeURIComponent(new Date().toISOString());
     log('GET /session/greeting/stream');
-    const res = await fetch(`${API_BASE}/session/greeting/stream`, {
+    const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}`, {
       headers: authHeaders(),
     });
     if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
@@ -115,7 +116,7 @@ export const sessionService = {
 
     const res = await fetch(`${API_BASE}/turn/${sessionId}/stream`, {
       method: 'POST',
-      headers: authHeaders(),
+      headers: { ...authHeaders(), 'X-Client-Datetime': new Date().toISOString() },
       body: formData,
     });
 

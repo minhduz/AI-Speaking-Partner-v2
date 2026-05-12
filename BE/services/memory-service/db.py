@@ -13,14 +13,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
-    short_term_ttl_seconds: int = 7200
-    retrieval_limit: int = 10
-    urgent_limit: int = 5
-    decay_lambda: float = 0.1
-    score_prune_threshold: float = 0.1
+    short_term_ttl_seconds: int = 604800   # 7 days
+    long_term_ttl_days: int = 365          # 1 year default for non-expiring facts
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 settings = Settings()
 

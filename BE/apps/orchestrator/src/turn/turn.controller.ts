@@ -11,7 +11,7 @@ import { ConfigService } from '@nestjs/config';
 
 const SENTENCE_BOUNDARY = /^([\s\S]*?[.!?]+\s+)/;
 
-function getCurrentDatetime(timezone: string): string {
+function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
     return new Intl.DateTimeFormat('en-US', {
       timeZone: timezone,
@@ -22,9 +22,9 @@ function getCurrentDatetime(timezone: string): string {
       hour: '2-digit',
       minute: '2-digit',
       hour12: true,
-    }).format(new Date());
+    }).format(date);
   } catch {
-    return new Date().toUTCString();
+    return date.toUTCString();
   }
 }
 
@@ -93,7 +93,17 @@ export class TurnController {
         this.turnService.getTurnIndex(sessionId),
       ]);
 
-      const currentDatetime = getCurrentDatetime(user?.timezone ?? 'UTC');
+      // Prefer the client's reported time (sent as ISO string in header) for accuracy
+      const clientIso = req.headers['x-client-datetime'];
+      const currentDatetime = clientIso
+        ? (() => {
+            try {
+              const d = new Date(clientIso);
+              return isNaN(d.getTime()) ? getCurrentDatetime(user?.timezone ?? 'UTC') : getCurrentDatetime(user?.timezone ?? 'UTC', d);
+            } catch { return getCurrentDatetime(user?.timezone ?? 'UTC'); }
+          })()
+        : getCurrentDatetime(user?.timezone ?? 'UTC');
+      console.log(`[Turn][stream] datetime="${currentDatetime}"`);
       const speechUrl = this.cfg.get<string>('SPEECH_SERVICE_URL');
       const memoryUrl = this.cfg.get<string>('MEMORY_SERVICE_URL');
       const llmUrl    = this.cfg.get<string>('LLM_GATEWAY_URL');

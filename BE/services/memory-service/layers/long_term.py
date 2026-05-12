@@ -1,71 +1,65 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from db import database
+
 
 class LongTermMemory:
 
     @staticmethod
-    async def search(user_id: str, query_vector: list[float], limit: int = 10) -> list[dict]:
-        rows = await database.fetch(
-            """
-            SELECT id, content, score, priority,
-                   1 - (embedding <=> $2::vector) AS similarity
-            FROM memory.memory_facts
-            WHERE user_id = $1
-              AND priority != 'urgent'
-              AND (expires_at IS NULL OR expires_at > NOW())
-            ORDER BY embedding <=> $2::vector
-            LIMIT $3
-            """,
-            user_id, json.dumps(query_vector), limit,
+    async def get_context(user_id: str) -> list[dict]:
+        """Return all active (non-expired) facts from the user's single context document."""
+        row = await database.fetchrow(
+            "SELECT content FROM memory.memory_facts WHERE user_id = $1 AND source = 'user_context' LIMIT 1",
+            user_id,
         )
-        return [
-            {"id": str(r["id"]), "text": r["content"],
-             "score": round(float(r["similarity"]) * float(r["score"]), 4),
-             "source": "long_term"}
-            for r in rows
-        ]
+        if not row:
+            return []
+        try:
+            data = json.loads(row["content"])
+            now = datetime.now(timezone.utc)
+            active = []
+            for fact in data.get("facts", []):
+                exp = fact.get("expires_at")
+                if exp:
+                    try:
+                        exp_dt = datetime.fromisoformat(exp)
+                        if exp_dt.tzinfo is None:
+                            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                        if exp_dt < now:
+                            continue  # expired — skip
+                    except Exception:
+                        pass
+                active.append(fact)
+            return active
+        except Exception:
+            return []
 
     @staticmethod
-    async def search_urgent(user_id: str, limit: int = 5) -> list[dict]:
-        rows = await database.fetch(
-            """
-            SELECT id, content, score
-            FROM memory.memory_facts
-            WHERE user_id = $1
-              AND priority = 'urgent'
-              AND (expires_at IS NULL OR expires_at > NOW())
-            ORDER BY score DESC
-            LIMIT $2
-            """,
-            user_id, limit,
+    async def upsert_context(user_id: str, facts: list[dict], embedding: list[float]):
+        """Store or replace the user's single context document."""
+        content_json = json.dumps({
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "facts": facts,
+        })
+        existing = await database.fetchrow(
+            "SELECT id FROM memory.memory_facts WHERE user_id = $1 AND source = 'user_context'",
+            user_id,
         )
-        return [{"id": str(r["id"]), "text": r["content"], "score": float(r["score"]), "source": "urgent"}
-                for r in rows]
-
-    @staticmethod
-    async def upsert(user_id: str, content: str, embedding: list[float],
-                     priority: str = "normal", expires_at: datetime = None,
-                     source: str = "consolidation"):
-        await database.execute(
-            """
-            INSERT INTO memory.memory_facts (user_id, content, embedding, priority, expires_at, source)
-            VALUES ($1, $2, $3::vector, $4, $5, $6)
-            """,
-            user_id, content, json.dumps(embedding), priority, expires_at, source,
-        )
+        if existing:
+            await database.execute(
+                """UPDATE memory.memory_facts
+                   SET content = $2, embedding = $3::vector, updated_at = NOW()
+                   WHERE id = $1""",
+                existing["id"], content_json, json.dumps(embedding),
+            )
+        else:
+            await database.execute(
+                """INSERT INTO memory.memory_facts (user_id, content, embedding, priority, source)
+                   VALUES ($1, $2, $3::vector, 'normal', 'user_context')""",
+                user_id, content_json, json.dumps(embedding),
+            )
 
     @staticmethod
     async def delete_all(user_id: str):
+        """GDPR wipe — remove all memory rows for this user."""
         await database.execute("DELETE FROM memory.memory_facts WHERE user_id = $1", user_id)
-
-    @staticmethod
-    async def prune_low_score(user_id: str, threshold: float):
-        result = await database.execute(
-            """
-            DELETE FROM memory.memory_facts
-            WHERE user_id = $1 AND score < $2 AND priority = 'normal'
-            """,
-            user_id, threshold,
-        )
-        return int(result.split()[-1]) if result else 0

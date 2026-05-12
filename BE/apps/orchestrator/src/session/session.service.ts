@@ -60,10 +60,18 @@ export class SessionService {
   }
 
   private async triggerConsolidation(userId: string, sessionId: string) {
-    await firstValueFrom(
-      this.http.post(`${this.cfg.get('MEMORY_SERVICE_URL')}/consolidate/${userId}`, {
-        session_id: sessionId,
-      }),
-    );
+    console.log(`[Consolidation] ── triggering ───────────────────────`);
+    console.log(`[Consolidation]   user    : ${userId}`);
+    console.log(`[Consolidation]   session : ${sessionId}`);
+    try {
+      const res = await firstValueFrom(
+        this.http.post(`${this.cfg.get('MEMORY_SERVICE_URL')}/consolidate/${userId}`, {
+          session_id: sessionId,
+        }),
+      );
+      console.log(`[Consolidation] queued → memory-service responded:`, res.data);
+    } catch (err: any) {
+      console.error(`[Consolidation] ✖ failed to queue — memory-service unreachable:`, err?.message);
+    }
   }
 }
