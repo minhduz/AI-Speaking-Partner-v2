@@ -4,11 +4,13 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { PaymentOrder } from './entities/payment-order.entity';
 import { PlansService } from '../plans/plans.service';
+import { AddonPackage } from '../addon/addon-package.entity';
 
 @Injectable()
 export class PaymentService {
   constructor(
     @InjectRepository(PaymentOrder) private repo: Repository<PaymentOrder>,
+    @InjectRepository(AddonPackage) private addonPackageRepo: Repository<AddonPackage>,
     private plans: PlansService,
     private cfg: ConfigService,
   ) {}
@@ -77,6 +79,33 @@ export class PaymentService {
       paidAt: new Date(),
     });
     return { ...order, status: 'paid', transactionId, paidAt: new Date() };
+  }
+
+  async getHistory(userId: string) {
+    const orders = await this.repo.find({
+      where: { userId, status: 'paid' },
+      order: { paidAt: 'DESC' },
+      take: 20,
+    });
+
+    return Promise.all(orders.map(async (order) => {
+      let description = '';
+      if (order.orderType === 'subscription' && order.planId) {
+        const plan = await this.plans.findById(order.planId);
+        if (plan) description = plan.interval === 'month' ? 'Pro Monthly' : 'Pro Yearly';
+        else description = 'Subscription';
+      } else if (order.orderType === 'addon' && order.addonPackageId) {
+        const pkg = await this.addonPackageRepo.findOne({ where: { id: order.addonPackageId } });
+        description = pkg ? pkg.name : 'Token Pack';
+      }
+      return {
+        id:          order.id,
+        order_type:  order.orderType,
+        description,
+        amount_vnd:  order.amountVnd,
+        paid_at:     order.paidAt,
+      };
+    }));
   }
 
   private _generateContentCode(userId: string): string {

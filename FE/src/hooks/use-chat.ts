@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
-import type { ChatMessage } from '@/types/session.types';
+import type { ChatMessage, QuotaWarning } from '@/types/session.types';
 
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
@@ -28,9 +28,11 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
+  quotaWarning: QuotaWarning | null;
   currentSessionId: string | null;
   toggleMic: () => void;
   startNewSession: () => void;
+  dismissQuotaWarning: () => void;
 }
 
 function revealWordsOverTime(
@@ -93,6 +95,8 @@ export function useChat(): UseChatReturn {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+
+  const [quotaWarning, setQuotaWarning] = useState<QuotaWarning | null>(null);
 
   const sessionIdRef = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -361,6 +365,8 @@ export function useChat(): UseChatReturn {
           if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
+        } else if (event.type === 'quota_warning') {
+          setQuotaWarning({ percent_used: event.percent_used, upgrade_url: event.upgrade_url });
         } else if (event.type === 'done') {
           // If TTS failed and audio events never carried text, fall back to the full LLM text
           if (!hadAudioText && aiFullText.trim()) {
@@ -415,6 +421,8 @@ export function useChat(): UseChatReturn {
     }
   }, [status, startRecording, stopRecording, processTurn]);
 
+  const dismissQuotaWarning = useCallback(() => setQuotaWarning(null), []);
+
   const startNewSession = useCallback(() => {
     // The button click is a user gesture — use it to resume the AudioContext so the
     // greeting audio plays immediately without waiting for a subsequent interaction.
@@ -433,8 +441,10 @@ export function useChat(): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
+    quotaWarning,
     currentSessionId,
     toggleMic,
     startNewSession,
+    dismissQuotaWarning,
   };
 }

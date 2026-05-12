@@ -1,39 +1,76 @@
-import { Injectable, ForbiddenException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Usage } from './usage.entity';
 import { SubscriptionService } from '../subscription/subscription.service';
+import { AddonService } from '../addon/addon.service';
+
+export interface QuotaResult {
+  allowed: boolean;
+  tokens_used: number;
+  tokens_limit: number;      // subscription limit; -1 = unlimited
+  addon_balance: number;     // remaining add-on tokens
+  percent_used: number;      // subscription usage % (capped at 100)
+  reset_date: string;        // ISO date of next monthly reset
+}
 
 @Injectable()
 export class UsageService {
   constructor(
-    @InjectRepository(Usage) private repo: Repository<Usage>,
-    private subscriptions: SubscriptionService,
+    @InjectRepository(Usage) private readonly repo: Repository<Usage>,
+    private readonly subscriptions: SubscriptionService,
+    private readonly addonService: AddonService,
   ) {}
 
-  // Called by orchestrator quota guard before every turn
-  async checkQuota(userId: string): Promise<{ allowed: boolean; tokens_used: number; tokens_limit: number }> {
+  // Called by orchestrator before every turn
+  async checkQuota(userId: string): Promise<QuotaResult> {
     const sub = await this.subscriptions.getActive(userId);
-    if (!sub) return { allowed: false, tokens_used: 0, tokens_limit: 0 };
+    if (!sub) {
+      return { allowed: false, tokens_used: 0, tokens_limit: 0, addon_balance: 0, percent_used: 100, reset_date: '' };
+    }
 
     const tokenLimit = sub.plan.tokenLimit;
-    if (tokenLimit === -1) return { allowed: true, tokens_used: 0, tokens_limit: -1 };
 
-    const usage = await this._getOrCreate(userId);
+    if (tokenLimit === -1) {
+      return { allowed: true, tokens_used: 0, tokens_limit: -1, addon_balance: 0, percent_used: 0, reset_date: '' };
+    }
+
+    const [usage, addonBalance] = await Promise.all([
+      this._getOrCreate(userId),
+      this.addonService.getBalance(userId),
+    ]);
+
+    const subscriptionAllowed = usage.tokensUsed < tokenLimit;
+    const addonAllowed        = addonBalance > 0;
+    const percentUsed         = Math.min(100, Math.round((usage.tokensUsed / tokenLimit) * 100));
+
     return {
-      allowed:      usage.tokensUsed < tokenLimit,
-      tokens_used:  usage.tokensUsed,
-      tokens_limit: tokenLimit,
+      allowed:       subscriptionAllowed || addonAllowed,
+      tokens_used:   usage.tokensUsed,
+      tokens_limit:  tokenLimit,
+      addon_balance: addonBalance,
+      percent_used:  percentUsed,
+      reset_date:    usage.periodEnd.toISOString(),
     };
   }
 
   // Called after every turn to record consumption
   async increment(userId: string, tokensUsed: number) {
     const usage = await this._getOrCreate(userId);
-    await this.repo.update(usage.id, {
-      tokensUsed:   usage.tokensUsed + tokensUsed,
-      sessionsUsed: usage.sessionsUsed,
-    });
+    const newTokensUsed = usage.tokensUsed + tokensUsed;
+    await this.repo.update(usage.id, { tokensUsed: newTokensUsed });
+
+    // Deduct from add-on balance if subscription quota is exceeded
+    const sub = await this.subscriptions.getActive(userId);
+    const limit = sub?.plan?.tokenLimit ?? 0;
+    if (limit !== -1 && newTokensUsed > limit) {
+      const prevExcess = Math.max(0, usage.tokensUsed - limit);
+      const newExcess  = newTokensUsed - limit;
+      const overflow   = newExcess - prevExcess;
+      if (overflow > 0) {
+        await this.addonService.deductTokens(userId, overflow).catch(() => {});
+      }
+    }
   }
 
   // Called by orchestrator on session start

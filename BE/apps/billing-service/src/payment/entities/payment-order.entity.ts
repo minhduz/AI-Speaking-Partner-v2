@@ -4,7 +4,9 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeor
 export class PaymentOrder {
   @PrimaryGeneratedColumn('uuid') id: string;
   @Column({ name: 'user_id' }) userId: string;
-  @Column({ name: 'plan_id' }) planId: string;
+  @Column({ name: 'plan_id', nullable: true }) planId: string | null;
+  @Column({ name: 'order_type', default: 'subscription' }) orderType: string;
+  @Column({ name: 'addon_package_id', nullable: true }) addonPackageId: string | null;
   @Column({ default: 'pending' }) status: string;
   @Column({ name: 'amount_vnd' }) amountVnd: number;
   @Column({ name: 'content_code', unique: true }) contentCode: string;

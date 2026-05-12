@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Get, Param, Req, Res,
+  Controller, Post, Param, Req, Res,
   UseGuards, UseInterceptors, UploadedFile, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -9,13 +9,15 @@ import { TurnService } from './turn.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 
+const SENTENCE_BOUNDARY = /^([\s\S]*?[.!?]+\s+)/;
+
 @Controller('turn')
 @UseGuards(JwtAuthGuard)
 export class TurnController {
   constructor(
-    private turnService: TurnService,
-    private http: HttpService,
-    private cfg: ConfigService,
+    private readonly turnService: TurnService,
+    private readonly http: HttpService,
+    private readonly cfg: ConfigService,
   ) {}
 
   // POST /turn/:session_id — full response (non-streaming)
@@ -26,9 +28,10 @@ export class TurnController {
     @UploadedFile() file: Express.Multer.File,
     @Req() req,
   ) {
+    const fileInfo = file ? `${file.size}b  ${file.mimetype}  "${file.originalname}"` : 'MISSING';
     console.log(`\n[Turn] ▶ POST /turn/${sessionId}`);
     console.log(`[Turn]   user     : ${req.user?.id}`);
-    console.log(`[Turn]   file     : ${file ? `${file.size}b  ${file.mimetype}  "${file.originalname}"` : 'MISSING'}`);
+    console.log(`[Turn]   file     : ${fileInfo}`);
 
     if (!file) {
       console.error('[Turn] ✖ No audio file in request — check FormData field name is "audio"');
@@ -59,11 +62,18 @@ export class TurnController {
     }
 
     try {
-      await this.turnService.checkQuota(req.user.id);
+      const quota = await this.turnService.checkQuota(req.user.id);
+      if (quota.tokens_limit !== -1) {
+        res.setHeader('X-RateLimit-Limit-Tokens',     quota.tokens_limit);
+        res.setHeader('X-RateLimit-Used-Tokens',      quota.tokens_used);
+        res.setHeader('X-RateLimit-Remaining-Tokens', Math.max(0, quota.tokens_limit - quota.tokens_used));
+        if (quota.reset_date) res.setHeader('X-RateLimit-Reset-Tokens', quota.reset_date);
+      }
+
       const turnIndex = await this.turnService.getTurnIndex(sessionId);
-      const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
-      // const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL'); // TODO: re-enable with memory service
-      const llmUrl    = this.cfg.get('LLM_GATEWAY_URL');
+      const speechUrl = this.cfg.get<string>('SPEECH_SERVICE_URL');
+      const memoryUrl = this.cfg.get<string>('MEMORY_SERVICE_URL');
+      const llmUrl    = this.cfg.get<string>('LLM_GATEWAY_URL');
 
       const formData = new FormData();
       formData.append('audio', new Blob([file.buffer as any], { type: file.mimetype || 'audio/webm' }), 'audio.webm');
@@ -72,14 +82,21 @@ export class TurnController {
       send({ type: 'transcript', text: transcript });
       send({ type: 'pronunciation', data: pronunciation });
 
-      // TODO: re-enable memory service after testing
-      // const promptRes = await this.http.axiosRef.post(`${memoryUrl}/build-prompt/${req.user.id}`, {
-      //   query: transcript, session_id: sessionId,
-      // });
+      // Build system prompt (with memory context when relevant)
+      let systemPrompt = 'You are a friendly English speaking coach.';
+      try {
+        const promptRes = await this.http.axiosRef.post(
+          `${memoryUrl}/build-prompt/${req.user.id}`,
+          { query: transcript, session_id: sessionId },
+        );
+        if (promptRes.data?.system_prompt) systemPrompt = promptRes.data.system_prompt;
+      } catch {
+        // Memory service unavailable — use default prompt
+      }
 
       const llmStream = await this.http.axiosRef.post(
         `${llmUrl}/stream`,
-        { system: 'You are a friendly English speaking coach.', messages: [{ role: 'user', content: transcript }] },
+        { system: systemPrompt, messages: [{ role: 'user', content: transcript }] },
         { responseType: 'stream' },
       );
 
@@ -94,9 +111,9 @@ export class TurnController {
         console.log(`[Turn] text chunk: ${JSON.stringify(text)}`);
         send({ type: 'text', chunk: text });
 
-        let match: RegExpMatchArray | null;
+        let match: RegExpExecArray | null;
         let matched = false;
-        while ((match = sentenceBuffer.match(/^([\s\S]*?[.!?]+[\s\n]+)/))) {
+        while ((match = SENTENCE_BOUNDARY.exec(sentenceBuffer))) {
           matched = true;
           const sentence = match[1];
           sentenceBuffer = sentenceBuffer.slice(sentence.length);
@@ -136,7 +153,7 @@ export class TurnController {
               console.log(`[Turn][TTS] OK remaining — b64 len: ${ttsRes.data.audio_b64?.length ?? 0} → sending audio event`);
               send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
             } else {
-              console.warn(`[Turn][TTS] skipped remaining — TTS returned null`);
+              console.warn('[Turn][TTS] skipped remaining — TTS returned null');
             }
           });
         }
@@ -151,10 +168,29 @@ export class TurnController {
         } catch (e) { console.error('[Turn Persist Error]', e?.message); }
 
         send({ type: 'done', tokens_used: tokensUsed });
+
+        // Warn when subscription usage hits 80%+ after this turn
+        if (quota.tokens_limit !== -1) {
+          const usedAfter   = quota.tokens_used + tokensUsed;
+          const percentAfter = Math.min(100, Math.round((usedAfter / quota.tokens_limit) * 100));
+          if (percentAfter >= 80) {
+            send({ type: 'quota_warning', percent_used: percentAfter, upgrade_url: '/billing' });
+          }
+        }
+
         res.end();
       });
     } catch (err) {
-      send({ type: 'error', message: err.message });
+      console.error('[Turn][stream] FAILED:', err?.message ?? err);
+      if (err?.response) {
+        console.error('[Turn][stream] upstream status:', err.response.status);
+        const body = typeof err.response.data === 'string'
+          ? err.response.data
+          : JSON.stringify(err.response.data ?? '');
+        console.error('[Turn][stream] upstream body:', body.slice(0, 500));
+      }
+      if (err?.stack) console.error('[Turn][stream] stack:', err.stack);
+      send({ type: 'error', message: err?.message ?? 'stream failed' });
       res.end();
     }
   }

@@ -1,13 +1,13 @@
-// usage.module.ts
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { UsageController } from './usage.controller';
 import { UsageService } from './usage.service';
 import { Usage } from './usage.entity';
 import { SubscriptionModule } from '../subscription/subscription.module';
+import { AddonModule } from '../addon/addon.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Usage]), SubscriptionModule],
+  imports: [TypeOrmModule.forFeature([Usage]), SubscriptionModule, AddonModule],
   controllers: [UsageController],
   providers: [UsageService],
   exports: [UsageService],
