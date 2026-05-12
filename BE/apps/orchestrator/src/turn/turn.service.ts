@@ -57,7 +57,7 @@ export class TurnService {
       step = 'stt';
       console.log(`[Turn] [${elapsed()}] calling speech-service /stt…`);
       const formData = new FormData();
-      formData.append('audio', new Blob([audioBuffer.buffer as ArrayBuffer], { type: mimetype }), 'audio.webm');
+      formData.append('audio', new Blob([new Uint8Array(audioBuffer)], { type: mimetype }), 'audio.webm');
       const sttRes = await firstValueFrom(
         this.http.post(`${speechUrl}/stt`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
