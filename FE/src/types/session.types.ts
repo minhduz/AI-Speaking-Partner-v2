@@ -45,8 +45,9 @@ export type TurnEvent =
   | { type: 'pronunciation'; data: { score?: number } }
   | { type: 'text'; chunk: string }
   | { type: 'audio'; audio_b64: string; text?: string }
-  | { type: 'done'; tokens_used: number }
+  | { type: 'title'; text: string }
   | { type: 'quota_warning'; percent_used: number; upgrade_url: string }
+  | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string };
 
 export interface QuotaWarning {
@@ -60,4 +61,20 @@ export interface ChatMessage {
   sentences?: string[];
   pronunciationScore?: number;
   pending?: boolean;
+}
+
+export interface TurnHistoryItem {
+  id: string;
+  turnIndex: number;
+  transcript: string;
+  responseText: string;
+  pronunciationScore: number | null;
+  createdAt: string;
+}
+
+export interface TurnHistoryPage {
+  items: TurnHistoryItem[];
+  total: number;
+  page: number;
+  hasMore: boolean;
 }

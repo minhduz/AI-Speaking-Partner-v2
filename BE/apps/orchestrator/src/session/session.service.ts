@@ -30,19 +30,21 @@ export class SessionService {
     return { session_id: sessionId, status: 'ended' };
   }
 
-  async getUrgentContext(userId: string): Promise<string> {
+  async getGreetingContext(userId: string): Promise<string> {
     try {
       const res = await firstValueFrom(
         this.http.post(`${this.cfg.get('MEMORY_SERVICE_URL')}/retrieve/${userId}`, {
-          query: 'urgent important events today exam appointment',
+          query: 'important events today upcoming exams appointments goals plans',
           session_id: '',
-          limit: 5,
+          limit: 10,
+          layers: ['urgent', 'long_term'],
         }),
       );
-      return res.data?.chunks
-        ?.filter((c: any) => c.source === 'urgent')
-        ?.map((c: any) => c.text)
-        ?.join('\n') ?? '';
+      const chunks: any[] = res.data?.chunks ?? [];
+      return chunks
+        .filter((c) => c.source === 'urgent' || (c.source === 'long_term' && c.score > 0.5))
+        .map((c) => c.text)
+        .join('\n');
     } catch { return ''; }
   }
 

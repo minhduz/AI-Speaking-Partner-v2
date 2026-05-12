@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
-import type { ChatMessage, QuotaWarning } from '@/types/session.types';
+import type { ChatMessage, QuotaWarning, TurnHistoryItem } from '@/types/session.types';
 
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
@@ -30,9 +30,16 @@ export interface UseChatReturn {
   errorMessage: string | null;
   quotaWarning: QuotaWarning | null;
   currentSessionId: string | null;
+  sessionTitle: string | null;
+  reviewMode: boolean;
+  reviewHasMore: boolean;
+  reviewLoading: boolean;
   toggleMic: () => void;
   startNewSession: () => void;
   dismissQuotaWarning: () => void;
+  enterReview: (sessionId: string) => Promise<void>;
+  exitReview: () => void;
+  loadMoreReview: () => Promise<void>;
 }
 
 function revealWordsOverTime(
@@ -95,15 +102,21 @@ export function useChat(): UseChatReturn {
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-
+  const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [quotaWarning, setQuotaWarning] = useState<QuotaWarning | null>(null);
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewHasMore, setReviewHasMore] = useState(false);
+  const [reviewLoading, setReviewLoading] = useState(false);
 
   const sessionIdRef = useRef<string | null>(null);
+  const reviewSessionIdRef = useRef<string | null>(null);
+  const reviewPageRef = useRef(1);
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const initializedRef = useRef(false);
+  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
@@ -222,6 +235,7 @@ export function useChat(): UseChatReturn {
     setMessages([]);
     setGreetingSentences([]);
     setErrorMessage(null);
+    setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
     await runGreeting();
@@ -255,6 +269,11 @@ export function useChat(): UseChatReturn {
     return () => {
       window.removeEventListener('click', resume);
       window.removeEventListener('keydown', resume);
+      // Clear inactivity timer on unmount to avoid stale closures
+      if (inactivityTimerRef.current !== null) {
+        clearTimeout(inactivityTimerRef.current);
+        inactivityTimerRef.current = null;
+      }
       ctx.close();
       _sharedAudioCtx = null; // reset singleton so next mount gets a fresh context
       sharedPlaybackCtxRef.current = null;
@@ -323,6 +342,13 @@ export function useChat(): UseChatReturn {
   const processTurn = useCallback(async (audioBlob: Blob) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
+
+    // Cancel any running inactivity timer — user is active again
+    if (inactivityTimerRef.current !== null) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+
     setStatus('processing');
     setErrorMessage(null);
 
@@ -335,6 +361,8 @@ export function useChat(): UseChatReturn {
 
       for await (const event of stream) {
         if (event.type === 'transcript') {
+          // Conversation has started — remove the greeting
+          setGreetingSentences([]);
           setMessages((prev) => {
             const withoutPending = prev.filter((m) => !m.pending);
             return [
@@ -365,6 +393,8 @@ export function useChat(): UseChatReturn {
           if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
+        } else if (event.type === 'title') {
+          setSessionTitle(event.text);
         } else if (event.type === 'quota_warning') {
           setQuotaWarning({ percent_used: event.percent_used, upgrade_url: event.upgrade_url });
         } else if (event.type === 'done') {
@@ -378,6 +408,18 @@ export function useChat(): UseChatReturn {
             });
           }
           setStatus('ready');
+
+          // Start 15-second inactivity timer — triggers consolidation if user goes quiet
+          inactivityTimerRef.current = setTimeout(() => {
+            const sid = sessionIdRef.current;
+            if (!sid) return;
+            console.log('[Session] 15s inactivity — ending session to trigger consolidation');
+            sessionService.end(sid).catch(console.error);
+            sessionIdRef.current = null;
+            setCurrentSessionId(null);
+            inactivityTimerRef.current = null;
+          }, 15_000);
+
           return;
         } else if (event.type === 'error') {
           throw new Error(event.message);
@@ -390,6 +432,51 @@ export function useChat(): UseChatReturn {
       setStatus('error');
     }
   }, [processAudioQueue]);
+
+  const turnsToMessages = useCallback((items: TurnHistoryItem[]): ChatMessage[] => {
+    const msgs: ChatMessage[] = [];
+    for (const t of items) {
+      msgs.push({ role: 'user', text: t.transcript, pronunciationScore: t.pronunciationScore ?? undefined });
+      msgs.push({ role: 'ai', text: t.responseText, sentences: [t.responseText] });
+    }
+    return msgs;
+  }, []);
+
+  const loadReviewPage = useCallback(async (sessionId: string, page: number, prepend: boolean) => {
+    setReviewLoading(true);
+    try {
+      const data = await sessionService.getTurns(sessionId, page, 20);
+      const converted = turnsToMessages([...data.items].reverse());
+      setMessages((prev) => (prepend ? [...converted, ...prev] : converted));
+      setReviewHasMore(data.hasMore);
+      reviewPageRef.current = page;
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [turnsToMessages]);
+
+  const enterReview = useCallback(async (sessionId: string) => {
+    setReviewMode(true);
+    reviewSessionIdRef.current = sessionId;
+    reviewPageRef.current = 1;
+    setMessages([]);
+    setReviewHasMore(false);
+    await loadReviewPage(sessionId, 1, false);
+  }, [loadReviewPage]);
+
+  const exitReview = useCallback(() => {
+    setReviewMode(false);
+    reviewSessionIdRef.current = null;
+    reviewPageRef.current = 1;
+    setMessages([]);
+    setReviewHasMore(false);
+  }, []);
+
+  const loadMoreReview = useCallback(async () => {
+    const sessionId = reviewSessionIdRef.current;
+    if (!sessionId || !reviewHasMore || reviewLoading) return;
+    await loadReviewPage(sessionId, reviewPageRef.current + 1, true);
+  }, [reviewHasMore, reviewLoading, loadReviewPage]);
 
   const toggleMic = useCallback(() => {
     if (status === 'recording') {
@@ -424,6 +511,20 @@ export function useChat(): UseChatReturn {
   const dismissQuotaWarning = useCallback(() => setQuotaWarning(null), []);
 
   const startNewSession = useCallback(() => {
+    // Cancel any pending inactivity consolidation — we're starting fresh
+    if (inactivityTimerRef.current !== null) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+
+    // End the previous session (fire-and-forget) so consolidation triggers
+    const prevSessionId = sessionIdRef.current;
+    if (prevSessionId) {
+      sessionService.end(prevSessionId).catch(console.error);
+      sessionIdRef.current = null;
+      setCurrentSessionId(null);
+    }
+
     // The button click is a user gesture — use it to resume the AudioContext so the
     // greeting audio plays immediately without waiting for a subsequent interaction.
     const ctx = sharedPlaybackCtxRef.current;
@@ -443,8 +544,15 @@ export function useChat(): UseChatReturn {
     errorMessage,
     quotaWarning,
     currentSessionId,
+    sessionTitle,
+    reviewMode,
+    reviewHasMore,
+    reviewLoading,
     toggleMic,
     startNewSession,
     dismissQuotaWarning,
+    enterReview,
+    exitReview,
+    loadMoreReview,
   };
 }

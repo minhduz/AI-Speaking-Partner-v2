@@ -19,6 +19,15 @@ async def consolidate(user_id: str, body: ConsolidateRequest, bg: BackgroundTask
     bg.add_task(run_consolidation, user_id, body.session_id)
     return {"status": "queued", "user_id": user_id, "session_id": body.session_id}
 
+# GET /short-term/:session_id — returns recent messages without embedding (for parallel prefetch)
+@router.get("/short-term/{session_id}")
+async def get_short_term(session_id: str):
+    messages = await ShortTermMemory.get_recent(session_id, n=10)
+    formatted = "\n".join(
+        f"{m['role'].capitalize()}: {m['content']}" for m in messages
+    )
+    return {"messages": messages, "formatted": formatted}
+
 # POST /short-term/:session_id/append — called after every turn
 @router.post("/short-term/{session_id}/append")
 async def append_short_term(session_id: str, body: AppendRequest):

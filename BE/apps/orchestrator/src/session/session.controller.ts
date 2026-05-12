@@ -3,16 +3,35 @@ import { Response } from 'express';
 import { IsString } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
+import { UserService } from '../user/user.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 
 class EndSessionDto { @IsString() session_id: string; }
+
+function formatDatetimeInTimezone(timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date());
+  } catch {
+    return new Date().toUTCString();
+  }
+}
 
 @Controller('session')
 @UseGuards(JwtAuthGuard)
 export class SessionController {
   constructor(
     private sessionService: SessionService,
+    private userService: UserService,
     private http: HttpService,
     private cfg: ConfigService,
   ) {}
@@ -29,24 +48,40 @@ export class SessionController {
 
   // GET /session/greeting/stream → SSE (no session ID, called before any session is created)
   @Get('greeting/stream')
-  async greetingStreamAnon(@Req() _req, @Res() res: Response) {
+  async greetingStreamAnon(@Req() req, @Res() res: Response) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      // TODO: re-enable memory service after testing
-      // const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
-      const urgentContext = null;
+      const [user, greetingContext] = await Promise.all([
+        this.userService.findById(req.user.id).catch(() => null),
+        this.sessionService.getGreetingContext(req.user.id),
+      ]);
+
+      const formattedDatetime = formatDatetimeInTimezone(user?.timezone ?? 'UTC');
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
+
+      const systemPrompt = [
+        `You are a friendly and encouraging ${user?.targetLanguage ?? 'English'} speaking coach.`,
+        `Today is ${formattedDatetime}.`,
+        user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
+        greetingContext
+          ? `Important user context — use this to personalise your greeting:\n${greetingContext}`
+          : '',
+        '',
+        'Greet the user warmly by name if you know it.',
+        'If the context mentions an upcoming or recent event relevant to today\'s date (e.g. an exam, appointment, or goal), naturally ask about it.',
+        'Keep your greeting to 2 sentences maximum.',
+      ].filter(Boolean).join('\n');
+
+      console.log(`[Greeting] system prompt:\n${systemPrompt}`);
 
       const llmRes = await this.http.axiosRef.post(
         `${this.cfg.get('LLM_GATEWAY_URL')}/stream`,
         {
-          system: `You are a friendly English speaking coach.
-${urgentContext ? `Important — user context: ${urgentContext}` : ''}
-Greet the user warmly and open the session. Max 2 sentences.`,
+          system: systemPrompt,
           messages: [{ role: 'user', content: 'start' }],
         },
         { responseType: 'stream' },
@@ -72,14 +107,8 @@ Greet the user warmly and open the session. Max 2 sentences.`,
             const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: clean })
               .catch(e => { console.error(`[Greeting][TTS] FAILED: "${clean}" —`, e?.message); return null; });
             ttsChain = ttsChain.then(async () => {
-              console.log(`[Greeting][TTS] awaiting TTS for: "${clean}"`);
               const r = await p;
-              if (r) {
-                console.log(`[Greeting][TTS] OK — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
-                send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
-              } else {
-                console.warn(`[Greeting][TTS] skipped — TTS returned null for: "${clean}"`);
-              }
+              if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
             });
           }
         }
@@ -88,19 +117,12 @@ Greet the user warmly and open the session. Max 2 sentences.`,
       llmRes.data.on('end', async () => {
         console.log(`[Greeting] ── full text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
         const remaining = sentenceBuffer.trim();
-        console.log(`[Greeting][TTS] remaining after stream: "${remaining}"`);
         if (remaining) {
           const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
             .catch(e => { console.error(`[Greeting][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
           ttsChain = ttsChain.then(async () => {
-            console.log(`[Greeting][TTS] awaiting TTS for remaining: "${remaining}"`);
             const r = await p;
-            if (r) {
-              console.log(`[Greeting][TTS] OK remaining — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
-              send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
-            } else {
-              console.warn(`[Greeting][TTS] skipped remaining — TTS returned null`);
-            }
+            if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
           });
         }
         await ttsChain;
@@ -115,24 +137,40 @@ Greet the user warmly and open the session. Max 2 sentences.`,
 
   // GET /session/:id/greeting/stream → SSE
   @Get(':id/greeting/stream')
-  async greetingStream(@Param('id') _sessionId: string, @Req() _req, @Res() res: Response) {
+  async greetingStream(@Param('id') sessionId: string, @Req() req, @Res() res: Response) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      // TODO: re-enable memory service after testing
-      // const urgentContext = await this.sessionService.getUrgentContext(req.user.id);
-      const urgentContext = null;
+      const [user, greetingContext] = await Promise.all([
+        this.userService.findById(req.user.id).catch(() => null),
+        this.sessionService.getGreetingContext(req.user.id),
+      ]);
+
+      const formattedDatetime = formatDatetimeInTimezone(user?.timezone ?? 'UTC');
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
+
+      const systemPrompt = [
+        `You are a friendly and encouraging ${user?.targetLanguage ?? 'English'} speaking coach.`,
+        `Today is ${formattedDatetime}.`,
+        user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
+        greetingContext
+          ? `Important user context — use this to personalise your greeting:\n${greetingContext}`
+          : '',
+        '',
+        'Greet the user warmly by name if you know it.',
+        'If the context mentions an upcoming or recent event relevant to today\'s date (e.g. an exam, appointment, or goal), naturally ask about it.',
+        'Keep your greeting to 2 sentences maximum.',
+      ].filter(Boolean).join('\n');
+
+      console.log(`[Greeting][session=${sessionId}] system prompt:\n${systemPrompt}`);
 
       const llmRes = await this.http.axiosRef.post(
         `${this.cfg.get('LLM_GATEWAY_URL')}/stream`,
         {
-          system: `You are a friendly English speaking coach.
-${urgentContext ? `Important — user context: ${urgentContext}` : ''}
-Greet the user warmly and open the session. Max 2 sentences.`,
+          system: systemPrompt,
           messages: [{ role: 'user', content: 'start' }],
         },
         { responseType: 'stream' },
@@ -154,39 +192,24 @@ Greet the user warmly and open the session. Max 2 sentences.`,
           sentenceBuffer = sentenceBuffer.slice(sentence.length);
           const clean = sentence.trim();
           if (clean) {
-            console.log(`[Greeting][TTS] sentence matched: "${clean}"`);
             const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: clean })
               .catch(e => { console.error(`[Greeting][TTS] FAILED: "${clean}" —`, e?.message); return null; });
             ttsChain = ttsChain.then(async () => {
-              console.log(`[Greeting][TTS] awaiting TTS for: "${clean}"`);
               const r = await p;
-              if (r) {
-                console.log(`[Greeting][TTS] OK — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
-                send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
-              } else {
-                console.warn(`[Greeting][TTS] skipped — TTS returned null for: "${clean}"`);
-              }
+              if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
             });
           }
         }
       });
 
       llmRes.data.on('end', async () => {
-        console.log(`[Greeting] ── full text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
         const remaining = sentenceBuffer.trim();
-        console.log(`[Greeting][TTS] remaining after stream: "${remaining}"`);
         if (remaining) {
           const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
             .catch(e => { console.error(`[Greeting][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
           ttsChain = ttsChain.then(async () => {
-            console.log(`[Greeting][TTS] awaiting TTS for remaining: "${remaining}"`);
             const r = await p;
-            if (r) {
-              console.log(`[Greeting][TTS] OK remaining — b64 len: ${r.data.audio_b64?.length ?? 0} → sending audio event`);
-              send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
-            } else {
-              console.warn(`[Greeting][TTS] skipped remaining — TTS returned null`);
-            }
+            if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: remaining });
           });
         }
         await ttsChain;
