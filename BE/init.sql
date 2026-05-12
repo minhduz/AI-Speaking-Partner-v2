@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE SCHEMA IF NOT EXISTS speaking_app;
 CREATE SCHEMA IF NOT EXISTS billing;
 CREATE SCHEMA IF NOT EXISTS memory;
+CREATE SCHEMA IF NOT EXISTS dictionary;
 
 -- ─── SERVICE USERS ───────────────────────────────────────────
 DO $$ BEGIN CREATE USER orchestrator_user WITH PASSWORD 'orchestrator_pass';
@@ -14,10 +15,13 @@ DO $$ BEGIN CREATE USER billing_user WITH PASSWORD 'billing_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE USER memory_user WITH PASSWORD 'memory_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN CREATE USER dictionary_user WITH PASSWORD 'dictionary_pass';
+  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 GRANT ALL ON SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON SCHEMA billing      TO billing_user;
 GRANT ALL ON SCHEMA memory       TO memory_user;
+GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
 
 -- ─── SPEAKING_APP SCHEMA ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS speaking_app.users (
@@ -158,10 +162,33 @@ CREATE INDEX IF NOT EXISTS idx_memory_score     ON memory.memory_facts(score DES
 CREATE INDEX IF NOT EXISTS idx_memory_embedding ON memory.memory_facts
   USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
+-- ─── DICTIONARY SCHEMA ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS dictionary.cache (
+  id                UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  word              VARCHAR   NOT NULL,
+  language          VARCHAR   NOT NULL DEFAULT 'en',
+  data              JSONB     NOT NULL,
+  created_at        TIMESTAMP DEFAULT NOW(),
+  UNIQUE(word, language)
+);
+
+CREATE TABLE IF NOT EXISTS dictionary.user_history (
+  id                UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id           UUID      NOT NULL REFERENCES speaking_app.users(id) ON DELETE CASCADE,
+  word_id           UUID      NOT NULL REFERENCES dictionary.cache(id) ON DELETE CASCADE,
+  context_sentence  TEXT,
+  created_at        TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_dictionary_cache_word ON dictionary.cache(word);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_user ON dictionary.user_history(user_id);
+
 -- Grant table-level permissions
 GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL TABLES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL TABLES IN SCHEMA memory       TO memory_user;
+GRANT ALL ON ALL TABLES IN SCHEMA dictionary   TO dictionary_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA memory       TO memory_user;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA dictionary   TO dictionary_user;

@@ -69,7 +69,7 @@ export default function ChatPage() {
           {!hasSession && greetingSentences.length > 0 && (
             <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-3">
               {greetingSentences.map((sentence, i) => (
-                <p key={i} className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl animate-reveal">
+                <p key={i} className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
                   {sentence}
                 </p>
               ))}

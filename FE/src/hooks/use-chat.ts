@@ -5,6 +5,20 @@ import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage } from '@/types/session.types';
 
+// Module-level singleton so the AudioContext is created exactly once and is
+// available synchronously (before any React effect runs) on the client side.
+// Returns null during SSR where `window` does not exist.
+let _sharedAudioCtx: AudioContext | null = null;
+function getSharedAudioCtx(): AudioContext | null {
+  if (typeof window === 'undefined') return null;
+  if (!_sharedAudioCtx) {
+    _sharedAudioCtx = new AudioContext();
+    console.log(`[Audio] shared AudioContext created (singleton) — state: ${_sharedAudioCtx.state}`);
+  }
+  return _sharedAudioCtx;
+}
+
+
 export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processing' | 'error';
 
 export interface UseChatReturn {
@@ -19,16 +33,34 @@ export interface UseChatReturn {
   startNewSession: () => void;
 }
 
+function revealWordsOverTime(
+  text: string,
+  durationMs: number,
+  onWordReveal: (partial: string) => void,
+): void {
+  const words = text.split(/\s+/).filter(Boolean);
+  const intervalMs = durationMs / words.length;
+  let built = '';
+  words.forEach((word, i) => {
+    setTimeout(() => {
+      built += (built ? ' ' : '') + word;
+      onWordReveal(built);
+    }, i * intervalMs);
+  });
+}
+
 async function playAudioWithSentence(
   ctx: AudioContext,
   b64: string,
   text: string | undefined,
   onText: ((t: string) => void) | undefined,
+  onWordReveal?: (partial: string) => void,
 ): Promise<void> {
   console.log(`[Audio] playAudioWithSentence — ctx state: ${ctx.state}, b64 len: ${b64?.length ?? 0}, text: "${text?.slice(0, 40) ?? 'none'}"`);
   if (ctx.state === 'suspended') {
     console.warn('[Audio] shared ctx still suspended — skipping audio, showing text');
     if (text && onText) onText(text);
+    else if (text && onWordReveal) revealWordsOverTime(text, text.split(/\s+/).length * 150, onWordReveal);
     return;
   }
   const binary = atob(b64);
@@ -42,6 +74,9 @@ async function playAudioWithSentence(
   source.connect(ctx.destination);
   source.start(0);
   console.log('[Audio] source.start(0) called — playing');
+  if (text && onWordReveal) {
+    revealWordsOverTime(text, audioBuffer.duration * 1000, onWordReveal);
+  }
   return new Promise((resolve) => {
     source.onended = () => {
       console.log('[Audio] source.onended — playback finished');
@@ -68,10 +103,25 @@ export function useChat(): UseChatReturn {
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
-  const sharedPlaybackCtxRef = useRef<AudioContext | null>(null);
+  // Point to the module-level singleton — always exists on the client before any effect.
+  const sharedPlaybackCtxRef = useRef<AudioContext | null>(getSharedAudioCtx());
 
   const processAudioQueue = useCallback(async () => {
-    const ctx = sharedPlaybackCtxRef.current;
+    // During SSR, useRef(getSharedAudioCtx()) receives null because window doesn't exist.
+    // React doesn't re-run the initializer on hydration, so the ref stays null.
+    // Fix: always resolve the context directly from the singleton as a fallback.
+    let ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+    if (ctx && !sharedPlaybackCtxRef.current) {
+      sharedPlaybackCtxRef.current = ctx; // repair the ref for subsequent calls
+    }
+    if (!ctx) {
+      // Very early call (SSR stub) — wait up to 2s for the client to mount.
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        ctx = getSharedAudioCtx();
+        if (ctx) { sharedPlaybackCtxRef.current = ctx; break; }
+      }
+    }
     console.log(`[Audio] processAudioQueue called — isPlaying: ${isPlayingRef.current}, queue length: ${audioQueueRef.current.length}, ctx state: ${ctx?.state ?? 'none'}`);
     if (isPlayingRef.current) {
       console.log('[Audio] already playing — skipping');
@@ -85,10 +135,24 @@ export function useChat(): UseChatReturn {
     while (audioQueueRef.current.length > 0) {
       const item = audioQueueRef.current.shift()!;
       console.log(`[Audio] dequeued item — queue remaining: ${audioQueueRef.current.length}`);
-      const onText = item.text
-        ? item.isGreeting
-          ? (t: string) => setGreetingSentences((prev) => [...prev, t])
-          : (t: string) => setMessages((prev) => {
+
+      let onText: ((t: string) => void) | undefined;
+      let onWordReveal: ((partial: string) => void) | undefined;
+
+      if (item.text) {
+        if (item.isGreeting) {
+          // Add an empty slot for this sentence; onWordReveal fills it word by word
+          setGreetingSentences((prev) => [...prev, '']);
+          onWordReveal = (partial: string) =>
+            setGreetingSentences((prev) => {
+              if (prev.length === 0) return [partial];
+              const next = [...prev];
+              next[next.length - 1] = partial;
+              return next;
+            });
+        } else {
+          onText = (t: string) =>
+            setMessages((prev) => {
               const msgs = [...prev];
               const idx = msgs.findLastIndex((m) => m.role === 'ai');
               if (idx >= 0) {
@@ -97,13 +161,18 @@ export function useChat(): UseChatReturn {
                 msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
               }
               return msgs;
-            })
-        : undefined;
+            });
+        }
+      }
+
       try {
-        await playAudioWithSentence(ctx, item.b64, item.text, onText);
+        await playAudioWithSentence(ctx, item.b64, item.text, onText, onWordReveal);
       } catch (err) {
         console.error('[Audio] playback error:', err);
-        if (item.text && onText) onText(item.text);
+        if (item.text) {
+          if (onText) onText(item.text);
+          else if (onWordReveal) revealWordsOverTime(item.text, item.text.split(/\s+/).length * 150, onWordReveal);
+        }
       }
     }
     console.log('[Audio] queue empty — isPlaying reset to false');
@@ -114,14 +183,23 @@ export function useChat(): UseChatReturn {
   const runGreeting = useCallback(async () => {
     setStatus('greeting');
     setGreetingSentences([]);
+    let fullText = '';
+    let hadAudioText = false;
     try {
       const stream = await sessionService.streamGreetingAnon();
       for await (const event of stream) {
-        if (event.type === 'audio') {
+        if (event.type === 'text') {
+          fullText += event.chunk;
+        } else if (event.type === 'audio') {
           console.log(`[Audio][greeting] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
+          if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
           processAudioQueue();
         } else if (event.type === 'done') {
+          // If TTS failed and no audio events carried text, fall back to the full LLM text
+          if (!hadAudioText && fullText.trim()) {
+            setGreetingSentences([fullText.trim()]);
+          }
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -152,12 +230,14 @@ export function useChat(): UseChatReturn {
     initSession();
   }, [authLoading, isAuthenticated, initSession]);
 
-  // Create one shared AudioContext on mount; resume it on every user gesture so it's
-  // running by the time any audio plays (Chrome blocks autoplay without a user gesture).
+  // Resume the shared AudioContext on every user gesture (Chrome blocks autoplay without one).
+  // Also explicitly assign the ref here because the useRef initializer runs during SSR
+  // (where window is undefined → null) and React doesn't re-run it on client hydration.
   useEffect(() => {
-    const ctx = new AudioContext();
-    sharedPlaybackCtxRef.current = ctx;
-    console.log(`[Audio] shared AudioContext created — state: ${ctx.state}`);
+    const ctx = getSharedAudioCtx(); // always returns the real context on the client
+    if (!ctx) return;
+    sharedPlaybackCtxRef.current = ctx; // repair ref that was null after SSR hydration
+    console.log(`[Audio] shared AudioContext on mount — state: ${ctx.state}`);
 
     const resume = () => {
       if (ctx.state === 'suspended') {
@@ -172,6 +252,7 @@ export function useChat(): UseChatReturn {
       window.removeEventListener('click', resume);
       window.removeEventListener('keydown', resume);
       ctx.close();
+      _sharedAudioCtx = null; // reset singleton so next mount gets a fresh context
       sharedPlaybackCtxRef.current = null;
     };
   }, []);
@@ -245,6 +326,8 @@ export function useChat(): UseChatReturn {
 
     try {
       const stream = await sessionService.streamTurn(sessionId, audioBlob);
+      let aiFullText = '';
+      let hadAudioText = false;
 
       for await (const event of stream) {
         if (event.type === 'transcript') {
@@ -271,11 +354,23 @@ export function useChat(): UseChatReturn {
             }
             return newMessages;
           });
+        } else if (event.type === 'text') {
+          aiFullText += event.chunk;
         } else if (event.type === 'audio') {
           console.log(`[Audio][turn] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
+          if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
         } else if (event.type === 'done') {
+          // If TTS failed and audio events never carried text, fall back to the full LLM text
+          if (!hadAudioText && aiFullText.trim()) {
+            setMessages((prev) => {
+              const msgs = [...prev];
+              const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+              if (idx >= 0) msgs[idx] = { ...msgs[idx], pending: false, text: aiFullText.trim() };
+              return msgs;
+            });
+          }
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -321,6 +416,12 @@ export function useChat(): UseChatReturn {
   }, [status, startRecording, stopRecording, processTurn]);
 
   const startNewSession = useCallback(() => {
+    // The button click is a user gesture — use it to resume the AudioContext so the
+    // greeting audio plays immediately without waiting for a subsequent interaction.
+    const ctx = sharedPlaybackCtxRef.current;
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
     initializedRef.current = false;
     initSession().then(() => { initializedRef.current = true; });
   }, [initSession]);
