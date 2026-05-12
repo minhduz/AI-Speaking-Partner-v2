@@ -1,5 +1,5 @@
 import { getAccessToken } from '@/lib/http-client';
-import type { GreetingEvent, SessionSummary } from '@/types/session.types';
+import type { GreetingEvent, SessionSummary, TurnHistoryPage } from '@/types/session.types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
@@ -49,6 +49,8 @@ export type TurnEvent =
   | { type: 'pronunciation'; data: { score?: number; [key: string]: unknown } }
   | { type: 'text'; chunk: string }
   | { type: 'audio'; audio_b64: string; text?: string }
+  | { type: 'title'; text: string }
+  | { type: 'quota_warning'; percent_used: number; upgrade_url: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string };
 
@@ -110,13 +112,13 @@ export const sessionService = {
     log(`POST /turn/${sessionId}/stream`, { blobSize: audioBlob.size, type: audioBlob.type });
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.webm');
-    
+
     const res = await fetch(`${API_BASE}/turn/${sessionId}/stream`, {
       method: 'POST',
       headers: authHeaders(),
       body: formData,
     });
-    
+
     if (!res.ok) {
       const body = await res.text().catch(() => res.statusText);
       log(`POST /turn/${sessionId}/stream → ERROR`, { status: res.status, body });
@@ -159,6 +161,15 @@ export const sessionService = {
       audio_b64: data.audio_b64 ? '[base64]' : null,
     });
     return data;
+  },
+
+  getTurns: async (sessionId: string, page = 1, limit = 20): Promise<TurnHistoryPage> => {
+    log(`GET /turn/by-session/${sessionId} page=${page}`);
+    const res = await fetch(`${API_BASE}/turn/by-session/${sessionId}?page=${page}&limit=${limit}`, {
+      headers: authHeaders(),
+    });
+    if (!res.ok) throw new Error('Failed to fetch turns');
+    return res.json();
   },
 
   end: async (sessionId: string): Promise<void> => {

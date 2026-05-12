@@ -6,25 +6,52 @@ from db import settings
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
+VALID_LAYERS = {"short_term", "long_term", "urgent"}
+
 async def embed(text: str) -> list[float]:
     res = await _openai.embeddings.create(model=settings.embedding_model, input=text)
     return res.data[0].embedding
 
-async def fan_out_retrieve(user_id: str, session_id: str, query: str) -> list[dict]:
-    # 1. Embed ONCE — reused across all three layers
-    query_vector = await embed(query)
+async def fan_out_retrieve(
+    user_id: str,
+    session_id: str,
+    query: str,
+    layers: list[str] | None = None,
+) -> list[dict]:
+    # Determine which layers to query — default to all three
+    active = set(layers) & VALID_LAYERS if layers else VALID_LAYERS
 
-    # 2. Fire all three SIMULTANEOUSLY
-    short_results, long_results, urgent_results = await asyncio.gather(
-        _short_term_as_chunks(session_id),
-        LongTermMemory.search(user_id, query_vector, settings.retrieval_limit),
-        LongTermMemory.search_urgent(user_id, settings.urgent_limit),
+    if not active:
+        return []
+
+    # Embed only when at least one vector-based layer is requested
+    needs_vector = "long_term" in active or "urgent" in active
+    query_vector = await embed(query) if needs_vector else []
+
+    # Fire selected layers simultaneously
+    coros = []
+    labels = []
+    if "short_term" in active:
+        coros.append(_short_term_as_chunks(session_id))
+        labels.append("short_term")
+    if "long_term" in active:
+        coros.append(LongTermMemory.search(user_id, query_vector, settings.retrieval_limit))
+        labels.append("long_term")
+    if "urgent" in active:
+        coros.append(LongTermMemory.search_urgent(user_id, settings.urgent_limit))
+        labels.append("urgent")
+
+    results = await asyncio.gather(*coros)
+    layer_results = dict(zip(labels, results))
+
+    # Merge — urgent first, then short-term recency, then long-term semantic
+    all_chunks = (
+        layer_results.get("urgent", [])
+        + layer_results.get("short_term", [])
+        + layer_results.get("long_term", [])
     )
 
-    # 3. Merge — urgent first, then short-term recency, then long-term semantic
-    all_chunks = urgent_results + short_results + long_results
-
-    # 4. Deduplicate by text fingerprint
+    # Deduplicate by text fingerprint
     seen, deduped = set(), []
     for chunk in all_chunks:
         key = chunk["text"][:80]
@@ -32,7 +59,6 @@ async def fan_out_retrieve(user_id: str, session_id: str, query: str) -> list[di
             seen.add(key)
             deduped.append(chunk)
 
-    # 5. Sort by score descending
     return sorted(deduped, key=lambda x: x["score"], reverse=True)
 
 async def _short_term_as_chunks(session_id: str) -> list[dict]:

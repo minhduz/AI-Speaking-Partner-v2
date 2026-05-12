@@ -11,6 +11,23 @@ import { ConfigService } from '@nestjs/config';
 
 const SENTENCE_BOUNDARY = /^([\s\S]*?[.!?]+\s+)/;
 
+function getCurrentDatetime(timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date());
+  } catch {
+    return new Date().toUTCString();
+  }
+}
+
 @Controller('turn')
 @UseGuards(JwtAuthGuard)
 export class TurnController {
@@ -70,7 +87,13 @@ export class TurnController {
         if (quota.reset_date) res.setHeader('X-RateLimit-Reset-Tokens', quota.reset_date);
       }
 
-      const turnIndex = await this.turnService.getTurnIndex(sessionId);
+      // Fetch user entity and turn index in parallel
+      const [user, turnIndex] = await Promise.all([
+        this.turnService.getUserEntity(req.user.id),
+        this.turnService.getTurnIndex(sessionId),
+      ]);
+
+      const currentDatetime = getCurrentDatetime(user?.timezone ?? 'UTC');
       const speechUrl = this.cfg.get<string>('SPEECH_SERVICE_URL');
       const memoryUrl = this.cfg.get<string>('MEMORY_SERVICE_URL');
       const llmUrl    = this.cfg.get<string>('LLM_GATEWAY_URL');
@@ -82,16 +105,30 @@ export class TurnController {
       send({ type: 'transcript', text: transcript });
       send({ type: 'pronunciation', data: pronunciation });
 
-      // Build system prompt (with memory context when relevant)
-      let systemPrompt = 'You are a friendly English speaking coach.';
-      try {
-        const promptRes = await this.http.axiosRef.post(
-          `${memoryUrl}/build-prompt/${req.user.id}`,
-          { query: transcript, session_id: sessionId },
-        );
-        if (promptRes.data?.system_prompt) systemPrompt = promptRes.data.system_prompt;
-      } catch {
-        // Memory service unavailable — use default prompt
+      // Let the LLM decide which memory layers to query
+      const layers = await this.turnService.selectMemoryLayers(transcript, llmUrl, currentDatetime);
+      console.log(`[Turn][stream] selected memory layers: ${JSON.stringify(layers)}`);
+
+      // Build system prompt using selected layers
+      let systemPrompt = `You are a friendly ${user?.targetLanguage ?? 'English'} speaking coach. Today is ${currentDatetime}.`;
+      if (layers.length > 0) {
+        try {
+          const promptRes = await this.http.axiosRef.post(
+            `${memoryUrl}/build-prompt/${req.user.id}`,
+            {
+              query: transcript,
+              session_id: sessionId,
+              user_level: user?.level ?? 'beginner',
+              target_language: user?.targetLanguage ?? 'english',
+              user_name: user?.name ?? '',
+              current_datetime: currentDatetime,
+              layers,
+            },
+          );
+          if (promptRes.data?.system_prompt) systemPrompt = promptRes.data.system_prompt;
+        } catch {
+          // Memory service unavailable — keep default prompt with datetime
+        }
       }
 
       const llmStream = await this.http.axiosRef.post(
@@ -123,13 +160,9 @@ export class TurnController {
             const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: cleanSentence })
               .catch(e => { console.error(`[Turn][TTS] FAILED: "${cleanSentence}" —`, e?.message); return null; });
             ttsChain = ttsChain.then(async () => {
-              console.log(`[Turn][TTS] awaiting TTS for: "${cleanSentence}"`);
               const ttsRes = await ttsPromise;
               if (ttsRes) {
-                console.log(`[Turn][TTS] OK — b64 len: ${ttsRes.data.audio_b64?.length ?? 0} → sending audio event`);
                 send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: cleanSentence });
-              } else {
-                console.warn(`[Turn][TTS] skipped — TTS returned null for: "${cleanSentence}"`);
               }
             });
           }
@@ -142,18 +175,13 @@ export class TurnController {
       llmStream.data.on('end', async () => {
         console.log(`[Turn] ── full LLM text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
         const remaining = sentenceBuffer.trim();
-        console.log(`[Turn][TTS] remaining after stream: "${remaining}"`);
         if (remaining.length > 0) {
           const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
             .catch(e => { console.error(`[Turn][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
           ttsChain = ttsChain.then(async () => {
-            console.log(`[Turn][TTS] awaiting TTS for remaining: "${remaining}"`);
             const ttsRes = await ttsPromise;
             if (ttsRes) {
-              console.log(`[Turn][TTS] OK remaining — b64 len: ${ttsRes.data.audio_b64?.length ?? 0} → sending audio event`);
               send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
-            } else {
-              console.warn('[Turn][TTS] skipped remaining — TTS returned null');
             }
           });
         }
@@ -165,13 +193,13 @@ export class TurnController {
           await this.turnService.persistStreamedTurn(sessionId, req.user.id, turnIndex, {
             transcript, confidence, pronunciation, response_text: fullText, tokens_used: tokensUsed,
           });
-        } catch (e) { console.error('[Turn Persist Error]', e?.message); }
+        } catch (e: any) { console.error('[Turn Persist Error]', e?.message); }
 
         send({ type: 'done', tokens_used: tokensUsed });
 
         // Warn when subscription usage hits 80%+ after this turn
         if (quota.tokens_limit !== -1) {
-          const usedAfter   = quota.tokens_used + tokensUsed;
+          const usedAfter    = quota.tokens_used + tokensUsed;
           const percentAfter = Math.min(100, Math.round((usedAfter / quota.tokens_limit) * 100));
           if (percentAfter >= 80) {
             send({ type: 'quota_warning', percent_used: percentAfter, upgrade_url: '/billing' });
@@ -180,7 +208,7 @@ export class TurnController {
 
         res.end();
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('[Turn][stream] FAILED:', err?.message ?? err);
       if (err?.response) {
         console.error('[Turn][stream] upstream status:', err.response.status);

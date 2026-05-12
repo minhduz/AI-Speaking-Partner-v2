@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from db import redis_client, settings
 
 class ShortTermMemory:
@@ -10,8 +11,9 @@ class ShortTermMemory:
     @staticmethod
     async def append(session_id: str, user_message: str, ai_message: str):
         key = ShortTermMemory._key(session_id)
+        now = datetime.now(timezone.utc).isoformat()
         for role, content in [("user", user_message), ("assistant", ai_message)]:
-            await redis_client.client.rpush(key, json.dumps({"role": role, "content": content}))
+            await redis_client.client.rpush(key, json.dumps({"role": role, "content": content, "timestamp": now}))
         await redis_client.client.expire(key, settings.short_term_ttl_seconds)
 
     @staticmethod
