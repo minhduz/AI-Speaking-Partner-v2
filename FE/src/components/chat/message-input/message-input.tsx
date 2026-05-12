@@ -2,9 +2,12 @@
 
 import { useState } from 'react';
 import type { MessageInputProps } from './message-input.types';
+import { DictionaryPopup } from '../dictionary-popup/dictionary-popup';
+import { useDictionary } from '@/hooks/use-dictionary';
 
 export function MessageInput({ onSendText, onToggleMic, isRecording, disabled }: MessageInputProps) {
   const [text, setText] = useState('');
+  const dictionary = useDictionary();
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && text.trim()) {
@@ -36,7 +39,15 @@ export function MessageInput({ onSendText, onToggleMic, isRecording, disabled }:
         {isRecording ? <StopIcon /> : <MicIcon />}
       </button>
 
-      <div className="flex items-center w-full max-w-2xl rounded-2xl border border-[#E5E0D8] bg-white px-4 py-3 gap-3">
+      <div className="flex items-center w-full max-w-2xl rounded-2xl border border-[#E5E0D8] bg-white px-4 py-3 gap-3 relative">
+        <DictionaryPopup 
+          isOpen={dictionary.isOpen} 
+          onClose={dictionary.close} 
+          isLoading={dictionary.isLoading} 
+          data={dictionary.data}
+          error={dictionary.error}
+        />
+
         <input
           type="text"
           placeholder="Type"
@@ -56,6 +67,7 @@ export function MessageInput({ onSendText, onToggleMic, isRecording, disabled }:
           </button>
         )}
         <button
+          onClick={() => dictionary.translate(text)}
           className="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
           aria-label="Translate"
         >

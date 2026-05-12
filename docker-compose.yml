@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: speaking_app
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./BE/init.sql:/docker-entrypoint-initdb.d/init.sql
@@ -81,6 +81,21 @@ services:
     ports:
       - "8002:8002"
     env_file: ./BE/apps/llm-gateway/.env
+    networks:
+      - speaking_net
+
+  dictionary-service:
+    build:
+      context: ./BE/apps/dictionary-service
+      dockerfile: Dockerfile
+    container_name: speaking_dictionary
+    restart: unless-stopped
+    ports:
+      - "3005:3005"
+    env_file: ./BE/apps/dictionary-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - speaking_net
 

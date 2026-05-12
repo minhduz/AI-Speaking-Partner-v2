@@ -20,16 +20,15 @@ body {
 
 @keyframes reveal {
   from {
-    width: 0;
+    opacity: 0;
+    transform: translateY(6px);
   }
   to {
-    width: 100%;
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
 @utility animate-reveal {
-  overflow: hidden;
-  white-space: nowrap;
-  display: inline-block;
-  animation: reveal 2.5s steps(40, end) forwards;
+  animation: reveal 0.4s ease-out forwards;
 }
