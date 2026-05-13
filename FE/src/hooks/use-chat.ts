@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
-import type { ChatMessage, QuotaWarning, TurnHistoryItem } from '@/types/session.types';
+import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
@@ -28,15 +28,14 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
-  quotaWarning: QuotaWarning | null;
   currentSessionId: string | null;
   sessionTitle: string | null;
   reviewMode: boolean;
   reviewHasMore: boolean;
   reviewLoading: boolean;
-  toggleMic: () => void;
+  startMic: () => void;
+  stopMic: () => void;
   startNewSession: () => void;
-  dismissQuotaWarning: () => void;
   enterReview: (sessionId: string) => Promise<void>;
   exitReview: () => void;
   loadMoreReview: () => Promise<void>;
@@ -103,7 +102,6 @@ export function useChat(): UseChatReturn {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
-  const [quotaWarning, setQuotaWarning] = useState<QuotaWarning | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewHasMore, setReviewHasMore] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
@@ -120,6 +118,7 @@ export function useChat(): UseChatReturn {
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
+  const isStoppingRef = useRef(false);
   // Point to the module-level singleton — always exists on the client before any effect.
   const sharedPlaybackCtxRef = useRef<AudioContext | null>(getSharedAudioCtx());
 
@@ -149,51 +148,53 @@ export function useChat(): UseChatReturn {
       return;
     }
     isPlayingRef.current = true;
-    while (audioQueueRef.current.length > 0) {
-      const item = audioQueueRef.current.shift()!;
-      console.log(`[Audio] dequeued item — queue remaining: ${audioQueueRef.current.length}`);
+    try {
+      while (audioQueueRef.current.length > 0) {
+        const item = audioQueueRef.current.shift()!;
+        console.log(`[Audio] dequeued item — queue remaining: ${audioQueueRef.current.length}`);
 
-      let onText: ((t: string) => void) | undefined;
-      let onWordReveal: ((partial: string) => void) | undefined;
+        let onText: ((t: string) => void) | undefined;
+        let onWordReveal: ((partial: string) => void) | undefined;
 
-      if (item.text) {
-        if (item.isGreeting) {
-          // Add an empty slot for this sentence; onWordReveal fills it word by word
-          setGreetingSentences((prev) => [...prev, '']);
-          onWordReveal = (partial: string) =>
-            setGreetingSentences((prev) => {
-              if (prev.length === 0) return [partial];
-              const next = [...prev];
-              next[next.length - 1] = partial;
-              return next;
-            });
-        } else {
-          onText = (t: string) =>
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai');
-              if (idx >= 0) {
-                const existing = msgs[idx];
-                const sentences = [...(existing.sentences ?? []), t];
-                msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
-              }
-              return msgs;
-            });
-        }
-      }
-
-      try {
-        await playAudioWithSentence(ctx, item.b64, item.text, onText, onWordReveal);
-      } catch (err) {
-        console.error('[Audio] playback error:', err);
         if (item.text) {
-          if (onText) onText(item.text);
-          else if (onWordReveal) revealWordsOverTime(item.text, item.text.split(/\s+/).length * 150, onWordReveal);
+          if (item.isGreeting) {
+            setGreetingSentences((prev) => [...prev, '']);
+            onWordReveal = (partial: string) =>
+              setGreetingSentences((prev) => {
+                if (prev.length === 0) return [partial];
+                const next = [...prev];
+                next[next.length - 1] = partial;
+                return next;
+              });
+          } else {
+            onText = (t: string) =>
+              setMessages((prev) => {
+                const msgs = [...prev];
+                const idx = msgs.findLastIndex((m) => m.role === 'ai');
+                if (idx >= 0) {
+                  const existing = msgs[idx];
+                  const sentences = [...(existing.sentences ?? []), t];
+                  msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
+                }
+                return msgs;
+              });
+          }
+        }
+
+        try {
+          await playAudioWithSentence(ctx, item.b64, item.text, onText, onWordReveal);
+        } catch (err) {
+          console.error('[Audio] playback error:', err);
+          if (item.text) {
+            if (onText) onText(item.text);
+            else if (onWordReveal) revealWordsOverTime(item.text, item.text.split(/\s+/).length * 150, onWordReveal);
+          }
         }
       }
+    } finally {
+      console.log('[Audio] queue drained — isPlaying reset to false');
+      isPlayingRef.current = false;
     }
-    console.log('[Audio] queue empty — isPlaying reset to false');
-    isPlayingRef.current = false;
   }, [setMessages, setGreetingSentences]);
 
   // Greeting does not require a session — it's a pre-session welcome stream
@@ -274,8 +275,10 @@ export function useChat(): UseChatReturn {
         clearTimeout(inactivityTimerRef.current);
         inactivityTimerRef.current = null;
       }
-      ctx.close();
-      _sharedAudioCtx = null; // reset singleton so next mount gets a fresh context
+      if (ctx.state !== 'closed') {
+        ctx.close();
+      }
+      _sharedAudioCtx = null;
       sharedPlaybackCtxRef.current = null;
     };
   }, []);
@@ -334,7 +337,8 @@ export function useChat(): UseChatReturn {
       recorder.onstop = () => resolve(new Blob(chunksRef.current, { type: 'audio/webm' }));
       recorder.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
-      audioCtxRef.current?.close();
+      const recCtx = audioCtxRef.current;
+      if (recCtx && recCtx.state !== 'closed') recCtx.close();
       setAnalyser(null);
     });
   }, []);
@@ -393,10 +397,6 @@ export function useChat(): UseChatReturn {
           if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
-        } else if (event.type === 'title') {
-          setSessionTitle(event.text);
-        } else if (event.type === 'quota_warning') {
-          setQuotaWarning({ percent_used: event.percent_used, upgrade_url: event.upgrade_url });
         } else if (event.type === 'done') {
           // If TTS failed and audio events never carried text, fall back to the full LLM text
           if (!hadAudioText && aiFullText.trim()) {
@@ -478,37 +478,43 @@ export function useChat(): UseChatReturn {
     await loadReviewPage(sessionId, reviewPageRef.current + 1, true);
   }, [reviewHasMore, reviewLoading, loadReviewPage]);
 
-  const toggleMic = useCallback(() => {
-    if (status === 'recording') {
-      stopRecording()
-        .then((blob) => {
-          if (!hasSpokenRef.current) {
-            setErrorMessage("You didn't say anything. Please try again.");
-            setStatus('ready');
-            return;
-          }
-          return processTurn(blob);
-        })
-        .catch(console.error);
-    } else if (status === 'ready') {
-      // Create session on first mic click, then start recording
-      const ensureSession = sessionIdRef.current
-        ? Promise.resolve()
-        : sessionService.start().then(({ session_id }) => {
-            sessionIdRef.current = session_id;
-            setCurrentSessionId(session_id);
-          });
-
-      ensureSession
-        .then(() => startRecording())
-        .catch((err) => {
-          console.error('[createSession]', err);
-          setErrorMessage('Failed to start session');
+  const startMic = useCallback(() => {
+    if (status !== 'ready') return;
+    isStoppingRef.current = false;
+    const ensureSession = sessionIdRef.current
+      ? Promise.resolve()
+      : sessionService.start().then(({ session_id }) => {
+          sessionIdRef.current = session_id;
+          setCurrentSessionId(session_id);
         });
-    }
-  }, [status, startRecording, stopRecording, processTurn]);
+    ensureSession
+      .then(() => startRecording())
+      .catch((err) => {
+        console.error('[createSession]', err);
+        setErrorMessage('Failed to start session');
+      });
+  }, [status, startRecording]);
 
-  const dismissQuotaWarning = useCallback(() => setQuotaWarning(null), []);
+  const stopMic = useCallback(() => {
+    if (status !== 'recording') return;
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
+    stopRecording()
+      .then((blob) => {
+        isStoppingRef.current = false;
+        if (!hasSpokenRef.current) {
+          setErrorMessage("You didn't say anything. Please try again.");
+          setStatus('ready');
+          return;
+        }
+        return processTurn(blob);
+      })
+      .catch((err) => {
+        isStoppingRef.current = false;
+        console.error(err);
+      });
+  }, [status, stopRecording, processTurn]);
+
 
   const startNewSession = useCallback(() => {
     // Cancel any pending inactivity consolidation — we're starting fresh
@@ -542,15 +548,14 @@ export function useChat(): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
-    quotaWarning,
     currentSessionId,
     sessionTitle,
     reviewMode,
     reviewHasMore,
     reviewLoading,
-    toggleMic,
+    startMic,
+    stopMic,
     startNewSession,
-    dismissQuotaWarning,
     enterReview,
     exitReview,
     loadMoreReview,

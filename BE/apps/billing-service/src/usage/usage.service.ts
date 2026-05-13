@@ -3,95 +3,48 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Usage } from './usage.entity';
 import { SubscriptionService } from '../subscription/subscription.service';
-import { AddonService } from '../addon/addon.service';
-
-export interface QuotaResult {
-  allowed: boolean;
-  tokens_used: number;
-  tokens_limit: number;      // subscription limit; -1 = unlimited
-  addon_balance: number;     // remaining add-on tokens
-  percent_used: number;      // subscription usage % (capped at 100)
-  reset_date: string;        // ISO date of next monthly reset
-}
 
 @Injectable()
 export class UsageService {
   constructor(
     @InjectRepository(Usage) private readonly repo: Repository<Usage>,
     private readonly subscriptions: SubscriptionService,
-    private readonly addonService: AddonService,
   ) {}
 
-  // Called by orchestrator before every turn
-  async checkQuota(userId: string): Promise<QuotaResult> {
+  // Returns plan limits: free = 10 sessions/day + 30k tokens/session; subscribed = unlimited
+  async getLimits(userId: string): Promise<{ is_unlimited: boolean; daily_session_limit: number; session_token_limit: number }> {
     const sub = await this.subscriptions.getActive(userId);
-    if (!sub) {
-      return { allowed: false, tokens_used: 0, tokens_limit: 0, addon_balance: 0, percent_used: 100, reset_date: '' };
+    if (sub && sub.plan.tokenLimit === -1) {
+      return { is_unlimited: true, daily_session_limit: -1, session_token_limit: -1 };
     }
-
-    const tokenLimit = sub.plan.tokenLimit;
-
-    if (tokenLimit === -1) {
-      return { allowed: true, tokens_used: 0, tokens_limit: -1, addon_balance: 0, percent_used: 0, reset_date: '' };
-    }
-
-    const [usage, addonBalance] = await Promise.all([
-      this._getOrCreate(userId),
-      this.addonService.getBalance(userId),
-    ]);
-
-    const subscriptionAllowed = usage.tokensUsed < tokenLimit;
-    const addonAllowed        = addonBalance > 0;
-    const percentUsed         = Math.min(100, Math.round((usage.tokensUsed / tokenLimit) * 100));
-
-    return {
-      allowed:       subscriptionAllowed || addonAllowed,
-      tokens_used:   usage.tokensUsed,
-      tokens_limit:  tokenLimit,
-      addon_balance: addonBalance,
-      percent_used:  percentUsed,
-      reset_date:    usage.periodEnd.toISOString(),
-    };
+    return { is_unlimited: false, daily_session_limit: 10, session_token_limit: 30000 };
   }
 
-  // Called after every turn to record consumption
+  // Called by turn-agent after every turn — records usage for analytics only
+  // Per-session token enforcement is handled by the orchestrator before forwarding to turn-agent
   async increment(userId: string, tokensUsed: number) {
     const usage = await this._getOrCreate(userId);
-    const newTokensUsed = usage.tokensUsed + tokensUsed;
-    await this.repo.update(usage.id, { tokensUsed: newTokensUsed });
-
-    // Deduct from add-on balance if subscription quota is exceeded
-    const sub = await this.subscriptions.getActive(userId);
-    const limit = sub?.plan?.tokenLimit ?? 0;
-    if (limit !== -1 && newTokensUsed > limit) {
-      const prevExcess = Math.max(0, usage.tokensUsed - limit);
-      const newExcess  = newTokensUsed - limit;
-      const overflow   = newExcess - prevExcess;
-      if (overflow > 0) {
-        await this.addonService.deductTokens(userId, overflow).catch(() => {});
-      }
-    }
+    await this.repo.update(usage.id, { tokensUsed: usage.tokensUsed + tokensUsed });
   }
 
-  // Called by orchestrator on session start
+  // Called by orchestrator on session start — tracks monthly session count for analytics
   async incrementSession(userId: string) {
     const usage = await this._getOrCreate(userId);
     await this.repo.update(usage.id, { sessionsUsed: usage.sessionsUsed + 1 });
   }
 
   async getUsage(userId: string) {
-    const sub   = await this.subscriptions.getActive(userId);
-    const usage = await this._getOrCreate(userId);
-    const tl    = sub?.plan?.tokenLimit ?? 50000;
-    const sl    = sub?.plan?.sessionLimit ?? 10;
+    const [limits, usage] = await Promise.all([
+      this.getLimits(userId),
+      this._getOrCreate(userId),
+    ]);
     return {
-      tokens_used:      usage.tokensUsed,
-      tokens_limit:     tl,
-      tokens_percent:   tl === -1 ? 0 : Math.round((usage.tokensUsed / tl) * 100),
-      sessions_used:    usage.sessionsUsed,
-      sessions_limit:   sl,
-      sessions_percent: sl === -1 ? 0 : Math.round((usage.sessionsUsed / sl) * 100),
-      resets_at:        usage.periodEnd,
+      is_unlimited:        limits.is_unlimited,
+      daily_session_limit: limits.daily_session_limit,
+      session_token_limit: limits.session_token_limit,
+      tokens_used:         usage.tokensUsed,   // cumulative this billing period (analytics)
+      sessions_used:       usage.sessionsUsed, // cumulative this billing period (analytics)
+      resets_at:           usage.periodEnd,
     };
   }
 

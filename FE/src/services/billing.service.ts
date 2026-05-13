@@ -31,12 +31,11 @@ export interface BillingHistoryItem {
 }
 
 export interface Usage {
-  tokens_used: number;
-  tokens_limit: number;
-  tokens_percent: number;
-  sessions_used: number;
-  sessions_limit: number;
-  sessions_percent: number;
+  is_unlimited: boolean;
+  daily_session_limit: number;   // -1 = unlimited
+  session_token_limit: number;   // -1 = unlimited
+  tokens_used: number;           // cumulative this billing period
+  sessions_used: number;         // cumulative this billing period
   resets_at: string;
 }
 

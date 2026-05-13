@@ -4,10 +4,9 @@ import { UsageController } from './usage.controller';
 import { UsageService } from './usage.service';
 import { Usage } from './usage.entity';
 import { SubscriptionModule } from '../subscription/subscription.module';
-import { AddonModule } from '../addon/addon.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Usage]), SubscriptionModule, AddonModule],
+  imports: [TypeOrmModule.forFeature([Usage]), SubscriptionModule],
   controllers: [UsageController],
   providers: [UsageService],
   exports: [UsageService],

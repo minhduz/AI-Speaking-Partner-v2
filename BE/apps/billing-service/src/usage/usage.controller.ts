@@ -11,19 +11,19 @@ class IncrementDto {
 export class UsageController {
   constructor(private usage: UsageService) {}
 
-  // Public — called by orchestrator billing proxy
+  // Public — usage summary for the user dashboard
   @Get('usage/:user_id')
   getUsage(@Param('user_id') userId: string) {
     return this.usage.getUsage(userId);
   }
 
-  // Internal — called by orchestrator turn guard
-  @Get('internal/quota/:user_id')
-  checkQuota(@Param('user_id') userId: string) {
-    return this.usage.checkQuota(userId);
+  // Internal — returns session/token limits based on plan
+  @Get('internal/limits/:user_id')
+  getLimits(@Param('user_id') userId: string) {
+    return this.usage.getLimits(userId);
   }
 
-  // Internal — called by orchestrator after each turn
+  // Internal — called by turn-agent after each turn
   @Post('internal/usage/increment')
   increment(@Body() dto: IncrementDto) {
     return this.usage.increment(dto.user_id, dto.tokens_used);

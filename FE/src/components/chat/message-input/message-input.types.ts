@@ -1,6 +1,7 @@
 export interface MessageInputProps {
   onSendText: (text: string) => void;
-  onToggleMic: () => void;
+  onStartMic: () => void;
+  onStopMic: () => void;
   isRecording: boolean;
   disabled?: boolean;
 }

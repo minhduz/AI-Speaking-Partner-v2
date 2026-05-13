@@ -37,7 +37,7 @@ export class TurnController {
     private readonly cfg: ConfigService,
   ) {}
 
-  // POST /turn/:session_id — full response (non-streaming)
+  // POST /turn/:session_id — full response (non-streaming fallback)
   @Post(':session_id')
   @UseInterceptors(FileInterceptor('audio'))
   async processTurn(
@@ -58,7 +58,7 @@ export class TurnController {
     return this.turnService.processTurn(sessionId, req.user.id, file.buffer, file.mimetype);
   }
 
-  // POST /turn/:session_id/stream — SSE streaming variant
+  // POST /turn/:session_id/stream — SSE streaming via turn-agent
   @Post(':session_id/stream')
   @UseInterceptors(FileInterceptor('audio'))
   async streamTurn(
@@ -79,145 +79,74 @@ export class TurnController {
     }
 
     try {
-      const quota = await this.turnService.checkQuota(req.user.id);
-      if (quota.tokens_limit !== -1) {
-        res.setHeader('X-RateLimit-Limit-Tokens',     quota.tokens_limit);
-        res.setHeader('X-RateLimit-Used-Tokens',      quota.tokens_used);
-        res.setHeader('X-RateLimit-Remaining-Tokens', Math.max(0, quota.tokens_limit - quota.tokens_used));
-        if (quota.reset_date) res.setHeader('X-RateLimit-Reset-Tokens', quota.reset_date);
-      }
-
-      // Fetch user entity and turn index in parallel
-      const [user, turnIndex] = await Promise.all([
+      // Parallel: user entity + turn index + limits + current session tokens
+      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
+        this.http.axiosRef
+          .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
+          .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
+        this.turnService.getSessionTokens(sessionId),
       ]);
 
-      // Prefer the client's reported time (sent as ISO string in header) for accuracy
+      const limits = limitsRes.data;
+
+      // Session token limit check (free users only)
+      if (!limits.is_unlimited && sessionTokens >= limits.session_token_limit) {
+        send({ type: 'error', message: 'SESSION_TOKEN_LIMIT_REACHED', limit: limits.session_token_limit });
+        res.end();
+        return;
+      }
+
+      // Resolve current datetime
       const clientIso = req.headers['x-client-datetime'];
       const currentDatetime = clientIso
         ? (() => {
             try {
               const d = new Date(clientIso);
-              return isNaN(d.getTime()) ? getCurrentDatetime(user?.timezone ?? 'UTC') : getCurrentDatetime(user?.timezone ?? 'UTC', d);
+              return isNaN(d.getTime())
+                ? getCurrentDatetime(user?.timezone ?? 'UTC')
+                : getCurrentDatetime(user?.timezone ?? 'UTC', d);
             } catch { return getCurrentDatetime(user?.timezone ?? 'UTC'); }
           })()
         : getCurrentDatetime(user?.timezone ?? 'UTC');
-      console.log(`[Turn][stream] datetime="${currentDatetime}"`);
-      const speechUrl = this.cfg.get<string>('SPEECH_SERVICE_URL');
-      const memoryUrl = this.cfg.get<string>('MEMORY_SERVICE_URL');
-      const llmUrl    = this.cfg.get<string>('LLM_GATEWAY_URL');
 
+      // Forward audio + context to turn-agent
       const formData = new FormData();
-      formData.append('audio', new Blob([file.buffer as any], { type: file.mimetype || 'audio/webm' }), 'audio.webm');
-      const sttRes = await this.http.axiosRef.post(`${speechUrl}/stt`, formData);
-      const { transcript, confidence, pronunciation } = sttRes.data;
-      send({ type: 'transcript', text: transcript });
-      send({ type: 'pronunciation', data: pronunciation });
-
-      // Let the LLM decide which memory layers to query
-      const layers = await this.turnService.selectMemoryLayers(transcript, llmUrl, currentDatetime);
-      console.log(`[Turn][stream] selected memory layers: ${JSON.stringify(layers)}`);
-
-      // Build system prompt using selected layers
-      let systemPrompt = `You are a friendly ${user?.targetLanguage ?? 'English'} speaking coach. Today is ${currentDatetime}.`;
-      if (layers.length > 0) {
-        try {
-          const promptRes = await this.http.axiosRef.post(
-            `${memoryUrl}/build-prompt/${req.user.id}`,
-            {
-              query: transcript,
-              session_id: sessionId,
-              user_level: user?.level ?? 'beginner',
-              target_language: user?.targetLanguage ?? 'english',
-              user_name: user?.name ?? '',
-              current_datetime: currentDatetime,
-              layers,
-            },
-          );
-          if (promptRes.data?.system_prompt) systemPrompt = promptRes.data.system_prompt;
-        } catch {
-          // Memory service unavailable — keep default prompt with datetime
-        }
-      }
-
-      const llmStream = await this.http.axiosRef.post(
-        `${llmUrl}/stream`,
-        { system: systemPrompt, messages: [{ role: 'user', content: transcript }] },
-        { responseType: 'stream' },
+      formData.append(
+        'audio',
+        new Blob([file.buffer as any], { type: file.mimetype || 'audio/webm' }),
+        'audio.webm',
       );
 
-      let fullText = '';
-      let sentenceBuffer = '';
-      let ttsChain: Promise<void> = Promise.resolve();
+      const upstream = await this.http.axiosRef.post(
+        `${this.cfg.get('TURN_AGENT_URL')}/turn/stream`,
+        formData,
+        {
+          responseType: 'stream',
+          headers: {
+            'X-User-Id':          req.user.id,
+            'X-Session-Id':       sessionId,
+            'X-Turn-Index':       String(turnIndex),
+            'X-User-Name':        user?.name ?? '',
+            'X-User-Level':       user?.level ?? 'beginner',
+            'X-Target-Language':  user?.targetLanguage ?? 'english',
+            'X-User-Timezone':    user?.timezone ?? 'UTC',
+            'X-Current-Datetime': currentDatetime,
+          },
+        },
+      );
 
-      llmStream.data.on('data', (chunk: Buffer) => {
-        const text = chunk.toString();
-        fullText += text;
-        sentenceBuffer += text;
-        console.log(`[Turn] text chunk: ${JSON.stringify(text)}`);
-        send({ type: 'text', chunk: text });
-
-        let match: RegExpExecArray | null;
-        let matched = false;
-        while ((match = SENTENCE_BOUNDARY.exec(sentenceBuffer))) {
-          matched = true;
-          const sentence = match[1];
-          sentenceBuffer = sentenceBuffer.slice(sentence.length);
-          const cleanSentence = sentence.trim();
-          console.log(`[Turn][TTS] sentence matched: "${cleanSentence}"`);
-          if (cleanSentence.length > 0) {
-            const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: cleanSentence })
-              .catch(e => { console.error(`[Turn][TTS] FAILED: "${cleanSentence}" —`, e?.message); return null; });
-            ttsChain = ttsChain.then(async () => {
-              const ttsRes = await ttsPromise;
-              if (ttsRes) {
-                send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: cleanSentence });
-              }
-            });
-          }
-        }
-        if (!matched) {
-          console.log(`[Turn][TTS] no sentence boundary yet — buffer: "${sentenceBuffer.slice(0, 60)}"`);
+      // Pipe turn-agent SSE stream directly to client
+      upstream.data.pipe(res);
+      upstream.data.on('error', (err: Error) => {
+        console.error('[Turn][proxy] upstream stream error:', err.message);
+        if (!res.writableEnded) {
+          send({ type: 'error', message: 'upstream stream failed' });
+          res.end();
         }
       });
 
-      llmStream.data.on('end', async () => {
-        console.log(`[Turn] ── full LLM text ──────────────────────────\n${fullText}\n────────────────────────────────────────────────`);
-        const remaining = sentenceBuffer.trim();
-        if (remaining.length > 0) {
-          const ttsPromise = this.http.axiosRef.post(`${speechUrl}/tts`, { text: remaining })
-            .catch(e => { console.error(`[Turn][TTS] FAILED remaining: "${remaining}" —`, e?.message); return null; });
-          ttsChain = ttsChain.then(async () => {
-            const ttsRes = await ttsPromise;
-            if (ttsRes) {
-              send({ type: 'audio', audio_b64: ttsRes.data.audio_b64, text: remaining });
-            }
-          });
-        }
-
-        await ttsChain;
-
-        const tokensUsed = Math.ceil((transcript.length + fullText.length) / 4);
-        try {
-          await this.turnService.persistStreamedTurn(sessionId, req.user.id, turnIndex, {
-            transcript, confidence, pronunciation, response_text: fullText, tokens_used: tokensUsed,
-          });
-        } catch (e: any) { console.error('[Turn Persist Error]', e?.message); }
-
-        send({ type: 'done', tokens_used: tokensUsed });
-
-        // Warn when subscription usage hits 80%+ after this turn
-        if (quota.tokens_limit !== -1) {
-          const usedAfter    = quota.tokens_used + tokensUsed;
-          const percentAfter = Math.min(100, Math.round((usedAfter / quota.tokens_limit) * 100));
-          if (percentAfter >= 80) {
-            send({ type: 'quota_warning', percent_used: percentAfter, upgrade_url: '/billing' });
-          }
-        }
-
-        res.end();
-      });
     } catch (err: any) {
       console.error('[Turn][stream] FAILED:', err?.message ?? err);
       if (err?.response) {
@@ -227,7 +156,6 @@ export class TurnController {
           : JSON.stringify(err.response.data ?? '');
         console.error('[Turn][stream] upstream body:', body.slice(0, 500));
       }
-      if (err?.stack) console.error('[Turn][stream] stack:', err.stack);
       send({ type: 'error', message: err?.message ?? 'stream failed' });
       res.end();
     }

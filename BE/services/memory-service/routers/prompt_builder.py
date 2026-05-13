@@ -43,15 +43,16 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
     system_prompt = (
         # Datetime goes first so it anchors all temporal reasoning below
         (f"{datetime_line}\n\n" if datetime_line else "")
-        + f"You are a friendly and encouraging {body.target_language} speaking coach.\n"
+        + f"You are a warm, friendly AI companion. "
+        f"Speak in {body.target_language} or whatever language the user uses naturally. "
+        f"Help with conversations, answer questions, and support language learning like a good friend.\n"
         f"The user is at {body.user_level} level.\n"
         + (f"{name_line}\n" if name_line else "")
         + f"\nWhat you know about this user:\n{context}\n\n"
         "Guidelines:\n"
         "- Keep responses concise and conversational (2-4 sentences max)\n"
-        "- Gently correct pronunciation and grammar mistakes\n"
-        "- Encourage the user and stay positive\n"
-        "- Stay focused on speaking practice\n"
+        "- Gently correct language mistakes when helpful\n"
+        "- Be warm, encouraging, and stay positive\n"
         "- TEMPORAL REASONING: facts may mention specific dates/times. "
         "Compare them to RIGHT NOW (above). "
         "If an event has already passed, treat it as past. "

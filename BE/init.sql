@@ -189,10 +189,10 @@ CREATE TABLE IF NOT EXISTS memory.memory_facts (
   retrieval_count   INT         DEFAULT 0,
   priority          VARCHAR     DEFAULT 'normal',
   source            VARCHAR     DEFAULT 'consolidation',
-  expires_at        TIMESTAMP,
-  last_retrieved_at TIMESTAMP,
-  created_at        TIMESTAMP   DEFAULT NOW(),
-  updated_at        TIMESTAMP   DEFAULT NOW()
+  expires_at        TIMESTAMPTZ,
+  last_retrieved_at TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS memory.consolidation_jobs (

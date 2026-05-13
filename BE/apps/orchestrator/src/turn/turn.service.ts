@@ -1,4 +1,4 @@
-import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
@@ -8,16 +8,6 @@ import { Turn } from './entities/turn.entity';
 import { Session } from '../session/entities/session.entity';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
-
-export interface QuotaInfo {
-  tokens_used: number;
-  tokens_limit: number;
-  addon_balance: number;
-  percent_used: number;
-  reset_date: string;
-}
-
-const VALID_MEMORY_LAYERS = new Set(['short_term', 'long_term', 'urgent']);
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
@@ -50,6 +40,16 @@ export class TurnService {
     try { return await this.userService.findById(userId); } catch { return null; }
   }
 
+  async getTurnIndex(sessionId: string): Promise<number> {
+    const count = await this.turnRepo.count({ where: { sessionId } });
+    return count + 1;
+  }
+
+  async getSessionTokens(sessionId: string): Promise<number> {
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId } });
+    return session?.totalTokens ?? 0;
+  }
+
   async processTurn(sessionId: string, userId: string, audioBuffer: Buffer, mimetype: string) {
     const started = Date.now();
     const elapsed = () => `${Date.now() - started}ms`;
@@ -61,11 +61,6 @@ export class TurnService {
     console.log(`[Turn]   audio   : ${audioBuffer.length}b  ${mimetype}`);
 
     try {
-      // 0. Quota check
-      step = 'quota';
-      await this.checkQuota(userId);
-      console.log(`[Turn] [${elapsed()}] quota ok`);
-
       // 1. Turn index + user entity (parallel)
       step = 'turn-index';
       const [turnCount, user] = await Promise.all([
@@ -92,38 +87,28 @@ export class TurnService {
       const { transcript, confidence, pronunciation } = sttRes.data;
       console.log(`[Turn] [${elapsed()}] STT:`, { transcript });
 
-      // 3. Select memory layers
-      step = 'select-layers';
-      const layers = await this.selectMemoryLayers(transcript, llmUrl, currentDatetime);
-      console.log(`[Turn] [${elapsed()}] selected layers: ${JSON.stringify(layers)}`);
-
-      // 4. Build prompt
+      // 3. Build prompt (always query all layers — no routing LLM call)
       step = 'prompt';
       let system_prompt: string;
-      if (layers.length > 0) {
-        try {
-          const promptRes = await firstValueFrom(
-            this.http.post(`${memoryUrl}/build-prompt/${userId}`, {
-              query: transcript,
-              session_id: sessionId,
-              user_level: user?.level ?? 'beginner',
-              target_language: user?.targetLanguage ?? 'english',
-              user_name: user?.name ?? '',
-              current_datetime: currentDatetime,
-              layers,
-            }),
-          );
-          system_prompt = promptRes.data.system_prompt;
-          console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
-        } catch {
-          system_prompt = 'You are a friendly English speaking coach.';
-        }
-      } else {
-        system_prompt = `You are a friendly ${user?.targetLanguage ?? 'English'} speaking coach. Today is ${currentDatetime}.`;
-        console.log(`[Turn] [${elapsed()}] no memory needed — using default prompt`);
+      try {
+        const promptRes = await firstValueFrom(
+          this.http.post(`${memoryUrl}/build-prompt/${userId}`, {
+            query: transcript,
+            session_id: sessionId,
+            user_level: user?.level ?? 'beginner',
+            target_language: user?.targetLanguage ?? 'english',
+            user_name: user?.name ?? '',
+            current_datetime: currentDatetime,
+            layers: ['short_term', 'long_term', 'urgent'],
+          }),
+        );
+        system_prompt = promptRes.data.system_prompt;
+        console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
+      } catch {
+        system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
       }
 
-      // 5. LLM complete
+      // 4. LLM complete
       step = 'llm';
       const llmRes = await firstValueFrom(
         this.http.post(`${llmUrl}/complete`, {
@@ -134,14 +119,14 @@ export class TurnService {
       const { response_text, tokens_used, provider } = llmRes.data;
       console.log(`[Turn] [${elapsed()}] LLM:`, { provider, tokens_used, preview: response_text?.slice(0, 80) });
 
-      // 6. TTS
+      // 5. TTS
       step = 'tts';
       const ttsRes = await firstValueFrom(
         this.http.post(`${speechUrl}/tts`, { text: response_text }),
       );
       const { audio_b64 } = ttsRes.data;
 
-      // 7. Persist
+      // 6. Persist
       step = 'persist';
       const turn = this.turnRepo.create({
         sessionId, userId, turnIndex,
@@ -151,7 +136,7 @@ export class TurnService {
       await this.turnRepo.save(turn);
       console.log(`[Turn] [${elapsed()}] persisted — turn_id: ${turn.id}`);
 
-      // 8. Async side-effects
+      // 7. Async side-effects
       this.updateSessionTotals(sessionId, tokens_used, pronunciation?.score ?? 0).catch(console.error);
       this.appendToShortTerm(sessionId, userId, transcript, response_text).catch(console.error);
       this.recordUsage(userId, tokens_used).catch(console.error);
@@ -170,11 +155,6 @@ export class TurnService {
     }
   }
 
-  async getTurnIndex(sessionId: string): Promise<number> {
-    const count = await this.turnRepo.count({ where: { sessionId } });
-    return count + 1;
-  }
-
   async persistStreamedTurn(
     sessionId: string,
     userId: string,
@@ -188,61 +168,6 @@ export class TurnService {
     this.recordUsage(userId, data.tokens_used).catch(console.error);
     if (turnIndex === 1) this.generateTitle(sessionId, data.transcript).catch(console.error);
     return turn;
-  }
-
-  async checkQuota(userId: string): Promise<QuotaInfo> {
-    const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
-    try {
-      const { data } = await firstValueFrom(
-        this.http.get<any>(`${billingUrl}/internal/quota/${userId}`),
-      );
-      if (!data.allowed) {
-        throw new HttpException(
-          { error: 'QUOTA_EXCEEDED', limit: data.tokens_limit, used: data.tokens_used, reset_date: data.reset_date },
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
-      }
-      return {
-        tokens_used:   data.tokens_used   ?? 0,
-        tokens_limit:  data.tokens_limit  ?? -1,
-        addon_balance: data.addon_balance ?? 0,
-        percent_used:  data.percent_used  ?? 0,
-        reset_date:    data.reset_date    ?? '',
-      };
-    } catch (err) {
-      if (err instanceof HttpException) throw err;
-      console.warn('[Quota] Billing service unreachable, allowing turn:', err.message);
-      return { tokens_used: 0, tokens_limit: -1, addon_balance: 0, percent_used: 0, reset_date: '' };
-    }
-  }
-
-  async selectMemoryLayers(transcript: string, llmUrl: string, currentDatetime: string): Promise<string[]> {
-    try {
-      const res = await firstValueFrom(
-        this.http.post(`${llmUrl}/complete`, {
-          system: `You are a memory router for an English speaking coach app. You have access to three memory databases:
-1. "short_term" — Recent messages from this session (Redis). Use when the user references something said earlier in this conversation.
-2. "long_term" — User's personal facts, goals, preferences, background across all sessions (pgvector). Use for personalization or when the question involves the user's personal context.
-3. "urgent" — Time-sensitive facts: upcoming exams, appointments, events within 7 days (pgvector). Use when the message involves time, upcoming events, or deadlines.
-
-Today is: ${currentDatetime}
-
-Decide which memory databases to query for the user's message. Return ONLY valid JSON: {"layers": [...]}.
-Use only the layer names listed above. Return {"layers": []} if no memory context is needed (e.g. pure grammar questions, generic conversation).`,
-          messages: [{ role: 'user', content: transcript }],
-        }),
-      );
-      const text: string = res.data?.response_text?.trim() ?? '';
-      const match = text.match(/\{[\s\S]*?"layers"[\s\S]*?\}/);
-      if (match) {
-        const parsed = JSON.parse(match[0]);
-        const layers = (parsed.layers ?? []).filter((l: string) => VALID_MEMORY_LAYERS.has(l));
-        return layers;
-      }
-    } catch (e: any) {
-      console.warn('[Turn] selectMemoryLayers failed, defaulting to long_term+urgent:', e?.message);
-    }
-    return ['long_term', 'urgent'];
   }
 
   private async updateSessionTotals(sessionId: string, tokens: number, score: number) {

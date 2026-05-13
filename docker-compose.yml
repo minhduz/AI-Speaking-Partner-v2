@@ -129,6 +129,29 @@ services:
     networks:
       - speaking_net
 
+  turn-agent:
+    build:
+      context: ./BE/services/turn-agent
+      dockerfile: Dockerfile
+    container_name: speaking_turn_agent
+    restart: unless-stopped
+    ports:
+      - "8003:8003"
+    env_file: ./BE/services/turn-agent/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      memory-service:
+        condition: service_started
+      speech-service:
+        condition: service_started
+      llm-gateway:
+        condition: service_started
+    networks:
+      - speaking_net
+
   # ─── FRONTEND ────────────────────────────────────────────────
 
 networks:
