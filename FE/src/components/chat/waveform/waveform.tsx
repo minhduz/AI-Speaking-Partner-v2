@@ -26,13 +26,13 @@ const BASE_SCALES = Array.from({ length: BAR_COUNT }, (_, i) => {
 const BAR_COLORS = Array.from({ length: BAR_COUNT }, (_, i) => {
   const center = (BAR_COUNT - 1) / 2;
   const dist = Math.abs(i - center) / center;
-  if (dist < 0.2) return '#4A6741';
-  if (dist < 0.38) return '#578851';
-  if (dist < 0.54) return '#6E9E68';
-  if (dist < 0.68) return '#8BAF82';
-  if (dist < 0.8) return '#A8C0A4';
-  if (dist < 0.9) return '#BFC7BC';
-  return '#C8C5BF';
+  if (dist < 0.2) return '#8447FF';
+  if (dist < 0.38) return '#935EFF';
+  if (dist < 0.54) return '#A275FF';
+  if (dist < 0.68) return '#B18CFF';
+  if (dist < 0.8) return '#C0A3FF';
+  if (dist < 0.9) return '#CFBAFF';
+  return '#DDD1FF';
 });
 
 export function Waveform({ isRecording, analyser }: WaveformProps) {

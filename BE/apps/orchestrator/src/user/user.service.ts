@@ -20,7 +20,7 @@ export class UserService {
     return user;
   }
 
-  async update(id: string, data: Partial<Pick<User, 'name' | 'targetLanguage' | 'level' | 'timezone'>>) {
+  async update(id: string, data: Partial<Pick<User, 'name' | 'targetLanguage' | 'level' | 'timezone' | 'nativeLanguage' | 'learningGoal'>>) {
     await this.repo.update(id, data);
     return this.findById(id);
   }

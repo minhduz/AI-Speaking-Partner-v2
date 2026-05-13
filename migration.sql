@@ -51,3 +51,10 @@ GRANT ALL ON TABLE billing.billing_events TO billing_user;
 GRANT ALL ON TABLE billing.addon_packages TO billing_user;
 GRANT ALL ON TABLE billing.user_addons    TO billing_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA billing TO billing_user;
+
+-- Onboarding: native language & learning goal
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS native_language VARCHAR DEFAULT 'vietnamese';
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal VARCHAR;
+
+-- Google OAuth
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id VARCHAR UNIQUE;

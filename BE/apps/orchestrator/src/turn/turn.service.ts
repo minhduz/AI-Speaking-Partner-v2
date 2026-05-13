@@ -98,6 +98,8 @@ export class TurnService {
             user_level: user?.level ?? 'beginner',
             target_language: user?.targetLanguage ?? 'english',
             user_name: user?.name ?? '',
+            native_language: user?.nativeLanguage ?? 'vietnamese',
+            learning_goal: user?.learningGoal ?? '',
             current_datetime: currentDatetime,
             layers: ['short_term', 'long_term', 'urgent'],
           }),

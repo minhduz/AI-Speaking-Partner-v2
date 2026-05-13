@@ -7,6 +7,10 @@ class IncrementDto {
   @IsNumber() tokens_used: number;
 }
 
+class IncrementSessionDto {
+  @IsString() user_id: string;
+}
+
 @Controller()
 export class UsageController {
   constructor(private usage: UsageService) {}
@@ -27,5 +31,11 @@ export class UsageController {
   @Post('internal/usage/increment')
   increment(@Body() dto: IncrementDto) {
     return this.usage.increment(dto.user_id, dto.tokens_used);
+  }
+
+  // Internal — called by orchestrator on session start
+  @Post('internal/usage/increment-session')
+  incrementSession(@Body() dto: IncrementSessionDto) {
+    return this.usage.incrementSession(dto.user_id);
   }
 }

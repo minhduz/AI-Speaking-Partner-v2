@@ -8,6 +8,8 @@ class UpdateUserDto {
   @IsOptional() @IsString() targetLanguage?: string;
   @IsOptional() @IsString() level?: string;
   @IsOptional() @IsString() timezone?: string;
+  @IsOptional() @IsString() nativeLanguage?: string;
+  @IsOptional() @IsString() learningGoal?: string;
 }
 
 @Controller('user')

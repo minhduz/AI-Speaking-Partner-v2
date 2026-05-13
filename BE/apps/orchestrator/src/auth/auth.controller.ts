@@ -7,6 +7,10 @@ class RegisterDto {
   @IsString() @MinLength(6) password: string;
   @IsString() name: string;
   @IsOptional() @IsString() timezone?: string;
+  @IsOptional() @IsString() target_language?: string;
+  @IsOptional() @IsString() level?: string;
+  @IsOptional() @IsString() native_language?: string;
+  @IsOptional() @IsString() learning_goal?: string;
 }
 class LoginDto {
   @IsEmail() email: string;
@@ -15,6 +19,9 @@ class LoginDto {
 class RefreshDto {
   @IsString() refresh_token: string;
 }
+class GoogleTokenDto {
+  @IsString() credential: string; // Google ID token
+}
 
 @Controller('auth')
 export class AuthController {
@@ -22,12 +29,17 @@ export class AuthController {
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
-    return this.auth.register(dto.email, dto.password, dto.name, dto.timezone);
+    return this.auth.register(dto);
   }
 
   @Post('login') @HttpCode(200)
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto.email, dto.password);
+  }
+
+  @Post('google') @HttpCode(200)
+  async googleAuth(@Body() dto: GoogleTokenDto) {
+    return this.auth.verifyGoogleToken(dto.credential);
   }
 
   @Post('refresh') @HttpCode(200)

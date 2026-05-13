@@ -57,7 +57,7 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
   const groups = groupByDate(sessions);
 
   return (
-    <aside className="flex flex-col w-60 shrink-0 bg-white border-r border-[#F0EDE7] h-full">
+    <aside className="flex flex-col w-60 shrink-0 bg-white border-r border-gray-100 h-full">
       <div className="px-5 pt-6 pb-4">
         <Logo size="md" />
         <p className="text-xs text-gray-400 mt-0.5 ml-8">AI Speaking Mentor</p>
@@ -66,7 +66,7 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
       <div className="px-4 mb-4">
         <button
           onClick={onNewChat}
-          className="flex items-center justify-center gap-2 w-full px-4 py-2.5 rounded-xl bg-[#4A6741] text-white text-sm font-medium hover:bg-[#3D5535] transition-colors"
+          className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-2xl bg-violet-50 text-[#8447FF] text-sm font-bold hover:bg-violet-100 active:scale-[0.98] transition-all"
         >
           <span className="text-lg leading-none">+</span>
           New Chat
@@ -101,14 +101,14 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
 
         {loading && (
           <div className="flex justify-center py-3">
-            <div className="w-4 h-4 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
+            <div className="w-4 h-4 rounded-full border-2 border-[#8447FF] border-t-transparent animate-spin" />
           </div>
         )}
 
         <div ref={sentinelRef} className="h-1" />
       </div>
 
-      <div className="px-4 pb-6 border-t border-[#F0EDE7] pt-4 flex flex-col gap-1">
+      <div className="px-4 pb-6 border-t border-gray-100 pt-4 flex flex-col gap-1">
         <Link
           href="/flashcards"
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
@@ -153,7 +153,7 @@ function SessionItem({ session, active }: { session: SessionSummary; active: boo
   return (
     <button
       className={`flex flex-col w-full px-3 py-2 rounded-xl text-sm text-left transition-colors gap-0.5 ${
-        active ? 'bg-[#4A6741]/10 text-[#4A6741]' : 'text-gray-600 hover:bg-gray-50'
+        active ? 'bg-violet-50 text-[#8447FF] font-semibold' : 'text-gray-600 hover:bg-gray-50'
       }`}
     >
       <span className="truncate font-medium leading-snug">

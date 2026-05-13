@@ -75,7 +75,7 @@ export default function ChatPage() {
       />
 
       <main className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between px-6 py-4 bg-[#F5F2EA] border-b border-[#EAE6DF]">
+        <header className="flex items-center justify-between px-6 pt-6 pb-2 z-10 shrink-0">
           <div className="w-8" />
           <StatusBadge status={status} />
           <div className="w-8" />
@@ -107,7 +107,7 @@ export default function ChatPage() {
           {/* Loading while greeting starts */}
           {!hasSession && status === 'greeting' && greetingSentences.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-3">
-              <div className="w-8 h-8 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
+              <div className="w-8 h-8 rounded-full border-2 border-[#8447FF] border-t-transparent animate-spin" />
             </div>
           )}
 
@@ -183,30 +183,30 @@ function MessageBubble({
   }, [onWordDoubleClick]);
 
   return (
-    <div className={`flex ${isAi ? 'justify-start' : 'justify-end'}`}>
+    <div className={`flex w-full ${isAi ? 'justify-start' : 'justify-end'} px-2 py-1`}>
       <div
         onDoubleClick={handleDoubleClick}
-        className={`max-w-[70%] rounded-2xl px-4 py-3 text-sm leading-relaxed select-text cursor-text ${
-          isAi
-            ? 'bg-white text-gray-800 rounded-tl-sm shadow-sm'
-            : 'bg-[#4A6741] text-white rounded-tr-sm'
-        }`}
+        className={`max-w-[85%] md:max-w-[75%] flex flex-col select-text cursor-text ${isAi ? 'items-start' : 'items-end'}`}
       >
         {message.pending ? (
           <ThinkingDots />
         ) : isAi && message.sentences && message.sentences.length > 0 ? (
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1.5">
             {message.sentences.map((s, i) => (
-              <p key={i} className="animate-reveal">{s}</p>
+              <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight animate-reveal">
+                {s}
+              </p>
             ))}
           </div>
         ) : (
-          <p>{message.text}</p>
+          <p className={`text-xl md:text-2xl font-medium leading-relaxed tracking-tight ${isAi ? 'text-gray-900' : 'text-gray-400'}`}>
+            {message.text}
+          </p>
         )}
         {!message.pending && message.pronunciationScore !== undefined && (
-          <p className={`text-xs mt-1 font-medium ${isAi ? 'text-gray-400' : 'text-green-200'}`}>
+          <div className={`mt-2 inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase ${isAi ? 'bg-gray-100 text-gray-400' : 'bg-violet-50 text-[#8447FF]'}`}>
             Pronunciation: {Math.round(message.pronunciationScore * 100)}%
-          </p>
+          </div>
         )}
       </div>
     </div>
@@ -215,8 +215,10 @@ function MessageBubble({
 
 function ThinkingDots() {
   return (
-    <div className="flex gap-1 items-center h-5 text-gray-400 font-medium animate-pulse">
-      Thinking...
+    <div className="flex gap-1 items-center h-5 px-1">
+      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+      <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
     </div>
   );
 }
@@ -232,11 +234,11 @@ function StatusBadge({ status }: { status: string }) {
   };
   const colors: Record<string, string> = {
     idle: 'text-gray-400',
-    greeting: 'text-blue-500',
-    ready: 'text-[#4A6741]',
-    recording: 'text-red-500',
+    greeting: 'text-violet-500',
+    ready: 'text-[#8447FF]',
+    recording: 'text-rose-500',
     processing: 'text-amber-500',
-    error: 'text-red-400',
+    error: 'text-rose-400',
   };
   return (
     <span className={`text-xs font-medium ${colors[status] ?? 'text-gray-400'}`}>
