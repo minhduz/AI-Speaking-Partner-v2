@@ -1,5 +1,5 @@
 import {
-  Controller, Post, Param, Req, Res,
+  Controller, Get, Post, Param, Query, Req, Res,
   UseGuards, UseInterceptors, UploadedFile, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -36,6 +36,17 @@ export class TurnController {
     private readonly http: HttpService,
     private readonly cfg: ConfigService,
   ) {}
+
+  // GET /turn/by-session/:session_id?page=1&limit=20 — paginated turn history
+  @Get('by-session/:session_id')
+  getTurnsBySession(
+    @Param('session_id') sessionId: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Req() req,
+  ) {
+    return this.turnService.getBySession(sessionId, req.user.id, +page, +limit);
+  }
 
   // POST /turn/:session_id — full response (non-streaming fallback)
   @Post(':session_id')

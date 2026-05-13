@@ -1,6 +1,7 @@
 import asyncio
 import json
 import aiohttp
+from langgraph.config import get_stream_writer
 from db import database, settings
 
 
@@ -60,7 +61,10 @@ async def persist_node(state: dict) -> dict:
     asyncio.create_task(_append_short_term(user_id, session_id, transcript, full_response))
     asyncio.create_task(_increment_billing(user_id, tokens_used))
     if turn_index == 1:
-        asyncio.create_task(_generate_title(session_id, transcript))
+        writer = get_stream_writer()
+        title = await _generate_title(session_id, transcript)
+        if title:
+            writer({"type": "title", "text": title})
 
     return {}
 
@@ -92,7 +96,7 @@ async def _increment_billing(user_id: str, tokens_used: int):
         print(f"[persist] billing increment failed: {e}")
 
 
-async def _generate_title(session_id: str, first_transcript: str):
+async def _generate_title(session_id: str, first_transcript: str) -> str | None:
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
@@ -110,5 +114,7 @@ async def _generate_title(session_id: str, first_transcript: str):
                 title,
                 session_id,
             )
+        return title or None
     except Exception as e:
         print(f"[persist] title generation failed: {e}")
+        return None

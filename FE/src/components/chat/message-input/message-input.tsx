@@ -5,7 +5,7 @@ import type { MessageInputProps } from './message-input.types';
 import { DictionaryPopup } from '../dictionary-popup/dictionary-popup';
 import { useDictionary } from '@/hooks/use-dictionary';
 
-export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, disabled }: MessageInputProps) {
+export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, disabled, hideMic }: MessageInputProps) {
   const [text, setText] = useState('');
   const dictionary = useDictionary();
 
@@ -25,66 +25,67 @@ export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, d
   };
 
   return (
-    <div className="px-4 pb-6 pt-2 w-full flex justify-center bg-gradient-to-t from-[#F8F9FB] to-transparent">
-      <div className="flex items-end w-full max-w-3xl gap-2 md:gap-3 relative">
-        {/* Input Pill */}
-        <div className="flex-1 flex items-center rounded-3xl border border-gray-200 bg-white shadow-sm focus-within:border-violet-300 focus-within:ring-4 focus-within:ring-violet-50 transition-all pl-2 pr-4 py-1.5 min-h-[56px]">
-          <DictionaryPopup 
-            isOpen={dictionary.isOpen} 
-            onClose={dictionary.close} 
-            isLoading={dictionary.isLoading} 
-            data={dictionary.data}
-            error={dictionary.error}
-          />
-          <input
-            type="text"
-            placeholder={isRecording ? "Listening..." : "Type or speak..."}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={disabled || isRecording}
-            className="flex-1 px-3 bg-transparent text-sm text-gray-700 placeholder:text-gray-400 outline-none disabled:opacity-50"
-          />
+    <div className="px-6 pb-6 flex flex-col items-center gap-3">
+      <div className="flex items-center w-full max-w-2xl rounded-2xl border border-[#E5E0D8] bg-white px-4 py-3 gap-3 relative">
+        <DictionaryPopup
+          isOpen={dictionary.isOpen}
+          onClose={dictionary.close}
+          isLoading={dictionary.isLoading}
+          data={dictionary.data}
+          error={dictionary.error}
+          targetLang={dictionary.targetLang}
+          onLanguageChange={dictionary.changeLanguage}
+          onAddFlashcard={dictionary.addFlashcard}
+        />
+
+        <input
+          type="text"
+          placeholder="Type"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={disabled || isRecording}
+          className="flex-1 text-sm text-gray-700 placeholder:text-gray-400 outline-none bg-transparent disabled:cursor-not-allowed"
+        />
+
+        {text.trim() && (
           <button
             onClick={() => dictionary.translate(text)}
-            disabled={!text.trim() || isRecording}
-            className={`p-2 rounded-xl transition-colors shrink-0 ${text.trim() ? 'text-gray-500 hover:bg-gray-100 hover:text-gray-800' : 'text-gray-300'}`}
+            disabled={isRecording}
+            className="p-2 rounded-xl transition-colors shrink-0 text-gray-500 hover:bg-gray-100 hover:text-gray-800"
             aria-label="Translate"
           >
             <TranslateIcon />
           </button>
-        </div>
+        )}
 
-        {/* Action Button (Mic / Send) */}
-        <div className="shrink-0 flex items-center h-[56px]">
-          {text.trim() ? (
-            <button
-              onClick={handleSend}
-              className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-[#8447FF] text-white flex items-center justify-center shadow-md hover:bg-[#7C3AED] active:scale-95 transition-all"
-              aria-label="Send message"
-            >
-              <SendIcon />
-            </button>
-          ) : (
-            <button
-              disabled={disabled}
-              aria-label={isRecording ? 'Release to send' : 'Hold to talk'}
-              onMouseDown={onStartMic}
-              onMouseUp={onStopMic}
-              onMouseLeave={onStopMic}
-              onTouchStart={(e) => { e.preventDefault(); onStartMic(); }}
-              onTouchEnd={(e) => { e.preventDefault(); onStopMic(); }}
-              onTouchCancel={(e) => { e.preventDefault(); onStopMic(); }}
-              className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center shadow-md transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed ${
-                isRecording
-                  ? 'bg-rose-500 scale-110 ring-4 ring-rose-200 animate-pulse'
-                  : 'bg-[#8447FF] hover:bg-[#7C3AED] active:scale-95'
-              }`}
-            >
-              <MicIcon />
-            </button>
-          )}
-        </div>
+        {text.trim() ? (
+          <button
+            onClick={handleSend}
+            className="w-10 h-10 rounded-full bg-[#8447FF] text-white flex items-center justify-center shadow-md hover:bg-[#7C3AED] active:scale-95 transition-all shrink-0"
+            aria-label="Send message"
+          >
+            <SendIcon />
+          </button>
+        ) : !hideMic ? (
+          <button
+            disabled={disabled}
+            aria-label={isRecording ? 'Release to send' : 'Hold to talk'}
+            onMouseDown={onStartMic}
+            onMouseUp={onStopMic}
+            onMouseLeave={onStopMic}
+            onTouchStart={(e) => { e.preventDefault(); onStartMic(); }}
+            onTouchEnd={(e) => { e.preventDefault(); onStopMic(); }}
+            onTouchCancel={(e) => { e.preventDefault(); onStopMic(); }}
+            className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${
+              isRecording
+                ? 'bg-rose-500 scale-110 ring-4 ring-rose-200 animate-pulse'
+                : 'bg-[#8447FF] hover:bg-[#7C3AED] active:scale-95'
+            }`}
+          >
+            <MicIcon />
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -92,7 +93,7 @@ export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, d
 
 function MicIcon() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
       <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <line x1="12" y1="19" x2="12" y2="23" />

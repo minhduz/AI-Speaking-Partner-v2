@@ -9,7 +9,7 @@ import type { SessionSummary } from '@/types/session.types';
 
 const PAGE_LIMIT = 25;
 
-export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 }: SidebarProps) {
+export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId, refreshKey = 0, titleUpdate }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -40,6 +40,14 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
   useEffect(() => {
     fetchSessions(true);
   }, [refreshKey, fetchSessions]);
+
+  // Update a session's title in-place when the agent generates it
+  useEffect(() => {
+    if (!titleUpdate) return;
+    setSessions((prev) =>
+      prev.map((s) => s.id === titleUpdate.sessionId ? { ...s, title: titleUpdate.title } : s),
+    );
+  }, [titleUpdate]);
 
   // Lazy load more when sentinel scrolls into view
   useEffect(() => {
@@ -93,6 +101,7 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
                   key={session.id}
                   session={session}
                   active={session.id === currentSessionId}
+                  onClick={onSessionClick ? () => onSessionClick(session) : undefined}
                 />
               ))}
             </div>
@@ -149,9 +158,10 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
   );
 }
 
-function SessionItem({ session, active }: { session: SessionSummary; active: boolean }) {
+function SessionItem({ session, active, onClick }: { session: SessionSummary; active: boolean; onClick?: () => void }) {
   return (
     <button
+      onClick={onClick}
       className={`flex flex-col w-full px-3 py-2 rounded-xl text-sm text-left transition-colors gap-0.5 ${
         active ? 'bg-violet-50 text-[#8447FF] font-semibold' : 'text-gray-600 hover:bg-gray-50'
       }`}

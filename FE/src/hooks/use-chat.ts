@@ -5,6 +5,10 @@ import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
+// Greeting text cache — survives client-side navigation but resets on full page reload.
+// Prevents re-streaming the greeting when the user navigates away and returns.
+let _greetingTextCache: string | null = null;
+
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
 // Returns null during SSR where `window` does not exist.
@@ -38,7 +42,9 @@ export interface UseChatReturn {
   errorMessage: string | null;
   currentSessionId: string | null;
   sessionTitle: string | null;
+  sessionTitleUpdate: { sessionId: string; title: string } | null;
   reviewMode: boolean;
+  reviewSessionId: string | null;
   reviewHasMore: boolean;
   reviewLoading: boolean;
   startMic: () => void;
@@ -110,7 +116,9 @@ export function useChat(): UseChatReturn {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
+  const [sessionTitleUpdate, setSessionTitleUpdate] = useState<{ sessionId: string; title: string } | null>(null);
   const [reviewMode, setReviewMode] = useState(false);
+  const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [reviewHasMore, setReviewHasMore] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
 
@@ -229,6 +237,7 @@ export function useChat(): UseChatReturn {
           if (!hadAudioText && fullText.trim()) {
             setGreetingSentences([fullText.trim()]);
           }
+          if (fullText.trim()) _greetingTextCache = fullText.trim();
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -245,11 +254,17 @@ export function useChat(): UseChatReturn {
   const initSession = useCallback(async () => {
     setStatus('idle');
     setMessages([]);
-    setGreetingSentences([]);
     setErrorMessage(null);
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
+    // Restore cached greeting instead of re-streaming (survives client-side nav)
+    if (_greetingTextCache) {
+      setGreetingSentences([_greetingTextCache]);
+      setStatus('ready');
+      return;
+    }
+    setGreetingSentences([]);
     await runGreeting();
   }, [runGreeting]);
 
@@ -408,6 +423,8 @@ export function useChat(): UseChatReturn {
           if (event.text) hadAudioText = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
+        } else if (event.type === 'title') {
+          setSessionTitleUpdate({ sessionId, title: event.text });
         } else if (event.type === 'done') {
           // If TTS failed and audio events never carried text, fall back to the full LLM text
           if (!hadAudioText && aiFullText.trim()) {
@@ -468,6 +485,7 @@ export function useChat(): UseChatReturn {
 
   const enterReview = useCallback(async (sessionId: string) => {
     setReviewMode(true);
+    setReviewSessionId(sessionId);
     reviewSessionIdRef.current = sessionId;
     reviewPageRef.current = 1;
     setMessages([]);
@@ -477,6 +495,7 @@ export function useChat(): UseChatReturn {
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
+    setReviewSessionId(null);
     reviewSessionIdRef.current = null;
     reviewPageRef.current = 1;
     setMessages([]);
@@ -558,6 +577,13 @@ export function useChat(): UseChatReturn {
       inactivityTimerRef.current = null;
     }
 
+    // Exit review mode if active
+    setReviewMode(false);
+    setReviewSessionId(null);
+    reviewSessionIdRef.current = null;
+    reviewPageRef.current = 1;
+    setReviewHasMore(false);
+
     // End the previous session (fire-and-forget) so consolidation triggers
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
@@ -585,7 +611,9 @@ export function useChat(): UseChatReturn {
     errorMessage,
     currentSessionId,
     sessionTitle,
+    sessionTitleUpdate,
     reviewMode,
+    reviewSessionId,
     reviewHasMore,
     reviewLoading,
     startMic,

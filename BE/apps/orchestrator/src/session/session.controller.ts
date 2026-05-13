@@ -105,8 +105,12 @@ export class SessionController {
         `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally.`,
         `Help with conversations, answer questions, and support language learning like a good friend.`,
         `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
+        `Do not use emojis or special icons in your response.`,
         user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
         greetingContext ? `Recent conversation context:\n${greetingContext}` : '',
+        greetingContext
+          ? `TEMPORAL REASONING: The context above may mention events at specific times. Compare those times to RIGHT NOW (${formattedDatetime}). If an event (meeting, appointment, task, activity) has already passed, ask how it went — do not wish them luck for it. If it is still upcoming, you may acknowledge it. Never treat a past event as if it is still in the future.`
+          : '',
         '',
         'Greet the user warmly by name if you know it.',
         'Keep your greeting to 2 sentences maximum.',
