@@ -1,9 +1,15 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from db import database, redis_client
 from routers.retrieve import router as retrieve_router
 from routers.prompt_builder import router as prompt_router
 from routers.memory_ops import router as ops_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

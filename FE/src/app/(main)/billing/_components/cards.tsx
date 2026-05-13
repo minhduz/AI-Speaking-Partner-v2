@@ -22,8 +22,7 @@ export function CurrentPlanCard({ subscription, usage, isPro, planLabel, onCance
   subscription: Subscription | null; usage: Usage | null;
   isPro: boolean; planLabel: string; onCancel: () => void;
 }) {
-  const tokenLimit   = usage?.tokens_limit   ?? 0;
-  const sessionLimit = usage?.sessions_limit ?? 0;
+  const isUnlimited = usage?.is_unlimited ?? false;
 
   return (
     <div className={`rounded-3xl p-6 shadow-sm ${isPro ? 'bg-[#F0EBFF]' : 'bg-white'}`}>
@@ -40,7 +39,7 @@ export function CurrentPlanCard({ subscription, usage, isPro, planLabel, onCance
               ? subscription?.cancelled_at
                 ? `Cancelled · Expires ${fmtDate(subscription.current_period_end)}`
                 : `Renews ${fmtDate(subscription!.current_period_end)}`
-              : 'Free forever · Limited AI access'}
+              : 'Free forever · 10 sessions/day'}
           </p>
         </div>
         <div className="flex-shrink-0 ml-4">
@@ -61,7 +60,7 @@ export function CurrentPlanCard({ subscription, usage, isPro, planLabel, onCance
         <div className="space-y-3">
 
           {/* AI Energy — violet pastel */}
-          <div className="bg-violet-50 rounded-2xl p-4 space-y-3">
+          <div className="bg-violet-50 rounded-2xl p-4 space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-xl bg-violet-100 flex items-center justify-center">
@@ -70,37 +69,31 @@ export function CurrentPlanCard({ subscription, usage, isPro, planLabel, onCance
                 <span className="text-sm font-semibold text-gray-700">AI Energy</span>
               </div>
               <span className="text-xs text-gray-500 font-mono bg-white/70 px-2.5 py-1 rounded-full">
-                {tokenLimit > 0
-                  ? `${fmtTok(usage.tokens_used)} / ${fmtTok(tokenLimit)}`
-                  : `${fmtTok(usage.tokens_used)} used`}
+                {fmtTok(usage.tokens_used)} used this month
               </span>
             </div>
-            {tokenLimit > 0 && <UsageBar pct={usage.tokens_percent} warn />}
-            {tokenLimit > 0 && usage.tokens_percent >= 80 && (
-              <div className="flex items-center gap-2 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2 text-xs text-rose-500">
-                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
-                Running low — consider upgrading.
-              </div>
-            )}
+            <p className="text-xs text-violet-500 font-medium pl-9">
+              {isUnlimited ? '∞ Unlimited tokens' : `${fmtTok(usage.session_token_limit)} per session`}
+            </p>
           </div>
 
           {/* Sessions — emerald pastel */}
-          {sessionLimit > 0 && (
-            <div className="bg-emerald-50 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-xl bg-emerald-100 flex items-center justify-center">
-                    <Target className="w-3.5 h-3.5 text-emerald-600" />
-                  </div>
-                  <span className="text-sm font-semibold text-gray-700">Sessions</span>
+          <div className="bg-emerald-50 rounded-2xl p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-emerald-100 flex items-center justify-center">
+                  <Target className="w-3.5 h-3.5 text-emerald-600" />
                 </div>
-                <span className="text-xs text-gray-500 font-mono bg-white/70 px-2.5 py-1 rounded-full">
-                  {usage.sessions_used} / {sessionLimit}
-                </span>
+                <span className="text-sm font-semibold text-gray-700">Sessions</span>
               </div>
-              <UsageBar pct={usage.sessions_percent} warn />
+              <span className="text-xs text-gray-500 font-mono bg-white/70 px-2.5 py-1 rounded-full">
+                {usage.sessions_used} this month
+              </span>
             </div>
-          )}
+            <p className="text-xs text-emerald-600 font-medium pl-9">
+              {isUnlimited ? '∞ Unlimited sessions' : `${usage.daily_session_limit} per day`}
+            </p>
+          </div>
 
           <div className="flex items-center gap-1.5 text-xs text-gray-400 pl-1">
             <Clock className="w-3 h-3" />
@@ -154,8 +147,8 @@ export function UpgradeCard({ proHighlight, monthlyPlan, onSelectPlan }: {
         {/* Features */}
         <ul className="space-y-2.5 mb-6 flex-1">
           {[
-            'Unlimited AI Speaking Sessions',
-            '5M tokens per month',
+            'Unlimited AI sessions, every day',
+            'Unlimited tokens per session',
             'Detailed pronunciation analysis',
             'Priority processing speed',
           ].map(f => (
@@ -231,7 +224,7 @@ export function ProLoveCard() {
         <ul className="space-y-2 mb-5 flex-1">
           {[
             'Unlimited speaking sessions',
-            '5M tokens refreshed monthly',
+            'Unlimited tokens, every session',
             'Priority AI processing',
           ].map(perk => (
             <li key={perk} className="flex items-center gap-2 text-sm text-gray-600">

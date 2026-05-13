@@ -45,15 +45,8 @@ export type TurnEvent =
   | { type: 'pronunciation'; data: { score?: number } }
   | { type: 'text'; chunk: string }
   | { type: 'audio'; audio_b64: string; text?: string }
-  | { type: 'title'; text: string }
-  | { type: 'quota_warning'; percent_used: number; upgrade_url: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string };
-
-export interface QuotaWarning {
-  percent_used: number;
-  upgrade_url: string;
-}
 
 export interface ChatMessage {
   role: 'ai' | 'user';

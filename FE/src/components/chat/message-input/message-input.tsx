@@ -5,7 +5,7 @@ import type { MessageInputProps } from './message-input.types';
 import { DictionaryPopup } from '../dictionary-popup/dictionary-popup';
 import { useDictionary } from '@/hooks/use-dictionary';
 
-export function MessageInput({ onSendText, onToggleMic, isRecording, disabled }: MessageInputProps) {
+export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, disabled }: MessageInputProps) {
   const [text, setText] = useState('');
   const dictionary = useDictionary();
 
@@ -27,16 +27,21 @@ export function MessageInput({ onSendText, onToggleMic, isRecording, disabled }:
   return (
     <div className="px-6 pb-6 flex flex-col items-center gap-3">
       <button
-        onClick={onToggleMic}
         disabled={disabled}
-        aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-        className={`w-14 h-14 rounded-full flex items-center justify-center shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+        aria-label={isRecording ? 'Release to send' : 'Hold to talk'}
+        onMouseDown={onStartMic}
+        onMouseUp={onStopMic}
+        onMouseLeave={onStopMic}
+        onTouchStart={(e) => { e.preventDefault(); onStartMic(); }}
+        onTouchEnd={(e) => { e.preventDefault(); onStopMic(); }}
+        onTouchCancel={(e) => { e.preventDefault(); onStopMic(); }}
+        className={`w-14 h-14 rounded-full flex items-center justify-center shadow-md transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed ${
           isRecording
-            ? 'bg-red-500 hover:bg-red-600 scale-110'
-            : 'bg-[#4A6741] hover:bg-[#3D5535]'
+            ? 'bg-red-500 scale-110 ring-4 ring-red-300 animate-pulse'
+            : 'bg-[#4A6741] hover:bg-[#3D5535] active:scale-95'
         }`}
       >
-        {isRecording ? <StopIcon /> : <MicIcon />}
+        <MicIcon />
       </button>
 
       <div className="flex items-center w-full max-w-2xl rounded-2xl border border-[#E5E0D8] bg-white px-4 py-3 gap-3 relative">
@@ -85,14 +90,6 @@ function MicIcon() {
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <line x1="12" y1="19" x2="12" y2="23" />
       <line x1="8" y1="23" x2="16" y2="23" />
-    </svg>
-  );
-}
-
-function StopIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
-      <rect x="4" y="4" width="16" height="16" rx="2" />
     </svg>
   );
 }

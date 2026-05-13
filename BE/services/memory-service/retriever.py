@@ -1,14 +1,15 @@
 import asyncio
+import logging
 from openai import AsyncOpenAI
 from layers.short_term import ShortTermMemory
 from layers.long_term import LongTermMemory
-from db import settings
+from db import settings, database
 
+log = logging.getLogger("retriever")
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
 VALID_LAYERS = {"short_term", "long_term", "urgent"}
 
-# Priority score used for ordering chunks returned to the prompt builder
 _PRIORITY_SCORE = {"urgent": 0.95, "high": 0.85, "normal": 0.75}
 
 
@@ -25,30 +26,37 @@ async def fan_out_retrieve(
 ) -> list[dict]:
     active = set(layers) & VALID_LAYERS if layers else VALID_LAYERS
 
+    log.info("retrieve  user=%s  session=%s  active_layers=%s  query='%s'",
+             user_id, session_id, sorted(active), query[:80])
+
     if not active:
         return []
 
     coros = []
     labels = []
     if "short_term" in active:
-        coros.append(_short_term_as_chunks(session_id))
+        coros.append(_short_term_as_chunks(user_id))  # user-scoped rolling buffer
         labels.append("short_term")
     if "long_term" in active or "urgent" in active:
-        # One DB call covers both long_term and urgent (they live in the same JSON document)
-        coros.append(_context_as_chunks(user_id, active))
+        coros.append(_context_as_chunks(user_id, query, active))
         labels.append("context")
 
     results = await asyncio.gather(*coros)
     layer_results = dict(zip(labels, results))
 
-    # Merge: urgent facts first, then short-term recency, then the rest
+    st_chunks      = layer_results.get("short_term", [])
     context_chunks = layer_results.get("context", [])
     urgent_chunks  = [c for c in context_chunks if c["source"] == "urgent"]
     lt_chunks      = [c for c in context_chunks if c["source"] == "long_term"]
 
-    all_chunks = urgent_chunks + layer_results.get("short_term", []) + lt_chunks
+    log.info("retrieve  short_term=%d  urgent=%d  long_term=%d",
+             len(st_chunks), len(urgent_chunks), len(lt_chunks))
+    for i, c in enumerate(context_chunks):
+        log.info("  [lt/urgent %d] score=%.3f source=%s  '%s'",
+                 i, c["score"], c["source"], c["text"][:80])
 
-    # Deduplicate by text fingerprint
+    all_chunks = urgent_chunks + st_chunks + lt_chunks
+
     seen, deduped = set(), []
     for chunk in all_chunks:
         key = chunk["text"][:80]
@@ -56,27 +64,66 @@ async def fan_out_retrieve(
             seen.add(key)
             deduped.append(chunk)
 
-    return sorted(deduped, key=lambda x: x["score"], reverse=True)
+    final = sorted(deduped, key=lambda x: x["score"], reverse=True)
+    log.info("retrieve  → %d deduped chunks returned", len(final))
+    return final
 
 
-async def _context_as_chunks(user_id: str, active_layers: set) -> list[dict]:
-    """Fetch the user's single context document and split into chunks by priority."""
-    facts = await LongTermMemory.get_context(user_id)
+async def _context_as_chunks(user_id: str, query: str, active_layers: set) -> list[dict]:
+    """
+    Vector similarity search over per-fact rows.
+    Falls back to returning all active facts if the table has no embeddings yet
+    (e.g. legacy user_context rows that haven't been reconsolidated).
+    """
+    query_vec = await embed(query)
+    vec_literal = f"[{','.join(str(v) for v in query_vec)}]"
+
+    rows = await database.fetch(
+        """SELECT content, priority, expires_at,
+                  1 - (embedding <=> $2::vector) AS similarity
+           FROM memory.memory_facts
+           WHERE user_id = $1
+             AND (expires_at IS NULL OR expires_at > NOW())
+             AND source = 'fact'
+           ORDER BY embedding <=> $2::vector
+           LIMIT 15""",
+        user_id,
+        vec_literal,
+    )
+
     chunks = []
-    for fact in facts:
-        priority = fact.get("priority", "normal")
+    for row in rows:
+        priority = row["priority"] or "normal"
         if priority == "urgent" and "urgent" not in active_layers:
             continue
         if priority != "urgent" and "long_term" not in active_layers:
             continue
         source = "urgent" if priority == "urgent" else "long_term"
-        score = _PRIORITY_SCORE.get(priority, 0.75)
-        chunks.append({"text": fact["content"], "score": score, "source": source})
+        # Blend vector similarity with priority weight so urgent facts always surface
+        base_score  = float(row["similarity"]) if row["similarity"] is not None else 0.5
+        prio_boost  = _PRIORITY_SCORE.get(priority, 0.75)
+        score       = 0.7 * base_score + 0.3 * prio_boost
+        chunks.append({"text": row["content"], "score": score, "source": source})
+
+    # If no per-fact rows exist yet (legacy data), fall back to get_facts()
+    if not chunks:
+        facts = await LongTermMemory.get_facts(user_id)
+        for fact in facts:
+            priority = fact.get("priority", "normal")
+            if priority == "urgent" and "urgent" not in active_layers:
+                continue
+            if priority != "urgent" and "long_term" not in active_layers:
+                continue
+            source = "urgent" if priority == "urgent" else "long_term"
+            score = _PRIORITY_SCORE.get(priority, 0.75)
+            chunks.append({"text": fact["content"], "score": score, "source": source})
+
     return chunks
 
 
-async def _short_term_as_chunks(session_id: str) -> list[dict]:
-    if not session_id:
+async def _short_term_as_chunks(user_id: str) -> list[dict]:
+    if not user_id:
         return []
-    messages = await ShortTermMemory.get_recent(session_id, n=10)
+    messages = await ShortTermMemory.get_recent(user_id, n=20)
+    log.info("[short_term] loaded %d recent messages for user=%s", len(messages), user_id)
     return [{"text": m["content"], "score": 0.85, "source": "short_term"} for m in messages]
