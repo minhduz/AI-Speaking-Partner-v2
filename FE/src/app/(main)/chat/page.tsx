@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
+import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
 import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
+import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage } from '@/types/session.types';
 
 const Waveform = dynamic(
@@ -32,6 +34,9 @@ export default function ChatPage() {
   const prevSessionId = useRef<string | null>(null);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
+  const wordDictionary = useDictionary();
+  const [dictAnchor, setDictAnchor] = useState<{ top: number; left: number } | null>(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, greetingSentences]);
@@ -43,6 +48,17 @@ export default function ChatPage() {
     }
     prevSessionId.current = currentSessionId;
   }, [currentSessionId]);
+
+  const handleWordDoubleClick = useCallback((word: string, e: React.MouseEvent) => {
+    const x = Math.min(e.clientX, window.innerWidth - 336);
+    const y = e.clientY + 12;
+    setDictAnchor({ top: y, left: x });
+    wordDictionary.translate(word);
+  }, [wordDictionary]);
+
+  const handleDictClose = useCallback(() => {
+    wordDictionary.close();
+  }, [wordDictionary]);
 
   // Mic is disabled while greeting plays, processing, or idle startup
   const micDisabled = status === 'idle' || status === 'greeting' || status === 'processing';
@@ -97,7 +113,7 @@ export default function ChatPage() {
 
           {/* Session active: message bubbles */}
           {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} />
+            <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
           ))}
 
           {/* Error banner */}
@@ -127,16 +143,50 @@ export default function ChatPage() {
           disabled={micDisabled}
         />
       </main>
+
+      {/* Dictionary popup — fixed position relative to double-clicked word */}
+      {wordDictionary.isOpen && dictAnchor && (
+        <DictionaryPopup
+          isOpen={wordDictionary.isOpen}
+          onClose={handleDictClose}
+          isLoading={wordDictionary.isLoading}
+          data={wordDictionary.data}
+          error={wordDictionary.error}
+          style={{ position: 'fixed', top: dictAnchor.top, left: dictAnchor.left, zIndex: 100 }}
+          targetLang={wordDictionary.targetLang}
+          onLanguageChange={wordDictionary.changeLanguage}
+          onAddFlashcard={wordDictionary.addFlashcard}
+        />
+      )}
     </>
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  onWordDoubleClick,
+}: {
+  message: ChatMessage;
+  onWordDoubleClick: (word: string, e: React.MouseEvent) => void;
+}) {
   const isAi = message.role === 'ai';
+
+  const handleDoubleClick = useCallback((e: React.MouseEvent) => {
+    const selection = window.getSelection();
+    let word = selection?.toString().trim();
+    if (word) {
+      word = word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+      if (word.length > 0) {
+        onWordDoubleClick(word, e);
+      }
+    }
+  }, [onWordDoubleClick]);
+
   return (
     <div className={`flex ${isAi ? 'justify-start' : 'justify-end'}`}>
       <div
-        className={`max-w-[70%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+        onDoubleClick={handleDoubleClick}
+        className={`max-w-[70%] rounded-2xl px-4 py-3 text-sm leading-relaxed select-text cursor-text ${
           isAi
             ? 'bg-white text-gray-800 rounded-tl-sm shadow-sm'
             : 'bg-[#4A6741] text-white rounded-tr-sm'
