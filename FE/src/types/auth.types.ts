@@ -9,6 +9,9 @@ export interface RegisterRequest {
   password: string;
   target_language: string;
   level: 'beginner' | 'intermediate' | 'advanced';
+  native_language: string;
+  learning_goal: string;
+  timezone: string;
 }
 
 export interface AuthTokens {
@@ -22,4 +25,6 @@ export interface User {
   name: string;
   target_language: string;
   level: 'beginner' | 'intermediate' | 'advanced';
+  native_language: string;
+  learning_goal: string;
 }

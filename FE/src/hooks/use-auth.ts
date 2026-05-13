@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { authService } from '@/services/auth.service';
 import { useAuthContext } from '@/contexts/auth-context';
+import { stopAllAudio } from './use-chat';
 import type { LoginRequest, RegisterRequest } from '@/types/auth.types';
 
 export function useAuth() {
@@ -26,13 +27,17 @@ export function useAuth() {
     }
   };
 
-  const handleRegister = async (data: RegisterRequest) => {
+  const handleRegister = async (data: RegisterRequest, onRedirect?: () => void) => {
     setIsLoading(true);
     setError(null);
     try {
       const { access_token } = await authService.register(data);
       login(access_token);
-      router.push('/chat');
+      if (onRedirect) {
+        onRedirect();
+      } else {
+        router.push('/chat');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
@@ -40,10 +45,59 @@ export function useAuth() {
     }
   };
 
+  const handleGoogleAuth = async (credential: string, onRedirect?: () => void) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { access_token, isNewUser } = await authService.googleAuth(credential);
+      console.log('[handleGoogleAuth] isNewUser:', isNewUser, '| hasOnRedirect:', !!onRedirect);
+      login(access_token);
+
+      if (onRedirect) {
+        console.log('[handleGoogleAuth] calling onRedirect');
+        onRedirect();
+      } else if (!isNewUser) {
+        console.log('[handleGoogleAuth] existing user → push /chat');
+        router.push('/chat');
+      } else {
+        console.log('[handleGoogleAuth] new user, no onRedirect → letting caller handle');
+      }
+
+      return { isNewUser };
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Google authentication failed');
+      return { isNewUser: false };
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleUpdateProfile = async (
+    data: { targetLanguage: string; level: string; nativeLanguage: string; learningGoal: string; timezone: string },
+    onRedirect?: () => void,
+  ) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const { httpClient } = await import('@/lib/http-client');
+      await httpClient.put('/user/me', data);
+      if (onRedirect) {
+        onRedirect();
+      } else {
+        router.push('/chat');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update profile');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLogout = async () => {
+    stopAllAudio();
     await logout();
     router.push('/login');
   };
 
-  return { isLoading, error, handleLogin, handleRegister, handleLogout };
+  return { isLoading, error, handleLogin, handleRegister, handleGoogleAuth, handleUpdateProfile, handleLogout };
 }

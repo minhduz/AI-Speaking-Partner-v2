@@ -18,6 +18,9 @@ export const authService = {
   register: (data: RegisterRequest) =>
     post<{ access_token: string }>('/api/auth/register', data),
 
+  googleAuth: (credential: string) =>
+    post<{ access_token: string; isNewUser: boolean }>('/api/auth/google', { credential }),
+
   refresh: () =>
     post<{ access_token: string }>('/api/auth/refresh', {}),
 

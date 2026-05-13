@@ -18,6 +18,14 @@ function getSharedAudioCtx(): AudioContext | null {
   return _sharedAudioCtx;
 }
 
+// Call on logout to immediately stop any playing audio
+export function stopAllAudio(): void {
+  if (_sharedAudioCtx && _sharedAudioCtx.state !== 'closed') {
+    _sharedAudioCtx.close();
+  }
+  _sharedAudioCtx = null;
+}
+
 
 export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processing' | 'error';
 
@@ -119,6 +127,9 @@ export function useChat(): UseChatReturn {
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
   const isStoppingRef = useRef(false);
+  // Set when stopMic is called before startRecording has finished setting up the
+  // MediaRecorder — drains in startMic's .then() so the stop isn't lost.
+  const pendingStopRef = useRef(false);
   // Point to the module-level singleton — always exists on the client before any effect.
   const sharedPlaybackCtxRef = useRef<AudioContext | null>(getSharedAudioCtx());
 
@@ -478,25 +489,7 @@ export function useChat(): UseChatReturn {
     await loadReviewPage(sessionId, reviewPageRef.current + 1, true);
   }, [reviewHasMore, reviewLoading, loadReviewPage]);
 
-  const startMic = useCallback(() => {
-    if (status !== 'ready') return;
-    isStoppingRef.current = false;
-    const ensureSession = sessionIdRef.current
-      ? Promise.resolve()
-      : sessionService.start().then(({ session_id }) => {
-          sessionIdRef.current = session_id;
-          setCurrentSessionId(session_id);
-        });
-    ensureSession
-      .then(() => startRecording())
-      .catch((err) => {
-        console.error('[createSession]', err);
-        setErrorMessage('Failed to start session');
-      });
-  }, [status, startRecording]);
-
-  const stopMic = useCallback(() => {
-    if (status !== 'recording') return;
+  const runStop = useCallback(() => {
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
     stopRecording()
@@ -513,7 +506,49 @@ export function useChat(): UseChatReturn {
         isStoppingRef.current = false;
         console.error(err);
       });
-  }, [status, stopRecording, processTurn]);
+  }, [stopRecording, processTurn]);
+
+  const startMic = useCallback(() => {
+    if (status !== 'ready') return;
+    isStoppingRef.current = false;
+    pendingStopRef.current = false;
+    // Optimistic — closes the race where user releases before startRecording's
+    // setStatus fires, leaving the mic stuck.
+    setStatus('recording');
+
+    const ensureSession = sessionIdRef.current
+      ? Promise.resolve()
+      : sessionService.start().then(({ session_id }) => {
+          sessionIdRef.current = session_id;
+          setCurrentSessionId(session_id);
+        });
+    ensureSession
+      .then(() => startRecording())
+      .then(() => {
+        // User released before the recorder was actually set up — drain the queued stop.
+        if (pendingStopRef.current) {
+          pendingStopRef.current = false;
+          runStop();
+        }
+      })
+      .catch((err) => {
+        console.error('[startMic]', err);
+        pendingStopRef.current = false;
+        setStatus('ready');
+        setErrorMessage('Failed to start recording');
+      });
+  }, [status, startRecording, runStop]);
+
+  const stopMic = useCallback(() => {
+    if (status !== 'recording') return;
+    if (isStoppingRef.current) return;
+    // Recorder not ready yet — queue the stop and let startMic's .then() drain it.
+    if (!recorderRef.current || recorderRef.current.state !== 'recording') {
+      pendingStopRef.current = true;
+      return;
+    }
+    runStop();
+  }, [status, runStop]);
 
 
   const startNewSession = useCallback(() => {

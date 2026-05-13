@@ -56,6 +56,12 @@ export class SessionService {
 
     const session = this.repo.create({ userId, status: 'active' });
     await this.repo.save(session);
+
+    // Fire-and-forget: record session start in billing analytics
+    firstValueFrom(
+      this.http.post(`${billingUrl}/internal/usage/increment-session`, { user_id: userId }),
+    ).catch((err) => console.error('[Session] failed to increment session count in billing:', err?.message));
+
     return { session_id: session.id };
   }
 
