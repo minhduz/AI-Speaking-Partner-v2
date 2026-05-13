@@ -110,6 +110,13 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
 
       <div className="px-4 pb-6 border-t border-gray-100 pt-4 flex flex-col gap-1">
         <Link
+          href="/flashcards"
+          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+        >
+          <FlashcardIcon />
+          Flashcards
+        </Link>
+        <Link
           href="/profile"
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
         >
