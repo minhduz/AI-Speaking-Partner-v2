@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Logo } from '@/components/shared/logo/logo';
 import { sessionService } from '@/services/session.service';
@@ -41,14 +41,6 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
     fetchSessions(true);
   }, [refreshKey, fetchSessions]);
 
-  // Update a session's title in-place when the agent generates it
-  useEffect(() => {
-    if (!titleUpdate) return;
-    setSessions((prev) =>
-      prev.map((s) => s.id === titleUpdate.sessionId ? { ...s, title: titleUpdate.title } : s),
-    );
-  }, [titleUpdate]);
-
   // Lazy load more when sentinel scrolls into view
   useEffect(() => {
     if (!sentinelRef.current) return;
@@ -62,7 +54,14 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
     return () => observer.disconnect();
   }, [fetchSessions]);
 
-  const groups = groupByDate(sessions);
+  const displayedSessions = useMemo(() => {
+    if (!titleUpdate) return sessions;
+    return sessions.map((s) =>
+      s.id === titleUpdate.sessionId ? { ...s, title: titleUpdate.title } : s,
+    );
+  }, [sessions, titleUpdate]);
+
+  const groups = groupByDate(displayedSessions);
 
   return (
     <aside className="flex flex-col w-60 shrink-0 bg-white border-r border-gray-100 h-full">
@@ -232,6 +231,16 @@ function BillingIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
       <line x1="1" y1="10" x2="23" y2="10" />
+    </svg>
+  );
+}
+
+function FlashcardIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <line x1="2" y1="10" x2="22" y2="10" />
+      <line x1="7" y1="15" x2="12" y2="15" />
     </svg>
   );
 }

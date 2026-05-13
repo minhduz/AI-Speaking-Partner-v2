@@ -52,6 +52,7 @@ export default function FlashcardsPage() {
         onNewChat={() => router.push('/chat')}
         onLogout={logout}
         currentSessionId={null}
+        onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
       <main className="flex-1 flex h-full bg-[#F5F2EA] overflow-hidden">
         {loading ? (

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
 import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
@@ -16,6 +17,9 @@ const Waveform = dynamic(
 );
 
 export default function ChatPage() {
+  const searchParams = useSearchParams();
+  const urlSessionId = searchParams.get('sessionId') ?? undefined;
+
   const { handleLogout } = useAuth();
   const {
     messages,
@@ -35,7 +39,7 @@ export default function ChatPage() {
     startNewSession,
     enterReview,
     loadMoreReview,
-  } = useChat();
+  } = useChat(urlSessionId);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -128,8 +132,15 @@ export default function ChatPage() {
           className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3"
           onScroll={reviewMode ? handleReviewScroll : undefined}
         >
-          {/* Review mode: spinner while loading earlier messages */}
-          {reviewMode && reviewLoading && (
+          {/* Review mode: full-screen spinner on initial session load */}
+          {reviewMode && reviewLoading && messages.length === 0 && (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="w-10 h-10 rounded-full border-4 border-[#4A6741]/30 border-t-[#4A6741] animate-spin" />
+            </div>
+          )}
+
+          {/* Review mode: small top spinner when loading earlier messages (not initial load) */}
+          {reviewMode && reviewLoading && messages.length > 0 && (
             <div className="flex justify-center py-3">
               <div className="w-4 h-4 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
             </div>

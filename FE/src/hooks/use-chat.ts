@@ -107,7 +107,7 @@ async function playAudioWithSentence(
   });
 }
 
-export function useChat(): UseChatReturn {
+export function useChat(initialSessionId?: string): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
@@ -140,6 +140,38 @@ export function useChat(): UseChatReturn {
   const pendingStopRef = useRef(false);
   // Point to the module-level singleton — always exists on the client before any effect.
   const sharedPlaybackCtxRef = useRef<AudioContext | null>(getSharedAudioCtx());
+
+  const turnsToMessages = useCallback((items: TurnHistoryItem[]): ChatMessage[] => {
+    const msgs: ChatMessage[] = [];
+    for (const t of items) {
+      msgs.push({ role: 'user', text: t.transcript, pronunciationScore: t.pronunciationScore ?? undefined });
+      msgs.push({ role: 'ai', text: t.responseText, sentences: [t.responseText] });
+    }
+    return msgs;
+  }, []);
+
+  const loadReviewPage = useCallback(async (sessionId: string, page: number, prepend: boolean) => {
+    setReviewLoading(true);
+    try {
+      const data = await sessionService.getTurns(sessionId, page, 20);
+      const converted = turnsToMessages([...data.items].reverse());
+      setMessages((prev) => (prepend ? [...converted, ...prev] : converted));
+      setReviewHasMore(data.hasMore);
+      reviewPageRef.current = page;
+    } finally {
+      setReviewLoading(false);
+    }
+  }, [turnsToMessages]);
+
+  const enterReview = useCallback(async (sessionId: string) => {
+    setReviewMode(true);
+    setReviewSessionId(sessionId);
+    reviewSessionIdRef.current = sessionId;
+    reviewPageRef.current = 1;
+    setMessages([]);
+    setReviewHasMore(false);
+    await loadReviewPage(sessionId, 1, false);
+  }, [loadReviewPage]);
 
   const processAudioQueue = useCallback(async () => {
     // During SSR, useRef(getSharedAudioCtx()) receives null because window doesn't exist.
@@ -272,8 +304,12 @@ export function useChat(): UseChatReturn {
     if (authLoading || !isAuthenticated) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
-    initSession();
-  }, [authLoading, isAuthenticated, initSession]);
+    if (initialSessionId) {
+      enterReview(initialSessionId);
+    } else {
+      initSession();
+    }
+  }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
 
   // Resume the shared AudioContext on every user gesture (Chrome blocks autoplay without one).
   // Also explicitly assign the ref here because the useRef initializer runs during SSR
@@ -460,38 +496,6 @@ export function useChat(): UseChatReturn {
       setStatus('error');
     }
   }, [processAudioQueue]);
-
-  const turnsToMessages = useCallback((items: TurnHistoryItem[]): ChatMessage[] => {
-    const msgs: ChatMessage[] = [];
-    for (const t of items) {
-      msgs.push({ role: 'user', text: t.transcript, pronunciationScore: t.pronunciationScore ?? undefined });
-      msgs.push({ role: 'ai', text: t.responseText, sentences: [t.responseText] });
-    }
-    return msgs;
-  }, []);
-
-  const loadReviewPage = useCallback(async (sessionId: string, page: number, prepend: boolean) => {
-    setReviewLoading(true);
-    try {
-      const data = await sessionService.getTurns(sessionId, page, 20);
-      const converted = turnsToMessages([...data.items].reverse());
-      setMessages((prev) => (prepend ? [...converted, ...prev] : converted));
-      setReviewHasMore(data.hasMore);
-      reviewPageRef.current = page;
-    } finally {
-      setReviewLoading(false);
-    }
-  }, [turnsToMessages]);
-
-  const enterReview = useCallback(async (sessionId: string) => {
-    setReviewMode(true);
-    setReviewSessionId(sessionId);
-    reviewSessionIdRef.current = sessionId;
-    reviewPageRef.current = 1;
-    setMessages([]);
-    setReviewHasMore(false);
-    await loadReviewPage(sessionId, 1, false);
-  }, [loadReviewPage]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
