@@ -26,6 +26,22 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+async function fetchWithAuth(url: string, init: RequestInit = {}): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...(init.headers as Record<string, string>),
+    ...authHeaders(),
+  };
+  let res = await fetch(url, { ...init, headers });
+  if (res.status === 401) {
+    const newToken = await tryRefresh();
+    if (newToken) {
+      headers['Authorization'] = `Bearer ${newToken}`;
+      res = await fetch(url, { ...init, headers });
+    }
+  }
+  return res;
+}
+
 function log(label: string, data?: unknown) {
   if (data !== undefined) {
     console.log(`[session] ${label}`, data);
@@ -55,9 +71,9 @@ export type TurnEvent =
 export const sessionService = {
   start: async (): Promise<{ session_id: string }> => {
     log('POST /session/start');
-    const res = await fetch(`${API_BASE}/session/start`, {
+    const res = await fetchWithAuth(`${API_BASE}/session/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json' },
     });
     if (!res.ok) throw new Error('Failed to start session');
     const data = await res.json();
@@ -82,18 +98,14 @@ export const sessionService = {
 
   list: async (page: number, limit = 25): Promise<{ items: SessionSummary[]; total: number; hasMore: boolean }> => {
     log(`GET /session/list page=${page}`);
-    const res = await fetch(`${API_BASE}/session/list?page=${page}&limit=${limit}`, {
-      headers: authHeaders(),
-    });
+    const res = await fetchWithAuth(`${API_BASE}/session/list?page=${page}&limit=${limit}`);
     if (!res.ok) throw new Error('Failed to fetch sessions');
     return res.json();
   },
 
   streamGreeting: async (sessionId: string): Promise<AsyncGenerator<GreetingEvent>> => {
     log(`GET /session/${sessionId}/greeting/stream`);
-    const res = await fetch(`${API_BASE}/session/${sessionId}/greeting/stream`, {
-      headers: authHeaders(),
-    });
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/greeting/stream`);
     if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
     log(`GET /session/${sessionId}/greeting/stream → connected (SSE)`);
 
@@ -136,9 +148,8 @@ export const sessionService = {
     log(`POST /turn/${sessionId}`, { blobSize: audioBlob.size, type: audioBlob.type });
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.webm');
-    const res = await fetch(`${API_BASE}/turn/${sessionId}`, {
+    const res = await fetchWithAuth(`${API_BASE}/turn/${sessionId}`, {
       method: 'POST',
-      headers: authHeaders(),
       body: formData,
     });
     if (!res.ok) {
@@ -163,9 +174,9 @@ export const sessionService = {
 
   end: async (sessionId: string): Promise<void> => {
     log(`POST /session/end`, { session_id: sessionId });
-    await fetch(`${API_BASE}/session/end`, {
+    await fetchWithAuth(`${API_BASE}/session/end`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId }),
     });
     log(`POST /session/end → ok`);

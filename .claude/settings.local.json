@@ -3,7 +3,8 @@
     "allow": [
       "Bash(Remove-Item \"c:\\\\Users\\\\minhd\\\\OneDrive\\\\Desktop\\\\FPT Document\\\\Final Project\\\\code\\\\BE\\\\docker-compose.yml\")",
       "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\minhd\\\\OneDrive\\\\Desktop\\\\FPT Document\\\\Final Project\\\\code\" -Directory)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(git add *)"
     ]
   }
 }
