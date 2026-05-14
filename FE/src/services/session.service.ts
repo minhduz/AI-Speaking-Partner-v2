@@ -1,5 +1,5 @@
-import { getAccessToken } from '@/lib/http-client';
-import type { GreetingEvent, SessionSummary, TurnHistoryPage } from '@/types/session.types';
+import { getAccessToken, tryRefresh } from '@/lib/http-client';
+import type { GreetingEvent, SessionSummary, TurnHistoryPage, TurnEvent } from '@/types/session.types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
@@ -60,16 +60,6 @@ export interface TurnResult {
   tokens_used: number;
 }
 
-export type TurnEvent =
-  | { type: 'transcript'; text: string }
-  | { type: 'pronunciation'; data: { score?: number; [key: string]: unknown } }
-  | { type: 'text'; chunk: string }
-  | { type: 'audio'; audio_b64: string; text?: string }
-  | { type: 'title'; text: string }
-  | { type: 'quota_warning'; percent_used: number; upgrade_url: string }
-  | { type: 'done'; tokens_used: number }
-  | { type: 'error'; message: string };
-
 export const sessionService = {
   start: async (): Promise<{ session_id: string }> => {
     log('POST /session/start');
@@ -115,6 +105,40 @@ export const sessionService = {
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
       for await (const event of parseSSE<GreetingEvent>(res)) {
         log(`greeting event ←`, event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        yield event;
+      }
+    }
+    return wrapped();
+  },
+
+  streamTurnText: async (sessionId: string, transcript: string): Promise<AsyncGenerator<TurnEvent>> => {
+    log(`POST /turn/${sessionId}/stream-text`, { transcript: transcript.slice(0, 60) });
+    const res = await fetch(`${API_BASE}/turn/${sessionId}/stream-text`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(),
+        'Content-Type': 'application/json',
+        'X-Client-Datetime': new Date().toISOString(),
+      },
+      body: JSON.stringify({ transcript }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => res.statusText);
+      log(`POST /turn/${sessionId}/stream-text → ERROR`, { status: res.status, body });
+      throw new Error(`Turn text stream failed: ${res.status}`);
+    }
+    async function* wrapped(): AsyncGenerator<TurnEvent> {
+      let audioChunkCount = 0;
+      for await (const event of parseSSE<TurnEvent>(res)) {
+        if (event.type === 'audio_chunk') {
+          audioChunkCount++;
+        } else {
+          log(`turn-text event ←`, event.type === 'audio'
+            ? { type: event.type, audio_b64: '[base64]', text: event.text }
+            : event.type === 'audio_end'
+              ? { type: event.type, chunks: audioChunkCount }
+              : event);
+        }
         yield event;
       }
     }

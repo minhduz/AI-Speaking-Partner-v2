@@ -14,7 +14,8 @@ async def persist_node(state: dict) -> dict:
     tokens_used = state["tokens_used"]
     pronunciation = state.get("pronunciation", {})
     confidence = state.get("confidence", 0.9)
-    pron_score = pronunciation.get("score", 0.0) if isinstance(pronunciation, dict) else 0.0
+    raw_score = pronunciation.get("score") if isinstance(pronunciation, dict) else None
+    pron_score = float(raw_score) if raw_score is not None else 0.0
 
     await database.pool.execute(
         """
@@ -43,8 +44,10 @@ async def persist_node(state: dict) -> dict:
             "SELECT COUNT(*) FROM speaking_app.turns WHERE session_id = $1",
             session_id,
         )
+        existing_avg = float(row["avg_pronunciation_score"]) if row["avg_pronunciation_score"] is not None else 0.0
+        existing_tokens = int(row["total_tokens"]) if row["total_tokens"] is not None else 0
         if turn_count > 0:
-            new_avg = ((row["avg_pronunciation_score"] * (turn_count - 1)) + pron_score) / turn_count
+            new_avg = ((existing_avg * (turn_count - 1)) + pron_score) / turn_count
         else:
             new_avg = pron_score
         await database.pool.execute(
@@ -53,7 +56,7 @@ async def persist_node(state: dict) -> dict:
             SET total_tokens = $1, avg_pronunciation_score = $2
             WHERE id = $3
             """,
-            row["total_tokens"] + tokens_used,
+            existing_tokens + tokens_used,
             round(new_avg, 3),
             session_id,
         )

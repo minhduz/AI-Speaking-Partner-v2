@@ -252,12 +252,20 @@ function MessageBubble({
         onDoubleClick={handleDoubleClick}
         className={`max-w-[85%] md:max-w-[75%] flex flex-col select-text cursor-text ${isAi ? 'items-start' : 'items-end'}`}
       >
-        {message.pending ? (
+        {message.pending && isAi && !message.text ? (
           <ThinkingDots />
+        ) : message.pending && isAi && message.text ? (
+          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-900">
+            {message.text}
+          </p>
+        ) : message.pending && !isAi ? (
+          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
+            {message.text || '…'}
+          </p>
         ) : isAi && message.sentences && message.sentences.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {message.sentences.map((s, i) => (
-              <p key={i} className={`text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight${message.isHistoric ? '' : ' animate-reveal'}`}>
+              <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight">
                 {s}
               </p>
             ))}

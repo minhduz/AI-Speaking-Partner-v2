@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(docker exec *)"
+      "Bash(docker exec *)",
+      "WebFetch(domain:soniox.com)",
+      "Bash(xargs grep -l \"turn.*event\\\\|stream\\\\|SSE\\\\|fetch.*turn\")"
     ]
   }
 }
