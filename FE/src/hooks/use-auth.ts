@@ -95,6 +95,7 @@ export function useAuth() {
 
   const handleLogout = async () => {
     stopAllAudio();
+    window.google?.accounts?.id?.disableAutoSelect();
     await logout();
     router.push('/login');
   };

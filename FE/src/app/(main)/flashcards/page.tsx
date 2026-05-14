@@ -54,15 +54,15 @@ export default function FlashcardsPage() {
         currentSessionId={null}
         onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
-      <main className="flex-1 flex h-full bg-[#F5F2EA] overflow-hidden">
+      <main className="flex-1 flex h-full bg-[#F8F9FB] overflow-hidden">
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
-            <div className="w-10 h-10 rounded-full border-4 border-[#4A6741]/30 border-t-[#4A6741] animate-spin" />
+            <div className="w-10 h-10 rounded-full border-4 border-[#8447FF]/30 border-t-[#8447FF] animate-spin" />
           </div>
         ) : groups.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-gray-500 animate-reveal">
             <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center shadow-sm border border-[#E8E4D9] mb-5">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#4A6741" strokeWidth="1.5" className="opacity-80">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#8447FF" strokeWidth="1.5" className="opacity-80">
                 <rect x="3" y="3" width="18" height="18" rx="2" />
                 <path d="M3 9h18" />
                 <path d="M9 21V9" />
@@ -308,20 +308,20 @@ function SwipeableCard({
         </div>
 
         {/* Back */}
-        <div className="absolute inset-0 backface-hidden w-full h-full bg-[#4A6741] rounded-[24px] border border-[#3D5535] text-white flex flex-col p-8 rotate-y-180 overflow-y-auto custom-scrollbar pointer-events-none">
+        <div className="absolute inset-0 backface-hidden w-full h-full bg-[#8447FF] rounded-[24px] border border-[#6B35CC] text-white flex flex-col p-8 rotate-y-180 overflow-y-auto custom-scrollbar pointer-events-none">
           <div className="flex-1 flex flex-col">
             <p className="text-2xl font-bold text-center mb-6 leading-relaxed border-b border-white/20 pb-6">{word.translation}</p>
             
             {word.examples && word.examples.length > 0 ? (
               <div className="space-y-4">
-                <p className="text-xs text-[#A3C09A] uppercase tracking-widest font-bold flex items-center gap-2">
+                <p className="text-xs text-[#C4A0FF] uppercase tracking-widest font-bold flex items-center gap-2">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                   Examples
                 </p>
                 <ul className="text-base text-white/95 space-y-4">
                   {word.examples.slice(0, 2).map((ex, i) => (
                     <li key={i} className="leading-relaxed relative pl-4">
-                      <span className="absolute left-0 top-2.5 w-1.5 h-1.5 rounded-full bg-[#A3C09A]"></span>
+                      <span className="absolute left-0 top-2.5 w-1.5 h-1.5 rounded-full bg-[#C4A0FF]"></span>
                       {ex.replace(/<[^>]*>?/gm, '')}
                     </li>
                   ))}

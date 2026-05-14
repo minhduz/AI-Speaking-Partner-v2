@@ -10,6 +10,7 @@ declare global {
           initialize: (config: Record<string, unknown>) => void;
           renderButton: (el: HTMLElement, config: Record<string, unknown>) => void;
           prompt: () => void;
+          disableAutoSelect: () => void;
         };
       };
     };

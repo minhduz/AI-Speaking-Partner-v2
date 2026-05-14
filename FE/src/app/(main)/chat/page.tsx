@@ -210,6 +210,7 @@ export default function ChatPage() {
       {/* Dictionary popup — fixed position relative to double-clicked word */}
       {wordDictionary.isOpen && dictAnchor && (
         <DictionaryPopup
+          key={`${dictAnchor.top}-${dictAnchor.left}`}
           isOpen={wordDictionary.isOpen}
           onClose={handleDictClose}
           isLoading={wordDictionary.isLoading}
