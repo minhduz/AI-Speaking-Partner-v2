@@ -15,6 +15,16 @@ _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 MAX_FACTS = 50          # hard cap before long-term compression
 SHORT_TERM_MAX_FACTS = 20  # compact cap for short-term Redis facts
 
+# Pricing (USD per 1M tokens)
+_GPT4O_MINI_IN  = 0.15
+_GPT4O_MINI_OUT = 0.60
+_EMBED_PRICE    = 0.020
+
+
+def _usd(prompt: int = 0, completion: int = 0, embed: int = 0) -> float:
+    return (prompt * _GPT4O_MINI_IN + completion * _GPT4O_MINI_OUT) / 1_000_000 \
+         + embed * _EMBED_PRICE / 1_000_000
+
 
 async def run_consolidation(user_id: str, session_id: str):
     """
@@ -62,8 +72,9 @@ async def run_consolidation(user_id: str, session_id: str):
         )
         log.info("step 3 — calling LLM (combined long-term + short-term) from %d messages",
                  len(messages_to_extract))
+        extract_usage = None
         try:
-            _all = await _extract_all_facts(conversation, session_start_utc)
+            _all, extract_usage = await _extract_all_facts(conversation, session_start_utc)
             raw_facts: list[dict]    = _all.get("long_term", [])
             raw_st_facts: list[dict] = _all.get("short_term", [])
         except Exception as exc:
@@ -104,18 +115,20 @@ async def run_consolidation(user_id: str, session_id: str):
         log.info("step 5 — merged → %d total facts", len(merged))
 
         # 6. Compress if above hard cap
+        compress_usage = None
         if len(merged) > MAX_FACTS:
             log.info("step 6 — %d facts exceeds cap %d, compressing", len(merged), MAX_FACTS)
-            merged = await _compress_facts(merged)
+            merged, compress_usage = await _compress_facts(merged)
             log.info("step 6 — compressed to %d facts", len(merged))
         else:
             log.info("step 6 — skip compression (%d ≤ %d)", len(merged), MAX_FACTS)
 
         # 7. Batch-embed all facts in a single API call
         texts = [f["content"] for f in merged]
+        embed_tokens = 0
         if texts:
             log.info("step 7 — batch-embedding %d facts", len(texts))
-            embeddings = await _batch_embed(texts)
+            embeddings, embed_tokens = await _batch_embed(texts)
         else:
             embeddings = []
         log.info("step 7 — embeddings ready")
@@ -174,6 +187,22 @@ async def run_consolidation(user_id: str, session_id: str):
             log.error("step 10 — short-term consolidation FAILED (long-term already saved): %s",
                       st_err, exc_info=True)
             merged_st = []
+
+        extract_p  = extract_usage.prompt_tokens     if extract_usage  else 0
+        extract_c  = extract_usage.completion_tokens if extract_usage  else 0
+        compress_p = compress_usage.prompt_tokens     if compress_usage else 0
+        compress_c = compress_usage.completion_tokens if compress_usage else 0
+        total_usd  = _usd(extract_p, extract_c) + _usd(compress_p, compress_c) + _usd(embed=embed_tokens)
+        log.info(
+            "[token] consolidation_summary  user=%s  session=%s  "
+            "extract_prompt=%d  extract_completion=%d  "
+            "compress_prompt=%d  compress_completion=%d  "
+            "embed_tokens=%d  total_cost=$%.6f",
+            user_id, session_id,
+            extract_p, extract_c,
+            compress_p, compress_c,
+            embed_tokens, total_usd,
+        )
 
         await _mark_done(user_id, session_id, len(new_facts), pruned_count)
         log.info("── done  new_facts=%d  pruned=%d  total=%d  st_facts=%d",
@@ -240,7 +269,7 @@ def _merge(existing: list[dict], new_facts: list[dict]) -> list[dict]:
     return result
 
 
-async def _compress_facts(facts: list[dict]) -> list[dict]:
+async def _compress_facts(facts: list[dict]) -> tuple[list[dict], object]:
     """
     Ask the LLM to merge semantically related facts into fewer, denser facts.
     expires_at is NOT passed to or returned from the LLM — it is always
@@ -273,11 +302,15 @@ async def _compress_facts(facts: list[dict]) -> list[dict]:
         response_format={"type": "json_object"},
         max_tokens=1200,
     )
+    usage = res.usage
+    log.info("[token] compress_facts  prompt=%d  completion=%d  total=%d  cost=$%.6f",
+             usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+             _usd(usage.prompt_tokens, usage.completion_tokens))
     try:
         compressed = json.loads(res.choices[0].message.content).get("facts", [])
     except Exception:
         log.warning("_compress_facts: LLM parse failed, returning original")
-        return facts
+        return facts, usage
 
     now = datetime.now(timezone.utc)
     default_expires = now + timedelta(days=settings.long_term_ttl_days)
@@ -292,21 +325,24 @@ async def _compress_facts(facts: list[dict]) -> list[dict]:
             "added_at":   now,
             "expires_at": default_expires,   # always Python-computed, never from LLM
         })
-    return result
+    return result, usage
 
 
-async def _batch_embed(texts: list[str]) -> list[list[float]]:
+async def _batch_embed(texts: list[str]) -> tuple[list[list[float]], int]:
     """Single OpenAI API call for all fact texts."""
     res = await _openai.embeddings.create(
         model=settings.embedding_model,
         input=texts,
     )
+    embed_tokens = res.usage.total_tokens
+    log.info("[token] batch_embed  tokens=%d  cost=$%.6f",
+             embed_tokens, _usd(embed=embed_tokens))
     # API returns embeddings in the same order as input
     ordered = sorted(res.data, key=lambda e: e.index)
-    return [e.embedding for e in ordered]
+    return [e.embedding for e in ordered], embed_tokens
 
 
-async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> dict:
+async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> tuple[dict, object]:
     """
     Single LLM call that extracts both long-term and short-term facts.
     Returns {"long_term": [...], "short_term": [...]}.
@@ -364,14 +400,18 @@ async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> 
         response_format={"type": "json_object"},
         max_tokens=900,
     )
+    usage = res.usage
+    log.info("[token] extract_facts  prompt=%d  completion=%d  total=%d  cost=$%.6f",
+             usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
+             _usd(usage.prompt_tokens, usage.completion_tokens))
     try:
         data = json.loads(res.choices[0].message.content)
         return {
             "long_term":  data.get("long_term", []),
             "short_term": data.get("short_term", []),
-        }
+        }, usage
     except Exception:
-        return {"long_term": [], "short_term": []}
+        return {"long_term": [], "short_term": []}, usage
 
 
 def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:

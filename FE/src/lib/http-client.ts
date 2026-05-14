@@ -21,7 +21,7 @@ export function getAccessToken(): string | null {
 // Singleton refresh promise — deduplicates concurrent 401 retries
 let _refreshPromise: Promise<string | null> | null = null;
 
-async function tryRefresh(): Promise<string | null> {
+export async function tryRefresh(): Promise<string | null> {
   if (_refreshPromise) return _refreshPromise;
   _refreshPromise = fetch('/api/auth/refresh', {
     method: 'POST',

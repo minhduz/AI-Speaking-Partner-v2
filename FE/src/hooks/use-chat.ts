@@ -15,6 +15,9 @@ function splitSentences(text: string): string[] {
 // Prevents re-streaming the greeting when the user navigates away and returns.
 let _greetingTextCache: string | null = null;
 
+const TURN_PLAYBACK_RATE = 1.15;
+const TURN_REVEAL_MS_PER_WORD = 300;
+
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
 // Returns null during SSR where `window` does not exist.
@@ -83,12 +86,13 @@ async function playAudioWithSentence(
   text: string | undefined,
   onText: ((t: string) => void) | undefined,
   onWordReveal?: (partial: string) => void,
+  playbackRate = 1,
 ): Promise<void> {
   console.log(`[Audio] playAudioWithSentence — ctx state: ${ctx.state}, b64 len: ${b64?.length ?? 0}, text: "${text?.slice(0, 40) ?? 'none'}"`);
   if (ctx.state === 'suspended') {
     console.warn('[Audio] shared ctx still suspended — skipping audio, showing text');
     if (text && onText) onText(text);
-    else if (text && onWordReveal) revealWordsOverTime(text, text.split(/\s+/).length * 150, onWordReveal);
+    else if (text && onWordReveal) revealWordsOverTime(text, text.split(/\s+/).length * TURN_REVEAL_MS_PER_WORD, onWordReveal);
     return;
   }
   const binary = atob(b64);
@@ -99,11 +103,12 @@ async function playAudioWithSentence(
   if (text && onText) onText(text);
   const source = ctx.createBufferSource();
   source.buffer = audioBuffer;
+  source.playbackRate.value = playbackRate;
   source.connect(ctx.destination);
   source.start(0);
   console.log('[Audio] source.start(0) called — playing');
   if (text && onWordReveal) {
-    revealWordsOverTime(text, audioBuffer.duration * 1000, onWordReveal);
+    revealWordsOverTime(text, (audioBuffer.duration * 1000) / playbackRate, onWordReveal);
   }
   return new Promise((resolve) => {
     source.onended = () => {
@@ -130,16 +135,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
   const sessionIdRef = useRef<string | null>(null);
   const reviewSessionIdRef = useRef<string | null>(null);
+  const nextPlayTimeRef = useRef<number>(0);
   const reviewPageRef = useRef(1);
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
   const initializedRef = useRef(false);
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
+  const audioQueueIdleResolversRef = useRef<(() => void)[]>([]);
   const isPlayingRef = useRef(false);
   const isStoppingRef = useRef(false);
+  const sttWsRef = useRef<WebSocket | null>(null);
+  const sttDoneResolverRef = useRef<((t: string) => void) | null>(null);
   // Set when stopMic is called before startRecording has finished setting up the
   // MediaRecorder — drains in startMic's .then() so the stop isn't lost.
   const pendingStopRef = useRef(false);
@@ -178,6 +186,21 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     await loadReviewPage(sessionId, 1, false);
   }, [loadReviewPage]);
 
+  const resolveAudioQueueIdle = useCallback(() => {
+    if (isPlayingRef.current || audioQueueRef.current.length > 0) return;
+    const resolvers = audioQueueIdleResolversRef.current.splice(0);
+    resolvers.forEach((resolve) => resolve());
+  }, []);
+
+  const waitForAudioQueueIdle = useCallback((): Promise<void> => {
+    if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      audioQueueIdleResolversRef.current.push(resolve);
+    });
+  }, []);
+
   const processAudioQueue = useCallback(async () => {
     // During SSR, useRef(getSharedAudioCtx()) receives null because window doesn't exist.
     // React doesn't re-run the initializer on hydration, so the ref stays null.
@@ -201,6 +224,25 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     }
     if (!ctx) {
       console.warn('[Audio] no shared AudioContext yet — skipping');
+      while (audioQueueRef.current.length > 0) {
+        const item = audioQueueRef.current.shift()!;
+        if (!item.text) continue;
+        if (item.isGreeting) {
+          setGreetingSentences((prev) => [...prev, item.text!]);
+        } else {
+          setMessages((prev) => {
+            const msgs = [...prev];
+            const idx = msgs.findLastIndex((m) => m.role === 'ai');
+            if (idx >= 0) {
+              const existing = msgs[idx];
+              const sentences = [...(existing.sentences ?? []), item.text!];
+              msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
+            }
+            return msgs;
+          });
+        }
+      }
+      resolveAudioQueueIdle();
       return;
     }
     isPlayingRef.current = true;
@@ -223,14 +265,29 @@ export function useChat(initialSessionId?: string): UseChatReturn {
                 return next;
               });
           } else {
-            onText = (t: string) =>
+            setMessages((prev) => {
+              const msgs = [...prev];
+              const idx = msgs.findLastIndex((m) => m.role === 'ai');
+              if (idx >= 0) {
+                const existing = msgs[idx];
+                const sentences = [...(existing.sentences ?? []), ''];
+                msgs[idx] = { ...existing, pending: false, text: sentences.filter(Boolean).join(' '), sentences };
+              }
+              return msgs;
+            });
+            onWordReveal = (partial: string) =>
               setMessages((prev) => {
                 const msgs = [...prev];
                 const idx = msgs.findLastIndex((m) => m.role === 'ai');
                 if (idx >= 0) {
                   const existing = msgs[idx];
-                  const sentences = [...(existing.sentences ?? []), t];
-                  msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
+                  const sentences = [...(existing.sentences ?? [])];
+                  if (sentences.length === 0) {
+                    sentences.push(partial);
+                  } else {
+                    sentences[sentences.length - 1] = partial;
+                  }
+                  msgs[idx] = { ...existing, pending: false, text: sentences.filter(Boolean).join(' '), sentences };
                 }
                 return msgs;
               });
@@ -238,7 +295,14 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         }
 
         try {
-          await playAudioWithSentence(ctx, item.b64, item.text, onText, onWordReveal);
+          await playAudioWithSentence(
+            ctx,
+            item.b64,
+            item.text,
+            onText,
+            onWordReveal,
+            item.isGreeting ? 1 : TURN_PLAYBACK_RATE,
+          );
         } catch (err) {
           console.error('[Audio] playback error:', err);
           if (item.text) {
@@ -250,8 +314,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     } finally {
       console.log('[Audio] queue drained — isPlaying reset to false');
       isPlayingRef.current = false;
+      resolveAudioQueueIdle();
     }
-  }, [setMessages, setGreetingSentences]);
+  }, [resolveAudioQueueIdle, setMessages, setGreetingSentences]);
 
   // Greeting does not require a session — it's a pre-session welcome stream
   const runGreeting = useCallback(async () => {
@@ -309,11 +374,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (authLoading || !isAuthenticated) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
-    if (initialSessionId) {
-      enterReview(initialSessionId);
-    } else {
-      initSession();
-    }
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      if (initialSessionId) {
+        void enterReview(initialSessionId);
+      } else {
+        void initSession();
+      }
+    });
+    return () => { cancelled = true; };
   }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
 
   // Resume the shared AudioContext on every user gesture (Chrome blocks autoplay without one).
@@ -388,33 +458,85 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         sum += amplitude * amplitude;
       }
       const rms = Math.sqrt(sum / dataArray.length);
-
-      // RMS > 0.03 is considered speech.
-      // We require at least 3 frames (~300ms) to filter out mouse clicks and brief static.
       if (rms > 0.03) {
         spokenFrames++;
-        if (spokenFrames >= 3) {
-          hasSpokenRef.current = true;
-        }
+        if (spokenFrames >= 3) hasSpokenRef.current = true;
       }
     }, 100);
 
+    // Open STT WebSocket — browser streams audio chunks directly to Soniox in real-time
+    const speechBase = (process.env.NEXT_PUBLIC_SPEECH_SERVICE_URL ?? 'http://localhost:8010')
+      .replace(/^http(s?):\/\//, (_: string, s: string) => `ws${s}://`);
+    const ws = new WebSocket(`${speechBase}/stt/ws`);
+    sttWsRef.current = ws;
+
+    ws.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      if (data.type === 'word') {
+        setMessages((prev) => {
+          const msgs = [...prev];
+          const idx = msgs.findLastIndex((m) => m.role === 'user' && m.pending);
+          if (idx >= 0) msgs[idx] = { ...msgs[idx], text: data.text };
+          return msgs;
+        });
+      } else if (data.type === 'done' || data.type === 'error') {
+        sttWsRef.current = null;
+        ws.close();
+        sttDoneResolverRef.current?.(data.transcript ?? '');
+        sttDoneResolverRef.current = null;
+      }
+    };
+    ws.onclose = () => {
+      if (sttWsRef.current === ws) sttWsRef.current = null;
+      sttDoneResolverRef.current?.('');
+      sttDoneResolverRef.current = null;
+    };
+
+    // Wait for WS to open before starting recorder
+    if (ws.readyState !== WebSocket.OPEN) {
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener('open', () => resolve(), { once: true });
+        ws.addEventListener('error', () => reject(new Error('STT WebSocket failed to connect')), { once: true });
+      });
+    }
+
+    // Pending user bubble appears as soon as recording starts
+    setMessages((prev) => [...prev, { role: 'user', text: '', pending: true }]);
+
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
-    chunksRef.current = [];
-    recorder.ondataavailable = (e) => chunksRef.current.push(e.data);
-    recorder.start();
+    // Each 50ms chunk goes directly to Soniox via the WebSocket
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+        e.data.arrayBuffer().then((buf) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(buf);
+        });
+      }
+    };
+    recorder.start(50);
     setStatus('recording');
-  }, []);
+  }, [setMessages]);
 
-  const stopRecording = useCallback((): Promise<Blob> => {
+  const stopRecording = useCallback((): Promise<string> => {
     return new Promise((resolve) => {
       if (checkVolumeIntervalRef.current !== null) {
         window.clearInterval(checkVolumeIntervalRef.current);
         checkVolumeIntervalRef.current = null;
       }
       const recorder = recorderRef.current!;
-      recorder.onstop = () => resolve(new Blob(chunksRef.current, { type: 'audio/webm' }));
+      const ws = sttWsRef.current;
+
+      // Store resolver — ws.onmessage 'done' handler calls it when Soniox is finished
+      sttDoneResolverRef.current = resolve;
+
+      recorder.onstop = () => {
+        // All ondataavailable chunks have been sent by this point — signal end of audio
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ end: true }));
+        } else {
+          resolve('');
+        }
+      };
       recorder.stop();
       streamRef.current?.getTracks().forEach((t) => t.stop());
       const recCtx = audioCtxRef.current;
@@ -423,79 +545,173 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     });
   }, []);
 
-  const processTurn = useCallback(async (audioBlob: Blob) => {
+  const processTurn = useCallback(async (transcript: string) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
 
     setStatus('processing');
     setErrorMessage(null);
+    nextPlayTimeRef.current = 0;
 
-    setMessages((prev) => [...prev, { role: 'user', text: '', pending: true }]);
+    // Replace the pending user bubble (filled by word events) with the final transcript
+    setGreetingSentences([]);
+    setMessages((prev) => {
+      const withoutPending = prev.filter((m) => !m.pending);
+      const userBubble = transcript.trim()
+        ? [{ role: 'user' as const, text: transcript }]
+        : [];
+      return [...withoutPending, ...userBubble, { role: 'ai', text: '', pending: true }];
+    });
 
     try {
-      const stream = await sessionService.streamTurn(sessionId, audioBlob);
+      const stream = await sessionService.streamTurnText(sessionId, transcript);
       let aiFullText = '';
-      let hadAudioText = false;
+      let hadAudioChunks = false;
+      let hadSentenceAudio = false;
+      let wordsRevealed = 0;
+      let revealInterval: number | null = null;
+
+      const stopReveal = () => {
+        if (revealInterval !== null) { window.clearInterval(revealInterval); revealInterval = null; }
+      };
 
       for await (const event of stream) {
-        if (event.type === 'transcript') {
-          // Conversation has started — remove the greeting
-          setGreetingSentences([]);
-          setMessages((prev) => {
-            const withoutPending = prev.filter((m) => !m.pending);
-            return [
-              ...withoutPending,
-              { role: 'user', text: event.text },
-              { role: 'ai', text: '', pending: true },
-            ];
-          });
-        } else if (event.type === 'pronunciation') {
-          setMessages((prev) => {
-            const newMessages = [...prev];
-            const lastUserIndex = newMessages.findLastIndex((m) => m.role === 'user');
-            if (lastUserIndex >= 0) {
-              const userMsg = newMessages[lastUserIndex];
-              if (userMsg.text && userMsg.text.trim().length > 0) {
-                newMessages[lastUserIndex] = {
-                  ...userMsg,
-                  pronunciationScore: event.data.score ?? undefined
-                };
-              }
-            }
-            return newMessages;
-          });
-        } else if (event.type === 'text') {
+        if (event.type === 'text') {
+          // Accumulate silently — interval reveals at speech rate once audio starts
           aiFullText += event.chunk;
+        } else if (event.type === 'audio_chunk') {
+          hadAudioChunks = true;
+          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+          if (ctx && ctx.state !== 'closed') {
+            try {
+              const binary = atob(event.audio_b64);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+              const pcm = new Int16Array(bytes.buffer);
+              const float32 = new Float32Array(pcm.length);
+              for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768.0;
+              const sampleRate = event.sample_rate || 24000;
+              const buffer = ctx.createBuffer(1, float32.length, sampleRate);
+              buffer.copyToChannel(float32, 0);
+              const source = ctx.createBufferSource();
+              source.buffer = buffer;
+              source.playbackRate.value = TURN_PLAYBACK_RATE;
+              source.connect(ctx.destination);
+              const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
+              source.start(startTime);
+              nextPlayTimeRef.current = startTime + (buffer.duration / TURN_PLAYBACK_RATE);
+
+              // Start word-reveal interval the moment first audio plays (~150 wpm)
+              if (revealInterval === null) {
+                revealInterval = window.setInterval(() => {
+                  const words = aiFullText.trim().split(/\s+/).filter(Boolean);
+                  if (wordsRevealed < words.length) {
+                    wordsRevealed++;
+                    const visible = words.slice(0, wordsRevealed).join(' ');
+                    setMessages((prev) => {
+                      const msgs = [...prev];
+                      const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+                      if (idx >= 0) msgs[idx] = { ...msgs[idx], text: visible };
+                      return msgs;
+                    });
+                  }
+                }, TURN_REVEAL_MS_PER_WORD);
+              }
+            } catch (err) {
+              console.error('[Audio] PCM chunk playback error:', err);
+            }
+          }
+        } else if (event.type === 'audio_end') {
+          // Stop fixed-rate interval; spread any unrevealed words over remaining audio
+          stopReveal();
+          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+          const remainingAudioMs = ctx && hadAudioChunks
+            ? Math.max(0, (nextPlayTimeRef.current - ctx.currentTime) * 1000)
+            : 0;
+          const words = aiFullText.trim().split(/\s+/).filter(Boolean);
+          const remaining = words.slice(wordsRevealed);
+          if (remaining.length === 0) {
+            // All words already revealed — nothing to do
+          } else if (remainingAudioMs < 100) {
+            // Audio almost done — show rest immediately
+            setMessages((prev) => {
+              const msgs = [...prev];
+              const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+              if (idx >= 0) msgs[idx] = { ...msgs[idx], text: aiFullText.trim() };
+              return msgs;
+            });
+          } else {
+            // Spread remaining words evenly over remaining audio time
+            const stepMs = remainingAudioMs / remaining.length;
+            let built = words.slice(0, wordsRevealed).join(' ');
+            remaining.forEach((word, i) => {
+              setTimeout(() => {
+                built += (built ? ' ' : '') + word;
+                setMessages((prev) => {
+                  const msgs = [...prev];
+                  const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+                  if (idx >= 0) msgs[idx] = { ...msgs[idx], text: built };
+                  return msgs;
+                });
+              }, i * stepMs);
+            });
+          }
         } else if (event.type === 'audio') {
-          console.log(`[Audio][turn] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
-          if (event.text) hadAudioText = true;
+          // Batch mp3 sentence audio: same contract as the greeting stream.
+          console.log(`[Audio][turn] audio event — b64 len: ${event.audio_b64?.length ?? 0}`);
+          if (event.text) hadSentenceAudio = true;
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
           processAudioQueue();
         } else if (event.type === 'title') {
           setSessionTitleUpdate({ sessionId, title: event.text });
         } else if (event.type === 'done') {
-          // If TTS failed and audio events never carried text, fall back to the full LLM text
-          if (!hadAudioText && aiFullText.trim()) {
+          stopReveal();
+          if (hadSentenceAudio) {
+            await waitForAudioQueueIdle();
             setMessages((prev) => {
               const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
-              if (idx >= 0) msgs[idx] = { ...msgs[idx], pending: false, text: aiFullText.trim() };
+              const idx = msgs.findLastIndex((m) => m.role === 'ai');
+              if (idx >= 0) {
+                const finalText = aiFullText.trim() || msgs[idx].text;
+                msgs[idx] = { ...msgs[idx], pending: false, text: finalText, sentences: splitSentences(finalText) };
+              }
               return msgs;
             });
+            setStatus('ready');
+            return;
           }
-          setStatus('ready');
+          // Delay finalization until audio finishes so the reveal timers
+          // can complete before we switch pending → sentences rendering branch
+          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+          const remainingAudioMs = ctx && hadAudioChunks
+            ? Math.max(0, (nextPlayTimeRef.current - ctx.currentTime) * 1000)
+            : 0;
+          setTimeout(() => {
+            setMessages((prev) => {
+              const msgs = [...prev];
+              const idx = msgs.findLastIndex((m) => m.role === 'ai');
+              if (idx >= 0) {
+                const finalText = aiFullText.trim();
+                msgs[idx] = { ...msgs[idx], pending: false, text: finalText, sentences: splitSentences(finalText) };
+              }
+              return msgs;
+            });
+            setStatus('ready');
+          }, remainingAudioMs);
           return;
         } else if (event.type === 'error') {
+          stopReveal();
           throw new Error(event.message);
         }
       }
+      stopReveal();
       setStatus('ready');
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.pending));
       setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
       setStatus('error');
     }
-  }, [processAudioQueue]);
+  }, [processAudioQueue, waitForAudioQueueIdle]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -516,14 +732,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
     stopRecording()
-      .then((blob) => {
+      .then((transcript) => {
         isStoppingRef.current = false;
         if (!hasSpokenRef.current) {
+          setMessages((prev) => prev.filter((m) => !m.pending));
           setErrorMessage("You didn't say anything. Please try again.");
           setStatus('ready');
           return;
         }
-        return processTurn(blob);
+        return processTurn(transcript);
       })
       .catch((err) => {
         isStoppingRef.current = false;
@@ -582,6 +799,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewSessionIdRef.current = null;
     reviewPageRef.current = 1;
     setReviewHasMore(false);
+
+    // Close any active STT WebSocket
+    if (sttWsRef.current) {
+      sttWsRef.current.close();
+      sttWsRef.current = null;
+    }
+    sttDoneResolverRef.current = null;
 
     // End the previous session (fire-and-forget) so consolidation triggers
     const prevSessionId = sessionIdRef.current;

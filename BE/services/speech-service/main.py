@@ -1,77 +1,434 @@
 import asyncio
 import base64
 import io
-from fastapi import FastAPI, UploadFile, File
+import json
+import logging
+import queue
+import threading
+import uuid
+import httpx
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
-from openai import AsyncOpenAI
+from soniox.client import SonioxClient
+from soniox.types import RealtimeSTTConfig, RealtimeTTSConfig
+
 
 class Settings(BaseSettings):
     port: int = 8010
-    openai_api_key: str = ""
-    tts_voice: str = "alloy"
-    tts_model: str = "tts-1"
-    stt_model: str = "whisper-1"
+    soniox_api_key: str = ""
     stt_language: str = "en"
+    soniox_stt_model: str = "stt-rt-v4"
+    soniox_tts_model: str = "tts-rt-v1"
+    soniox_tts_voice: str = "Adrian"
+    soniox_tts_sample_rate: int = 24000
+    soniox_temp_key_expires_seconds: int = 60
+
     class Config:
         env_file = ".env"
 
+
 settings = Settings()
-client   = AsyncOpenAI(api_key=settings.openai_api_key)
-app      = FastAPI(title="Speech Service")
+soniox_client = SonioxClient(api_key=settings.soniox_api_key)
+app = FastAPI(title="Speech Service")
+log = logging.getLogger("speech-service")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-# ─── STT ─────────────────────────────────────────────────────────────────────
+# Temporary API key for Soniox browser-direct STT.
+@app.get("/temporary-api-key")
+@app.get("/stt/temporary-api-key")
+async def get_temporary_api_key():
+    """
+    Short-lived Soniox key for browser-direct STT, matching Soniox's
+    RecordTranscribe web-library flow without exposing SONIOX_API_KEY.
+    """
+    if not settings.soniox_api_key:
+        raise HTTPException(status_code=500, detail="SONIOX_API_KEY is not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.soniox.com/v1/auth/temporary-api-key",
+                headers={
+                    "Authorization": f"Bearer {settings.soniox_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "usage_type": "transcribe_websocket",
+                    "expires_in_seconds": settings.soniox_temp_key_expires_seconds,
+                },
+            )
+    except Exception as exc:
+        log.exception("Soniox temporary key request failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Server failed to obtain temporary Soniox API key: {exc}",
+        ) from exc
+
+    if not response.is_success:
+        log.warning("Soniox temporary key HTTP %s: %s", response.status_code, response.text[:300])
+        raise HTTPException(
+            status_code=502,
+            detail="Soniox temporary API key request failed",
+        )
+
+    return response.json()
+
+
+# STT websocket proxy, kept as a fallback when the browser library is not used.
+@app.websocket("/stt/ws")
+async def stt_ws(websocket: WebSocket):
+    """
+    Real-time STT. Browser streams binary audio chunks while recording,
+    then sends {"end": true} when done.
+
+    Server → browser:
+      {"type": "word",  "text": "<full current text>", "is_final": bool}
+      {"type": "done",  "transcript": "<final>", "confidence": 0.9}
+      {"type": "error", "message": "..."}
+    """
+    await websocket.accept()
+
+    loop     = asyncio.get_running_loop()
+    audio_q: queue.Queue   = queue.Queue()
+    result_q: asyncio.Queue = asyncio.Queue()
+
+    def soniox_thread():
+        def put_result(item):
+            try:
+                asyncio.run_coroutine_threadsafe(result_q.put(item), loop).result()
+            except RuntimeError:
+                pass
+
+        final_text = ""
+        hypothesis = ""
+        stop_feeder = threading.Event()
+        config = RealtimeSTTConfig(
+            model=settings.soniox_stt_model,
+            language_hints=[settings.stt_language],
+            enable_endpoint_detection=True,
+            audio_format="auto",
+        )
+        try:
+            with soniox_client.realtime.stt.connect(config=config) as session:
+                def audio_feeder():
+                    try:
+                        while True:
+                            chunk = audio_q.get()
+                            if stop_feeder.is_set():
+                                return
+                            if chunk is None:
+                                try:
+                                    session.finish()
+                                except Exception as exc:
+                                    if not _is_normal_ws_close(exc):
+                                        log.warning("Soniox STT finish failed: %s", exc)
+                                return
+                            try:
+                                session.send_byte_chunk(chunk)
+                            except Exception as exc:
+                                if not _is_normal_ws_close(exc):
+                                    log.warning("Soniox STT send_byte_chunk failed: %s", exc)
+                                    put_result({"type": "error", "message": str(exc)})
+                                return
+                    finally:
+                        stop_feeder.set()
+
+                feeder = threading.Thread(target=audio_feeder, daemon=True)
+                feeder.start()
+
+                try:
+                    for event in session.receive_events():
+                        finals    = [t.text for t in event.tokens if t.is_final]
+                        nonfinals = [t.text for t in event.tokens if not t.is_final]
+                        if finals:
+                            final_text += "".join(finals)
+                            hypothesis = ""
+                        if nonfinals:
+                            hypothesis = "".join(nonfinals)
+                        current = final_text + hypothesis
+                        if current.strip():
+                            is_stable = bool(finals) and not bool(nonfinals)
+                            put_result({"type": "word", "text": current, "is_final": is_stable})
+                finally:
+                    stop_feeder.set()
+                    audio_q.put(None)
+                    feeder.join(timeout=1.0)
+        except Exception as e:
+            if not _is_normal_ws_close(e):
+                put_result({"type": "error", "message": str(e)})
+        finally:
+            transcript = (final_text + hypothesis).strip()
+            put_result({"type": "done", "transcript": transcript, "confidence": 0.9})
+            put_result(None)
+
+    threading.Thread(target=soniox_thread, daemon=True).start()
+
+    async def receive_audio():
+        try:
+            while True:
+                msg = await websocket.receive()
+                if "bytes" in msg and msg["bytes"]:
+                    audio_q.put(msg["bytes"])
+                elif "text" in msg and msg["text"]:
+                    data = json.loads(msg["text"])
+                    if data.get("end"):
+                        audio_q.put(None)
+                        return
+        except (WebSocketDisconnect, Exception):
+            audio_q.put(None)
+
+    async def send_results():
+        try:
+            while True:
+                item = await result_q.get()
+                if item is None:
+                    return
+                await websocket.send_json(item)
+        except (WebSocketDisconnect, Exception):
+            pass
+
+    receive_task = asyncio.create_task(receive_audio())
+    send_task = asyncio.create_task(send_results())
+    done, _ = await asyncio.wait(
+        {receive_task, send_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if send_task in done and not receive_task.done():
+        audio_q.put(None)
+        receive_task.cancel()
+    await asyncio.gather(receive_task, send_task, return_exceptions=True)
+
+
+# ─── STT (batch, backward-compat) ────────────────────────────────────────────
 @app.post("/stt")
 async def stt(audio: UploadFile = File(...)):
-    """
-    Receives audio blob.
-    Runs Whisper STT + pronunciation scoring simultaneously via asyncio.gather.
-    Returns transcript + confidence + per-word pronunciation feedback.
-    """
     audio_bytes = await audio.read()
-    filename    = audio.filename or "audio.webm"
-
-    # Both run at the same time — no sequential waiting
-    transcript_result, pronunciation_result = await asyncio.gather(
-        _run_stt(audio_bytes, filename),
-        _run_pronunciation(audio_bytes, filename),
-    )
-
+    result = await _run_soniox_stt_batch(audio_bytes)
     return {
-        "transcript":   transcript_result["text"],
-        "confidence":   transcript_result["confidence"],
-        "pronunciation": pronunciation_result,
+        "transcript":    result["text"],
+        "confidence":    result["confidence"],
+        "pronunciation": {"score": 0.85, "per_word": []},
     }
 
 
-# ─── TTS ─────────────────────────────────────────────────────────────────────
+# ─── STT STREAMING (SSE, backward-compat) ────────────────────────────────────
+@app.post("/stt/stream")
+async def stt_stream(audio: UploadFile = File(...)):
+    audio_bytes = await audio.read()
+
+    async def generate():
+        loop = asyncio.get_running_loop()
+        token_queue: asyncio.Queue = asyncio.Queue()
+
+        def run_soniox():
+            final_text = ""
+            hypothesis = ""
+            config = RealtimeSTTConfig(
+                model=settings.soniox_stt_model,
+                language_hints=[settings.stt_language],
+                enable_endpoint_detection=True,
+                audio_format="auto",
+            )
+            try:
+                with soniox_client.realtime.stt.connect(config=config) as session:
+                    chunk_size = 4096
+                    for i in range(0, len(audio_bytes), chunk_size):
+                        session.send_byte_chunk(audio_bytes[i:i + chunk_size])
+                    session.finish()
+                    for event in session.receive_events():
+                        finals    = [t.text for t in event.tokens if t.is_final]
+                        nonfinals = [t.text for t in event.tokens if not t.is_final]
+                        if finals:
+                            final_text += "".join(finals)
+                            hypothesis = ""
+                        if nonfinals:
+                            hypothesis = "".join(nonfinals)
+                        current = final_text + hypothesis
+                        if current.strip():
+                            is_stable = bool(finals) and not bool(nonfinals)
+                            asyncio.run_coroutine_threadsafe(
+                                token_queue.put({"text": current, "is_final": is_stable}),
+                                loop,
+                            ).result()
+            except Exception as e:
+                asyncio.run_coroutine_threadsafe(
+                    token_queue.put({"error": str(e)}), loop
+                ).result()
+            finally:
+                asyncio.run_coroutine_threadsafe(token_queue.put(None), loop).result()
+
+        threading.Thread(target=run_soniox, daemon=True).start()
+
+        last_text = ""
+        while True:
+            item = await token_queue.get()
+            if item is None:
+                break
+            if "error" in item:
+                break
+            last_text = item["text"]
+            yield f"data: {json.dumps({'text': item['text'], 'is_final': item['is_final']})}\n\n"
+
+        transcript = last_text.strip()
+        yield f"data: {json.dumps({'done': True, 'transcript': transcript, 'confidence': 0.92, 'pronunciation': {'score': 0.85, 'per_word': []}})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ─── TTS (batch) ──────────────────────────────────────────────────────────────
 class TTSRequest(BaseModel):
     text: str
     voice: str = None
 
+
 @app.post("/tts")
 async def tts(body: TTSRequest):
-    """Convert text to speech, return base64-encoded mp3."""
-    response = await client.audio.speech.create(
-        model=settings.tts_model,
-        voice=body.voice or settings.tts_voice,
-        input=body.text,
-    )
+    """Batch TTS via Soniox — mp3 output for AudioContext.decodeAudioData compat."""
+    audio_bytes = await _run_soniox_tts_batch(body.text, body.voice)
     return {
-        "audio_b64": base64.b64encode(response.content).decode(),
+        "audio_b64": base64.b64encode(audio_bytes).decode(),
         "format":    "mp3",
     }
 
 
-# ─── PRONUNCIATION SCORE ─────────────────────────────────────────────────────
-class ScoreRequest(BaseModel):
-    transcript: str
+def _is_normal_ws_close(exc: Exception) -> bool:
+    current = exc
+    while current:
+        exc_name = current.__class__.__name__
+        message = str(current)
+        if "ConnectionClosedOK" in exc_name or "1000 (OK)" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
-@app.post("/score/pronunciation")
-async def score_pronunciation(body: ScoreRequest):
-    """Detailed per-word pronunciation scoring from plain transcript."""
-    return _score_from_text(body.transcript)
+
+# ─── TTS WEBSOCKET (streaming) ───────────────────────────────────────────────
+@app.websocket("/tts/ws")
+async def tts_ws(websocket: WebSocket):
+    """
+    One Soniox TTS session per connection — streams text in, PCM audio out.
+
+    Client sends:  {"text": "chunk", "end": false}  or  {"text": "", "end": true}
+    Server sends:  {"audio_b64": "<base64 pcm_s16le>", "sample_rate": 24000, "done": false}
+                   {"done": true}
+    """
+    await websocket.accept()
+
+    loop     = asyncio.get_running_loop()
+    text_q:  queue.Queue   = queue.Queue()
+    audio_q: asyncio.Queue = asyncio.Queue()
+
+    def soniox_tts_thread():
+        def put_audio(item):
+            try:
+                asyncio.run_coroutine_threadsafe(audio_q.put(item), loop).result()
+            except RuntimeError:
+                pass
+
+        config = RealtimeTTSConfig(
+            stream_id=str(uuid.uuid4()),
+            model=settings.soniox_tts_model,
+            language=settings.stt_language,
+            voice=settings.soniox_tts_voice,
+            audio_format="pcm_s16le",
+            sample_rate=settings.soniox_tts_sample_rate,
+        )
+        stop_feeder = threading.Event()
+        try:
+            with soniox_client.realtime.tts.connect(config=config) as session:
+                def text_feeder():
+                    try:
+                        while True:
+                            chunk = text_q.get()
+                            if stop_feeder.is_set():
+                                return
+                            if chunk is None:
+                                try:
+                                    session.finish()
+                                except Exception as exc:
+                                    if not _is_normal_ws_close(exc):
+                                        log.warning("Soniox TTS finish failed: %s", exc)
+                                return
+                            try:
+                                session.send_text_chunk(chunk, text_end=False)
+                            except Exception as exc:
+                                if not _is_normal_ws_close(exc):
+                                    log.warning("Soniox TTS send_text_chunk failed: %s", exc)
+                                    put_audio(exc)
+                                return
+                    finally:
+                        stop_feeder.set()
+
+                feeder = threading.Thread(target=text_feeder, daemon=True)
+                feeder.start()
+
+                try:
+                    for audio_chunk in session.receive_audio_chunks():
+                        put_audio(audio_chunk)
+                finally:
+                    stop_feeder.set()
+                    text_q.put(None)
+                    feeder.join(timeout=1.0)
+        except Exception as e:
+            if not _is_normal_ws_close(e):
+                put_audio(e)
+        finally:
+            put_audio(None)
+
+    threading.Thread(target=soniox_tts_thread, daemon=True).start()
+
+    async def receive_text():
+        try:
+            while True:
+                data = await websocket.receive_json()
+                text = data.get("text", "")
+                if text:
+                    text_q.put(text)
+                if data.get("end"):
+                    text_q.put(None)
+                    return
+        except (WebSocketDisconnect, Exception):
+            text_q.put(None)
+
+    async def send_audio():
+        try:
+            while True:
+                item = await audio_q.get()
+                if item is None:
+                    await websocket.send_json({"done": True})
+                    return
+                if isinstance(item, Exception):
+                    await websocket.send_json({"error": str(item)})
+                    return
+                await websocket.send_json({
+                    "audio_b64":   base64.b64encode(item).decode(),
+                    "sample_rate": settings.soniox_tts_sample_rate,
+                    "done":        False,
+                })
+        except (WebSocketDisconnect, RuntimeError):
+            return
+
+    receive_task = asyncio.create_task(receive_text())
+    send_task = asyncio.create_task(send_audio())
+    done, _ = await asyncio.wait(
+        {receive_task, send_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if send_task in done and not receive_task.done():
+        text_q.put(None)
+        receive_task.cancel()
+    await asyncio.gather(receive_task, send_task, return_exceptions=True)
 
 
 # ─── HEALTH ──────────────────────────────────────────────────────────────────
@@ -81,78 +438,62 @@ async def health():
 
 
 # ─── INTERNAL HELPERS ────────────────────────────────────────────────────────
-def _get(obj, key):
-    """Dict-or-object safe field access — handles both Pydantic models and raw dicts."""
-    return obj[key] if isinstance(obj, dict) else getattr(obj, key)
+async def _run_soniox_stt_batch(audio_bytes: bytes) -> dict:
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
 
-
-async def _run_stt(audio_bytes: bytes, filename: str) -> dict:
-    file_tuple = (filename, io.BytesIO(audio_bytes), "audio/webm")
-    result = await client.audio.transcriptions.create(
-        model=settings.stt_model,
-        file=file_tuple,
-        language=settings.stt_language,
-        response_format="verbose_json",
-    )
-
-    # Derive confidence from avg log probability of segments
-    confidence = 0.9
-    segments = getattr(result, "segments", None) or []
-    if segments:
-        avg_logprob = sum(_get(s, "avg_logprob") for s in segments) / len(segments)
-        confidence = round(min(1.0, max(0.0, 1.0 + avg_logprob / 5)), 3)
-
-    return {"text": result.text.strip(), "confidence": confidence}
-
-
-async def _run_pronunciation(audio_bytes: bytes, filename: str) -> dict:
-    """
-    Uses Whisper word-level timestamps as a pronunciation proxy.
-    Very fast / very slow word durations indicate hesitation or mispronunciation.
-    """
-    file_tuple = (filename, io.BytesIO(audio_bytes), "audio/webm")
-    try:
-        result = await client.audio.transcriptions.create(
-            model=settings.stt_model,
-            file=file_tuple,
-            language=settings.stt_language,
-            response_format="verbose_json",
-            timestamp_granularities=["word"],
+    def run():
+        final_text = ""
+        hypothesis = ""
+        config = RealtimeSTTConfig(
+            model=settings.soniox_stt_model,
+            language_hints=[settings.stt_language],
+            enable_endpoint_detection=True,
+            audio_format="auto",
         )
-    except Exception:
-        # Fallback — no word timestamps available
-        return {"score": 0.85, "per_word": []}
+        try:
+            with soniox_client.realtime.stt.connect(config=config) as session:
+                chunk_size = 4096
+                for i in range(0, len(audio_bytes), chunk_size):
+                    session.send_byte_chunk(audio_bytes[i:i + chunk_size])
+                session.finish()
+                for event in session.receive_events():
+                    finals    = [t.text for t in event.tokens if t.is_final]
+                    nonfinals = [t.text for t in event.tokens if not t.is_final]
+                    if finals:
+                        final_text += "".join(finals)
+                        hypothesis = ""
+                    if nonfinals:
+                        hypothesis = "".join(nonfinals)
+            text = (final_text + hypothesis).strip()
+            loop.call_soon_threadsafe(fut.set_result, {"text": text, "confidence": 0.92})
+        except Exception as e:
+            loop.call_soon_threadsafe(fut.set_exception, e)
 
-    per_word = []
-    words = getattr(result, "words", None) or []
-    for w in words:
-        start = _get(w, "start")
-        end   = _get(w, "end")
-        word  = _get(w, "word")
-        duration = end - start
-        if duration < 0.08:
-            score = 0.55
-        elif duration < 0.12:
-            score = 0.70
-        elif duration > 1.8:
-            score = 0.65
-        elif duration > 1.2:
-            score = 0.75
-        else:
-            score = 0.90
-        per_word.append({
-            "word":  word.strip(),
-            "score": score,
-            "start": round(start, 2),
-            "end":   round(end, 2),
-        })
-
-    overall = round(sum(w["score"] for w in per_word) / len(per_word), 3) if per_word else 0.85
-    return {"score": overall, "per_word": per_word}
+    threading.Thread(target=run, daemon=True).start()
+    return await fut
 
 
-def _score_from_text(transcript: str) -> dict:
-    """Fallback scorer when audio is not available — returns neutral scores."""
-    words = transcript.strip().split()
-    per_word = [{"word": w, "score": 0.85} for w in words]
-    return {"score": 0.85, "per_word": per_word}
+async def _run_soniox_tts_batch(text: str, voice: str | None = None) -> bytes:
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+
+    def run():
+        config = RealtimeTTSConfig(
+            stream_id=str(uuid.uuid4()),
+            model=settings.soniox_tts_model,
+            language=settings.stt_language,
+            voice=voice or settings.soniox_tts_voice,
+            audio_format="mp3",
+        )
+        try:
+            with soniox_client.realtime.tts.connect(config=config) as session:
+                session.send_text_chunk(text, text_end=False)
+                session.finish()
+                chunks = list(session.receive_audio_chunks())
+                loop.call_soon_threadsafe(fut.set_result, b"".join(chunks))
+        except Exception as e:
+            loop.call_soon_threadsafe(fut.set_exception, e)
+
+    threading.Thread(target=run, daemon=True).start()
+    return await fut

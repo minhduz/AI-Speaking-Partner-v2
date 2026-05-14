@@ -41,10 +41,13 @@ export type GreetingEvent =
   | { type: 'error'; message: string };
 
 export type TurnEvent =
+  | { type: 'word'; text: string; is_final: boolean }
   | { type: 'transcript'; text: string }
   | { type: 'pronunciation'; data: { score?: number } }
   | { type: 'text'; chunk: string }
   | { type: 'audio'; audio_b64: string; text?: string }
+  | { type: 'audio_chunk'; audio_b64: string; sample_rate: number }
+  | { type: 'audio_end' }
   | { type: 'title'; text: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string };

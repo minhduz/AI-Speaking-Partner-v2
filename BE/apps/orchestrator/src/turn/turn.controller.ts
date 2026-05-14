@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Param, Query, Req, Res,
+  Controller, Get, Post, Param, Query, Req, Res, Body,
   UseGuards, UseInterceptors, UploadedFile, BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -46,6 +46,87 @@ export class TurnController {
     @Req() req,
   ) {
     return this.turnService.getBySession(sessionId, req.user.id, +page, +limit);
+  }
+
+  // POST /turn/:session_id/stream-text — SSE streaming when FE has already transcribed via STT WebSocket
+  @Post(':session_id/stream-text')
+  async streamTurnText(
+    @Param('session_id') sessionId: string,
+    @Body() body: { transcript: string },
+    @Req() req,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
+
+    if (!body?.transcript?.trim()) {
+      send({ type: 'error', message: 'No transcript provided' });
+      res.end();
+      return;
+    }
+
+    try {
+      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
+        this.turnService.getUserEntity(req.user.id),
+        this.turnService.getTurnIndex(sessionId),
+        this.http.axiosRef
+          .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
+          .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
+        this.turnService.getSessionTokens(sessionId),
+      ]);
+
+      const limits = limitsRes.data;
+      if (!limits.is_unlimited && sessionTokens >= limits.session_token_limit) {
+        send({ type: 'error', message: 'SESSION_TOKEN_LIMIT_REACHED', limit: limits.session_token_limit });
+        res.end();
+        return;
+      }
+
+      const clientIso = req.headers['x-client-datetime'];
+      const currentDatetime = clientIso
+        ? (() => {
+            try {
+              const d = new Date(clientIso);
+              return isNaN(d.getTime())
+                ? getCurrentDatetime(user?.timezone ?? 'UTC')
+                : getCurrentDatetime(user?.timezone ?? 'UTC', d);
+            } catch { return getCurrentDatetime(user?.timezone ?? 'UTC'); }
+          })()
+        : getCurrentDatetime(user?.timezone ?? 'UTC');
+
+      const upstream = await this.http.axiosRef.post(
+        `${this.cfg.get('TURN_AGENT_URL')}/turn/stream-text`,
+        { transcript: body.transcript },
+        {
+          responseType: 'stream',
+          headers: {
+            'X-User-Id':          req.user.id,
+            'X-Session-Id':       sessionId,
+            'X-Turn-Index':       String(turnIndex),
+            'X-User-Name':        user?.name ?? '',
+            'X-User-Level':       user?.level ?? 'beginner',
+            'X-Target-Language':  user?.targetLanguage ?? 'english',
+            'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
+            'X-Learning-Goal':    user?.learningGoal ?? '',
+            'X-User-Timezone':    user?.timezone ?? 'UTC',
+            'X-Current-Datetime': currentDatetime,
+          },
+        },
+      );
+
+      upstream.data.pipe(res);
+      upstream.data.on('error', (err: Error) => {
+        if (!res.writableEnded) {
+          send({ type: 'error', message: 'upstream stream failed' });
+          res.end();
+        }
+      });
+    } catch (err: any) {
+      send({ type: 'error', message: err?.message ?? 'stream failed' });
+      res.end();
+    }
   }
 
   // POST /turn/:session_id — full response (non-streaming fallback)

@@ -48,4 +48,20 @@ def build_graph():
     return g.compile()
 
 
-graph = build_graph()
+def build_text_graph():
+    """Graph for when transcript is already known (STT done by FE) — skips stt_node."""
+    g = StateGraph(TurnState)
+    g.add_node("build_prompt",    build_prompt_node)
+    g.add_node("session_history", session_history_node)
+    g.add_node("llm_tts",         llm_tts_node)
+    g.add_node("persist",         persist_node)
+    g.add_edge(START,             "build_prompt")
+    g.add_edge("build_prompt",    "session_history")
+    g.add_edge("session_history", "llm_tts")
+    g.add_edge("llm_tts",         "persist")
+    g.add_edge("persist",         END)
+    return g.compile()
+
+
+graph      = build_graph()
+graph_text = build_text_graph()
