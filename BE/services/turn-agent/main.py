@@ -40,15 +40,19 @@ async def turn_stream(request: Request):
         "user_name":        h.get("x-user-name", ""),
         "user_level":       h.get("x-user-level", "beginner"),
         "target_language":  h.get("x-target-language", "english"),
+        "native_language":  h.get("x-native-language", ""),
+        "learning_goal":    h.get("x-learning-goal", ""),
         "current_datetime": h.get("x-current-datetime", ""),
         "turn_index":       int(h.get("x-turn-index", "1")),
         # Intermediates — empty until nodes populate them
-        "transcript":    "",
-        "confidence":    0.0,
-        "pronunciation": {},
-        "system_prompt": "",
-        "full_response": "",
-        "tokens_used":   0,
+        "transcript":            "",
+        "confidence":            0.0,
+        "pronunciation":         {},
+        "system_prompt":         "",
+        "recent_messages":       [],
+        "conversation_summary":  "",
+        "full_response":         "",
+        "tokens_used":           0,
     }
 
     async def event_generator():

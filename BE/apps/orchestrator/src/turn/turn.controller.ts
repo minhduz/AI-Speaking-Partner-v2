@@ -142,6 +142,8 @@ export class TurnController {
             'X-User-Name':        user?.name ?? '',
             'X-User-Level':       user?.level ?? 'beginner',
             'X-Target-Language':  user?.targetLanguage ?? 'english',
+            'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
+            'X-Learning-Goal':    user?.learningGoal ?? '',
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
           },

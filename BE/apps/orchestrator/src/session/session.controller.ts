@@ -114,6 +114,8 @@ export class SessionController {
         `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
         `Do not use emojis or special icons in your response.`,
         user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
+        user?.nativeLanguage ? `Their native language is ${user.nativeLanguage}.` : '',
+        user?.learningGoal ? `Their learning goal is: ${user.learningGoal}.` : '',
         trimmedContext ? `Recent conversation topics (brief):\n${trimmedContext}` : '',
         trimmedContext
           ? `TEMPORAL REASONING: The context above may mention events at specific times. Compare those times to RIGHT NOW (${formattedDatetime}). If an event (meeting, appointment, task, activity) has already passed, ask how it went — do not wish them luck for it. If it is still upcoming, you may acknowledge it. Never treat a past event as if it is still in the future.`
@@ -126,6 +128,8 @@ export class SessionController {
       console.log(`${logPrefix} ── greeting prompt built ──────────────────────`);
       console.log(`${logPrefix}   user         : ${user?.name ?? '(unknown)'}`);
       console.log(`${logPrefix}   language     : ${user?.targetLanguage ?? 'English'}`);
+      console.log(`${logPrefix}   native lang  : ${user?.nativeLanguage ?? '(unknown)'}`);
+      console.log(`${logPrefix}   learning goal: ${user?.learningGoal ?? '(none)'}`);
       console.log(`${logPrefix}   datetime     : ${formattedDatetime}`);
       console.log(`${logPrefix}   sessionId    : ${sessionId ?? '(none — anon route)'}`);
       console.log(`${logPrefix}   context src  : short_term (consolidated st_facts from previous sessions)`);

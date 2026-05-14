@@ -5,6 +5,12 @@ import { sessionService } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
+function splitSentences(text: string): string[] {
+  if (!text?.trim()) return text ? [text] : [];
+  const parts = text.split(/(?<=[.!?…])\s+/).map(s => s.trim()).filter(Boolean);
+  return parts.length > 0 ? parts : [text];
+}
+
 // Greeting text cache — survives client-side navigation but resets on full page reload.
 // Prevents re-streaming the greeting when the user navigates away and returns.
 let _greetingTextCache: string | null = null;
@@ -130,7 +136,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const initializedRef = useRef(false);
-  const inactivityTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const isPlayingRef = useRef(false);
@@ -144,8 +149,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const turnsToMessages = useCallback((items: TurnHistoryItem[]): ChatMessage[] => {
     const msgs: ChatMessage[] = [];
     for (const t of items) {
-      msgs.push({ role: 'user', text: t.transcript, pronunciationScore: t.pronunciationScore ?? undefined });
-      msgs.push({ role: 'ai', text: t.responseText, sentences: [t.responseText] });
+      msgs.push({ role: 'user', text: t.transcript, pronunciationScore: t.pronunciationScore ?? undefined, isHistoric: true });
+      msgs.push({ role: 'ai', text: t.responseText, sentences: splitSentences(t.responseText), isHistoric: true });
     }
     return msgs;
   }, []);
@@ -332,16 +337,29 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     return () => {
       window.removeEventListener('click', resume);
       window.removeEventListener('keydown', resume);
-      // Clear inactivity timer on unmount to avoid stale closures
-      if (inactivityTimerRef.current !== null) {
-        clearTimeout(inactivityTimerRef.current);
-        inactivityTimerRef.current = null;
-      }
       if (ctx.state !== 'closed') {
         ctx.close();
       }
       _sharedAudioCtx = null;
       sharedPlaybackCtxRef.current = null;
+    };
+  }, []);
+
+  // End the session on tab close (beforeunload) and on Next.js client-side navigation
+  // away from the chat page (component unmount). Uses keepalive:true so the request
+  // survives page unload without needing sendBeacon.
+  useEffect(() => {
+    const endOnLeave = () => {
+      const sid = sessionIdRef.current;
+      if (!sid) return;
+      sessionIdRef.current = null;
+      setCurrentSessionId(null);
+      sessionService.endBeacon(sid);
+    };
+    window.addEventListener('beforeunload', endOnLeave);
+    return () => {
+      window.removeEventListener('beforeunload', endOnLeave);
+      endOnLeave(); // fires when component unmounts (client-side nav away from chat)
     };
   }, []);
 
@@ -409,12 +427,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
 
-    // Cancel any running inactivity timer — user is active again
-    if (inactivityTimerRef.current !== null) {
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = null;
-    }
-
     setStatus('processing');
     setErrorMessage(null);
 
@@ -472,17 +484,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
             });
           }
           setStatus('ready');
-
-          // After 2 minutes of silence, trigger consolidation but keep the session alive
-          // so the user can continue talking without a new session being created.
-          inactivityTimerRef.current = setTimeout(() => {
-            const sid = sessionIdRef.current;
-            if (!sid) return;
-            console.log('[Session] 2min inactivity — triggering consolidation (session stays open)');
-            sessionService.end(sid).catch(console.error);
-            inactivityTimerRef.current = null;
-          }, 120_000);
-
           return;
         } else if (event.type === 'error') {
           throw new Error(event.message);
@@ -535,12 +536,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     isStoppingRef.current = false;
     pendingStopRef.current = false;
 
-    // Cancel any pending consolidation timer — user is still in this session.
-    if (inactivityTimerRef.current !== null) {
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = null;
-    }
-
     // Optimistic — closes the race where user releases before startRecording's
     // setStatus fires, leaving the mic stuck.
     setStatus('recording');
@@ -581,12 +576,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
 
   const startNewSession = useCallback(() => {
-    // Cancel any pending inactivity consolidation — we're starting fresh
-    if (inactivityTimerRef.current !== null) {
-      clearTimeout(inactivityTimerRef.current);
-      inactivityTimerRef.current = null;
-    }
-
     // Exit review mode if active
     setReviewMode(false);
     setReviewSessionId(null);

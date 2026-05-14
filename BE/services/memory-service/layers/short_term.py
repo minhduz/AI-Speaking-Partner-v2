@@ -96,3 +96,22 @@ class ShortTermMemory:
         """GDPR wipe of consolidated short-term facts."""
         await redis_client.client.delete(ShortTermMemory._facts_key(user_id))
         log.info("[short_term] cleared st_facts  user=%s", user_id)
+
+    # ── Session-scoped rolling summary (for within-session LLM context) ──────
+
+    @staticmethod
+    def _summary_key(user_id: str, session_id: str) -> str:
+        return f"user:{user_id}:session:{session_id}:summary"
+
+    @staticmethod
+    async def get_session_summary(user_id: str, session_id: str) -> str:
+        key = ShortTermMemory._summary_key(user_id, session_id)
+        val = await redis_client.client.get(key)
+        return val or ""
+
+    @staticmethod
+    async def save_session_summary(user_id: str, session_id: str, summary: str):
+        key = ShortTermMemory._summary_key(user_id, session_id)
+        await redis_client.client.set(key, summary, ex=settings.short_term_ttl_seconds)
+        log.info("[short_term] saved session_summary  user=%s  session=%s  len=%d",
+                 user_id, session_id, len(summary))

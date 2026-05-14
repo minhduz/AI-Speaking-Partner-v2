@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Query
 from pydantic import BaseModel
 from workers.consolidation import run_consolidation
 from layers.short_term import ShortTermMemory
@@ -27,15 +27,24 @@ async def consolidate(user_id: str, body: ConsolidateRequest, bg: BackgroundTask
     return {"status": "queued", "user_id": user_id, "session_id": body.session_id}
 
 
-# GET /short-term/:user_id — returns recent messages for the user's rolling buffer
+# GET /short-term/:user_id — returns recent messages, optionally filtered by session_id
 @router.get("/short-term/{user_id}")
-async def get_short_term(user_id: str):
-    messages = await ShortTermMemory.get_recent(user_id, n=10)
+async def get_short_term(
+    user_id: str,
+    session_id: str = Query(default=""),
+    limit: int = Query(default=10, ge=1, le=500),
+):
+    if session_id:
+        all_msgs = await ShortTermMemory.get_session_messages(user_id, session_id)
+        messages = all_msgs[-limit:]
+    else:
+        messages = await ShortTermMemory.get_recent(user_id, n=limit)
     formatted = "\n".join(
         f"{m['role'].capitalize()}[{m.get('session_id','?')[:8]}]: {m['content']}"
         for m in messages
     )
-    log.info("[memory_ops] get_short_term  user=%s  returned=%d", user_id, len(messages))
+    log.info("[memory_ops] get_short_term  user=%s  session=%s  returned=%d",
+             user_id, session_id or "*", len(messages))
     return {"messages": messages, "formatted": formatted}
 
 
@@ -61,3 +70,21 @@ async def delete_facts(user_id: str):
     await ShortTermMemory.clear(user_id)
     log.info("[memory_ops] GDPR wipe  user=%s", user_id)
     return {"status": "deleted", "user_id": user_id}
+
+
+class SessionSummaryRequest(BaseModel):
+    summary: str
+
+
+# GET /short-term/:user_id/summary/:session_id — read rolling session summary
+@router.get("/short-term/{user_id}/summary/{session_id}")
+async def get_session_summary(user_id: str, session_id: str):
+    summary = await ShortTermMemory.get_session_summary(user_id, session_id)
+    return {"summary": summary}
+
+
+# PUT /short-term/:user_id/summary/:session_id — write rolling session summary
+@router.put("/short-term/{user_id}/summary/{session_id}")
+async def save_session_summary(user_id: str, session_id: str, body: SessionSummaryRequest):
+    await ShortTermMemory.save_session_summary(user_id, session_id, body.summary)
+    return {"status": "ok"}

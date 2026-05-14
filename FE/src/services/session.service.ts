@@ -193,4 +193,19 @@ export const sessionService = {
     });
     log(`POST /session/end → ok`);
   },
+
+  // Fire-and-forget version that survives tab close / page unload.
+  // Uses keepalive:true so the browser keeps the request alive after the page is gone.
+  endBeacon: (sessionId: string): void => {
+    const token = getAccessToken();
+    fetch(`${API_BASE}/session/end`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ session_id: sessionId }),
+      keepalive: true,
+    }).catch(() => {});
+  },
 };
