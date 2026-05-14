@@ -57,6 +57,42 @@ class ShortTermMemory:
 
     @staticmethod
     async def clear(user_id: str):
-        """GDPR / manual wipe — removes the user's entire rolling buffer."""
+        """GDPR / manual wipe — removes the user's entire rolling buffer and consolidated facts."""
         await redis_client.client.delete(ShortTermMemory._key(user_id))
+        await ShortTermMemory.clear_st_facts(user_id)
         log.info("[short_term] cleared rolling buffer  user=%s", user_id)
+
+    # ── Consolidated short-term facts (schedules + urgent facts, 7-day TTL) ──
+
+    @staticmethod
+    def _facts_key(user_id: str) -> str:
+        return f"user:{user_id}:st_facts"
+
+    @staticmethod
+    async def get_st_facts(user_id: str) -> list[dict]:
+        """Return non-expired short-term consolidated facts from Redis."""
+        key = ShortTermMemory._facts_key(user_id)
+        raw = await redis_client.client.get(key)
+        if not raw:
+            return []
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            facts = json.loads(raw)
+            return [f for f in facts if f.get("expires_at", "9999") > now]
+        except Exception:
+            return []
+
+    @staticmethod
+    async def replace_st_facts(user_id: str, facts: list[dict]):
+        """Atomically replace consolidated facts; TTL = short_term_ttl_seconds (7 days)."""
+        key = ShortTermMemory._facts_key(user_id)
+        await redis_client.client.set(
+            key, json.dumps(facts, default=str), ex=settings.short_term_ttl_seconds
+        )
+        log.info("[short_term] replace_st_facts  user=%s  count=%d", user_id, len(facts))
+
+    @staticmethod
+    async def clear_st_facts(user_id: str):
+        """GDPR wipe of consolidated short-term facts."""
+        await redis_client.client.delete(ShortTermMemory._facts_key(user_id))
+        log.info("[short_term] cleared st_facts  user=%s", user_id)

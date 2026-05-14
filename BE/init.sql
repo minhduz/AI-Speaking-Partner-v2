@@ -27,10 +27,13 @@ GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
 CREATE TABLE IF NOT EXISTS speaking_app.users (
   id               UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
   email            VARCHAR   UNIQUE NOT NULL,
-  password_hash    VARCHAR   NOT NULL,
+  password_hash    VARCHAR   NOT NULL DEFAULT '',
   name             VARCHAR   NOT NULL,
+  google_id        VARCHAR   UNIQUE,
   target_language  VARCHAR   NOT NULL DEFAULT 'english',
   level            VARCHAR   NOT NULL DEFAULT 'beginner',
+  native_language  VARCHAR   NOT NULL DEFAULT 'vietnamese',
+  learning_goal    VARCHAR,
   timezone         VARCHAR   NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
   created_at       TIMESTAMP DEFAULT NOW(),
   updated_at       TIMESTAMP DEFAULT NOW()
@@ -175,6 +178,11 @@ ON CONFLICT DO NOTHING;
 
 -- ─── MIGRATIONS for existing databases ───────────────────────
 -- Safe to run multiple times (ADD COLUMN IF NOT EXISTS is idempotent)
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id       VARCHAR UNIQUE;
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS native_language  VARCHAR NOT NULL DEFAULT 'vietnamese';
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal    VARCHAR;
+ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
+
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
 ALTER TABLE billing.payment_orders ALTER COLUMN plan_id DROP NOT NULL;

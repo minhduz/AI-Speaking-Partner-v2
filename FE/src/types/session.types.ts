@@ -45,6 +45,7 @@ export type TurnEvent =
   | { type: 'pronunciation'; data: { score?: number } }
   | { type: 'text'; chunk: string }
   | { type: 'audio'; audio_b64: string; text?: string }
+  | { type: 'title'; text: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string };
 

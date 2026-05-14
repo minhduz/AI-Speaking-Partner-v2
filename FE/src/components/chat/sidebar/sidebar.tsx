@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Logo } from '@/components/shared/logo/logo';
 import { sessionService } from '@/services/session.service';
@@ -9,7 +9,7 @@ import type { SessionSummary } from '@/types/session.types';
 
 const PAGE_LIMIT = 25;
 
-export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 }: SidebarProps) {
+export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId, refreshKey = 0, titleUpdate }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -54,7 +54,14 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
     return () => observer.disconnect();
   }, [fetchSessions]);
 
-  const groups = groupByDate(sessions);
+  const displayedSessions = useMemo(() => {
+    if (!titleUpdate) return sessions;
+    return sessions.map((s) =>
+      s.id === titleUpdate.sessionId ? { ...s, title: titleUpdate.title } : s,
+    );
+  }, [sessions, titleUpdate]);
+
+  const groups = groupByDate(displayedSessions);
 
   return (
     <aside className="flex flex-col w-60 shrink-0 bg-white border-r border-gray-100 h-full">
@@ -93,6 +100,7 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
                   key={session.id}
                   session={session}
                   active={session.id === currentSessionId}
+                  onClick={onSessionClick ? () => onSessionClick(session) : undefined}
                 />
               ))}
             </div>
@@ -149,9 +157,10 @@ export function Sidebar({ onNewChat, onLogout, currentSessionId, refreshKey = 0 
   );
 }
 
-function SessionItem({ session, active }: { session: SessionSummary; active: boolean }) {
+function SessionItem({ session, active, onClick }: { session: SessionSummary; active: boolean; onClick?: () => void }) {
   return (
     <button
+      onClick={onClick}
       className={`flex flex-col w-full px-3 py-2 rounded-xl text-sm text-left transition-colors gap-0.5 ${
         active ? 'bg-violet-50 text-[#8447FF] font-semibold' : 'text-gray-600 hover:bg-gray-50'
       }`}
@@ -222,6 +231,16 @@ function BillingIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
       <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
       <line x1="1" y1="10" x2="23" y2="10" />
+    </svg>
+  );
+}
+
+function FlashcardIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <line x1="2" y1="10" x2="22" y2="10" />
+      <line x1="7" y1="15" x2="12" y2="15" />
     </svg>
   );
 }

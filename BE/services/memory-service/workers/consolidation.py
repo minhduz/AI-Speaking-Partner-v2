@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,8 @@ from db import database, settings
 log = logging.getLogger("consolidation")
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
-MAX_FACTS = 50  # hard cap before compression
+MAX_FACTS = 50          # hard cap before long-term compression
+SHORT_TERM_MAX_FACTS = 20  # compact cap for short-term Redis facts
 
 
 async def run_consolidation(user_id: str, session_id: str):
@@ -49,7 +51,7 @@ async def run_consolidation(user_id: str, session_id: str):
         session_start_utc = _parse_session_time(messages)
         log.info("step 2 — session time: %s", session_start_utc.isoformat())
 
-        # 3. LLM extracts facts — only use last 60 messages to bound token cost
+        # 3. LLM extracts long-term and short-term facts in parallel — only use last 60 messages
         CONSOLIDATION_WINDOW = 60
         messages_to_extract = messages[-CONSOLIDATION_WINDOW:]
         if len(messages) > CONSOLIDATION_WINDOW:
@@ -58,9 +60,23 @@ async def run_consolidation(user_id: str, session_id: str):
         conversation = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in messages_to_extract
         )
-        log.info("step 3 — calling LLM to extract facts from %d messages", len(messages_to_extract))
-        raw_facts = await _extract_facts(conversation, session_start_utc)
-        log.info("step 3 — LLM returned %d raw facts", len(raw_facts))
+        log.info("step 3 — calling LLM (long-term + short-term) in parallel from %d messages",
+                 len(messages_to_extract))
+        _lt_result, _st_result = await asyncio.gather(
+            _extract_facts(conversation, session_start_utc),
+            _extract_short_term_facts(conversation, session_start_utc),
+            return_exceptions=True,
+        )
+        if isinstance(_lt_result, Exception):
+            log.error("step 3 — long-term extraction FAILED: %s", _lt_result, exc_info=_lt_result)
+            _lt_result = []
+        if isinstance(_st_result, Exception):
+            log.error("step 3 — short-term extraction FAILED: %s", _st_result, exc_info=_st_result)
+            _st_result = []
+        raw_facts: list[dict] = _lt_result
+        raw_st_facts: list[dict] = _st_result
+        log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts",
+                 len(raw_facts), len(raw_st_facts))
 
         # 4. Stamp added_at and expires_at entirely in Python — never trust the LLM for dates.
         #    expires_at = consolidation time + long_term_ttl_days (default 365 days).
@@ -118,9 +134,56 @@ async def run_consolidation(user_id: str, session_id: str):
         #    The MAX_ENTRIES cap in ShortTermMemory handles pruning automatically.
         log.info("step 9 — rolling buffer preserved (user-scoped, self-pruning)")
 
+        # 10. Short-term consolidation: stamp, merge with existing, cap, store in Redis
+        #     Runs in its own try/except — a failure here must not invalidate the
+        #     long-term consolidation that already completed in steps 4-8.
+        try:
+            log.info("step 10 — starting short-term consolidation  raw_st_facts=%d", len(raw_st_facts))
+            now_st = datetime.now(timezone.utc)
+            st_expires = now_st + timedelta(seconds=settings.short_term_ttl_seconds)
+            new_st_facts: list[dict] = []
+            for raw in raw_st_facts:
+                content = raw.get("content", "").strip()
+                if not content:
+                    continue
+                st_fact = {
+                    "content":      content,
+                    "priority":     raw.get("priority", "urgent"),
+                    "extracted_at": now_st.isoformat(),
+                    "expires_at":   st_expires.isoformat(),
+                }
+                new_st_facts.append(st_fact)
+                log.info("  [st-new] priority=%-6s  %r", st_fact["priority"], content[:80])
+
+            if not new_st_facts:
+                log.info("step 10 — LLM found no qualifying short-term facts for this session")
+
+            existing_st = await ShortTermMemory.get_st_facts(user_id)
+            log.info("step 10 — existing st_facts in Redis: %d", len(existing_st))
+
+            merged_st = _merge_st(existing_st, new_st_facts)
+            log.info("step 10 — merged → %d short-term facts", len(merged_st))
+
+            if len(merged_st) > SHORT_TERM_MAX_FACTS:
+                _PRIORITY_ORDER = {"urgent": 0, "high": 1}
+                merged_st = sorted(
+                    merged_st,
+                    key=lambda f: _PRIORITY_ORDER.get(f.get("priority", "high"), 2),
+                )
+                merged_st = merged_st[:SHORT_TERM_MAX_FACTS]
+                log.info("step 10 — capped to %d short-term facts", SHORT_TERM_MAX_FACTS)
+
+            await ShortTermMemory.replace_st_facts(user_id, merged_st)
+            log.info("step 10 — ✓ stored %d short-term facts in Redis key user:%s:st_facts",
+                     len(merged_st), user_id)
+        except Exception as st_err:
+            log.error("step 10 — short-term consolidation FAILED (long-term already saved): %s",
+                      st_err, exc_info=True)
+            merged_st = []
+
         await _mark_done(user_id, session_id, len(new_facts), pruned_count)
-        log.info("── done  new_facts=%d  pruned=%d  total=%d",
-                 len(new_facts), pruned_count, len(merged))
+        log.info("── done  new_facts=%d  pruned=%d  total=%d  st_facts=%d",
+                 len(new_facts), pruned_count, len(merged), len(merged_st))
 
     except Exception as e:
         log.error("✖ FAILED: %s", e, exc_info=True)
@@ -292,6 +355,66 @@ async def _extract_facts(conversation: str, session_start_utc: datetime) -> list
         return json.loads(res.choices[0].message.content).get("facts", [])
     except Exception:
         return []
+
+
+async def _extract_short_term_facts(conversation: str, session_start_utc: datetime) -> list[dict]:
+    """Extract ONLY time-sensitive facts within the next 7 days (schedules, deadlines, urgent situations)."""
+    fmt_time = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+    week_end = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
+    example_abs = (session_start_utc + timedelta(days=2)).strftime("%I:%M %p on %A, %B %d, %Y UTC")
+
+    res = await _openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    f"The conversation took place on {fmt_time}.\n\n"
+                    f"Extract ONLY USER facts that are relevant within the next 7 days (by {week_end}).\n"
+                    "Return ONLY valid JSON: {\"facts\": [...]}\n\n"
+                    "Each fact:\n"
+                    "  content  : ONE complete sentence describing WHAT the event is AND its absolute date/time\n"
+                    "  priority : 'urgent' | 'high'\n\n"
+                    "The content MUST describe the event type, not just the time:\n"
+                    f"  BAD:  '11:00 AM on Thursday, May 14, 2026'\n"
+                    f"  BAD:  '{example_abs}'\n"
+                    f"  GOOD: 'User has a meeting at {example_abs}'\n"
+                    f"  GOOD: 'User has a doctor appointment at {example_abs}'\n\n"
+                    "Include ONLY:\n"
+                    "  - Upcoming meetings, appointments, events within 7 days\n"
+                    "  - Deadlines, exams, deliverables within 7 days\n"
+                    "  - Active urgent situations (health crisis, work crisis)\n\n"
+                    "Never use relative terms like 'tomorrow' or 'next week' — always absolute date/time.\n\n"
+                    "DO NOT include: preferences, hobbies, long-term goals, name, language level, "
+                    "events more than 7 days away, AI statements, small talk.\n"
+                    "Return empty array if no qualifying facts."
+                ),
+            },
+            {"role": "user", "content": conversation},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=300,
+    )
+    try:
+        return json.loads(res.choices[0].message.content).get("facts", [])
+    except Exception:
+        return []
+
+
+def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
+    """Merge new short-term facts into existing, replacing by first-60-char content key."""
+    result = list(existing)
+    for new in new_facts:
+        key = new["content"].lower().strip()[:60]
+        replaced = False
+        for i, ef in enumerate(result):
+            if ef["content"].lower().strip()[:60] == key:
+                result[i] = new
+                replaced = True
+                break
+        if not replaced:
+            result.append(new)
+    return result
 
 
 async def _mark_done(user_id: str, session_id: str, written: int, pruned: int):

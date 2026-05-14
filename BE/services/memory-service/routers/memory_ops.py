@@ -39,6 +39,14 @@ async def get_short_term(user_id: str):
     return {"messages": messages, "formatted": formatted}
 
 
+# GET /short-term/:user_id/facts — inspect consolidated short-term facts in Redis
+@router.get("/short-term/{user_id}/facts")
+async def get_st_facts(user_id: str):
+    facts = await ShortTermMemory.get_st_facts(user_id)
+    log.info("[memory_ops] get_st_facts  user=%s  returned=%d", user_id, len(facts))
+    return {"count": len(facts), "facts": facts}
+
+
 # POST /short-term/:user_id/append — called after every turn by turn-agent
 @router.post("/short-term/{user_id}/append")
 async def append_short_term(user_id: str, body: AppendRequest):

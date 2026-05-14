@@ -121,9 +121,20 @@ async def _context_as_chunks(user_id: str, query: str, active_layers: set) -> li
     return chunks
 
 
+_ST_FACT_SCORE = {"urgent": 0.92, "high": 0.88}
+
+
 async def _short_term_as_chunks(user_id: str) -> list[dict]:
+    """Return consolidated short-term facts only — raw rolling buffer excluded from retrieval."""
     if not user_id:
         return []
-    messages = await ShortTermMemory.get_recent(user_id, n=20)
-    log.info("[short_term] loaded %d recent messages for user=%s", len(messages), user_id)
-    return [{"text": m["content"], "score": 0.85, "source": "short_term"} for m in messages]
+    st_facts = await ShortTermMemory.get_st_facts(user_id)
+    log.info("[short_term] loaded %d consolidated st_facts for user=%s", len(st_facts), user_id)
+    return [
+        {
+            "text":   f["content"],
+            "score":  _ST_FACT_SCORE.get(f.get("priority", "urgent"), 0.88),
+            "source": "short_term",
+        }
+        for f in st_facts
+    ]

@@ -53,9 +53,10 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         "- Keep responses concise and conversational (2-4 sentences max)\n"
         "- Gently correct language mistakes when helpful\n"
         "- Be warm, encouraging, and stay positive\n"
+        "- Do not use emojis or special icons in your responses\n"
         "- TEMPORAL REASONING: facts may mention specific dates/times. "
         "Compare them to RIGHT NOW (above). "
-        "If an event has already passed, treat it as past. "
+        "If an event has already passed, treat it as past and ask how it went if relevant. "
         "If it is still upcoming, treat it as future. Never confuse the two."
     )
 

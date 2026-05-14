@@ -4,4 +4,5 @@ export interface MessageInputProps {
   onStopMic: () => void;
   isRecording: boolean;
   disabled?: boolean;
+  hideMic?: boolean;
 }

@@ -36,6 +36,28 @@ export class TurnService {
     private readonly userService: UserService,
   ) {}
 
+  async getBySession(sessionId: string, userId: string, page = 1, limit = 20) {
+    const [turns, total] = await this.turnRepo.findAndCount({
+      where: { sessionId, userId },
+      order: { turnIndex: 'DESC' },  // newest first — FE reverses for display
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return {
+      items: turns.map((t) => ({
+        id: t.id,
+        turnIndex: t.turnIndex,
+        transcript: t.data?.transcript ?? '',
+        responseText: t.data?.response_text ?? '',
+        pronunciationScore: t.data?.pronunciation?.score ?? null,
+        createdAt: t.createdAt,
+      })),
+      total,
+      page,
+      hasMore: page * limit < total,
+    };
+  }
+
   async getUserEntity(userId: string): Promise<User | null> {
     try { return await this.userService.findById(userId); } catch { return null; }
   }
@@ -183,11 +205,16 @@ export class TurnService {
     });
   }
 
-  private async appendToShortTerm(sessionId: string, _userId: string, userMsg: string, aiMsg: string) {
+  private async appendToShortTerm(sessionId: string, userId: string, userMsg: string, aiMsg: string) {
     const memUrl = this.cfg.get('MEMORY_SERVICE_URL');
-    await firstValueFrom(
-      this.http.post(`${memUrl}/short-term/${sessionId}/append`, { user_message: userMsg, ai_message: aiMsg }),
-    );
+    try {
+      await firstValueFrom(
+        this.http.post(`${memUrl}/short-term/${userId}/append`, { session_id: sessionId, user_message: userMsg, ai_message: aiMsg }),
+      );
+      console.log(`[Turn][appendToShortTerm] ✓ appended  user=${userId}  session=${sessionId}`);
+    } catch (err: any) {
+      console.error(`[Turn][appendToShortTerm] ✖ FAILED  user=${userId}  session=${sessionId}  url=${memUrl}  error=${err?.message}`);
+    }
   }
 
   private async recordUsage(userId: string, tokens: number) {
