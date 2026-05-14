@@ -12,6 +12,8 @@ class BuildPromptRequest(BaseModel):
     session_id: str = ""
     user_level: str = "beginner"
     target_language: str = "english"
+    native_language: str = ""
+    learning_goal: str = ""
     user_name: str = ""
     current_datetime: str = ""
     layers: list[str] = []
@@ -39,6 +41,8 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
 
     datetime_line = f"RIGHT NOW it is: {body.current_datetime}." if body.current_datetime else ""
     name_line = f"The user's name is {body.user_name}." if body.user_name else ""
+    native_line = f"Their native language is {body.native_language}." if body.native_language else ""
+    goal_line = f"Their learning goal is: {body.learning_goal}." if body.learning_goal else ""
 
     system_prompt = (
         # Datetime goes first so it anchors all temporal reasoning below
@@ -48,6 +52,8 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         f"Help with conversations, answer questions, and support language learning like a good friend.\n"
         f"The user is at {body.user_level} level.\n"
         + (f"{name_line}\n" if name_line else "")
+        + (f"{native_line}\n" if native_line else "")
+        + (f"{goal_line}\n" if goal_line else "")
         + f"\nWhat you know about this user:\n{context}\n\n"
         "Guidelines:\n"
         "- Keep responses concise and conversational (2-4 sentences max)\n"

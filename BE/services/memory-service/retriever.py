@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from openai import AsyncOpenAI
 from layers.short_term import ShortTermMemory
@@ -12,10 +13,24 @@ VALID_LAYERS = {"short_term", "long_term", "urgent"}
 
 _PRIORITY_SCORE = {"urgent": 0.95, "high": 0.85, "normal": 0.75}
 
+# In-memory embedding cache keyed by "session_id:md5(text)".
+# Avoids a round-trip to the embeddings API on repeated/similar queries within a session.
+# Capped at 500 entries with simple FIFO eviction.
+_embed_cache: dict[str, list[float]] = {}
+_EMBED_CACHE_MAX = 500
 
-async def embed(text: str) -> list[float]:
+
+async def embed(text: str, session_id: str = "") -> list[float]:
+    key = f"{session_id}:{hashlib.md5(text.encode()).hexdigest()}"
+    if key in _embed_cache:
+        log.debug("embed cache hit  session=%s  key=%s", session_id, key[:24])
+        return _embed_cache[key]
     res = await _openai.embeddings.create(model=settings.embedding_model, input=text)
-    return res.data[0].embedding
+    vec = res.data[0].embedding
+    if len(_embed_cache) >= _EMBED_CACHE_MAX:
+        del _embed_cache[next(iter(_embed_cache))]
+    _embed_cache[key] = vec
+    return vec
 
 
 async def fan_out_retrieve(
@@ -38,7 +53,7 @@ async def fan_out_retrieve(
         coros.append(_short_term_as_chunks(user_id))  # user-scoped rolling buffer
         labels.append("short_term")
     if "long_term" in active or "urgent" in active:
-        coros.append(_context_as_chunks(user_id, query, active))
+        coros.append(_context_as_chunks(user_id, query, active, session_id))
         labels.append("context")
 
     results = await asyncio.gather(*coros)
@@ -69,13 +84,13 @@ async def fan_out_retrieve(
     return final
 
 
-async def _context_as_chunks(user_id: str, query: str, active_layers: set) -> list[dict]:
+async def _context_as_chunks(user_id: str, query: str, active_layers: set, session_id: str = "") -> list[dict]:
     """
     Vector similarity search over per-fact rows.
     Falls back to returning all active facts if the table has no embeddings yet
     (e.g. legacy user_context rows that haven't been reconsolidated).
     """
-    query_vec = await embed(query)
+    query_vec = await embed(query, session_id=session_id)
     vec_literal = f"[{','.join(str(v) for v in query_vec)}]"
 
     rows = await database.fetch(

@@ -32,12 +32,20 @@ async def llm_tts_node(state: dict) -> dict:
         asyncio.create_task(_do())
         return fut
 
+    system = state["system_prompt"]
+    summary = state.get("conversation_summary", "")
+    if summary:
+        system += f"\n\nConversation so far in this session:\n{summary}"
+
+    recent = state.get("recent_messages", [])
+    messages_for_llm = recent + [{"role": "user", "content": state["transcript"]}]
+
     async with aiohttp.ClientSession() as sess:
         async with sess.post(
             f"{settings.llm_gateway_url}/stream",
             json={
-                "system": state["system_prompt"],
-                "messages": [{"role": "user", "content": state["transcript"]}],
+                "system": system,
+                "messages": messages_for_llm,
             },
         ) as resp:
             resp.raise_for_status()

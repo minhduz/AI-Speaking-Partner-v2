@@ -55,6 +55,7 @@ export interface ChatMessage {
   sentences?: string[];
   pronunciationScore?: number;
   pending?: boolean;
+  isHistoric?: boolean;
 }
 
 export interface TurnHistoryItem {

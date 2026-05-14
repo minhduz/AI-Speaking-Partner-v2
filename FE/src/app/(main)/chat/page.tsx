@@ -149,11 +149,9 @@ export default function ChatPage() {
           {/* Live mode: greeting */}
           {!reviewMode && !hasSession && greetingSentences.length > 0 && (
             <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-3">
-              {greetingSentences.map((sentence, i) => (
-                <p key={i} className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
-                  {sentence}
-                </p>
-              ))}
+              <p className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
+                {greetingSentences.join(' ')}
+              </p>
               {status === 'ready' && (
                 <p className="text-sm text-gray-400 animate-reveal">Press the mic button and start speaking.</p>
               )}
@@ -258,7 +256,7 @@ function MessageBubble({
         ) : isAi && message.sentences && message.sentences.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {message.sentences.map((s, i) => (
-              <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight animate-reveal">
+              <p key={i} className={`text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight${message.isHistoric ? '' : ' animate-reveal'}`}>
                 {s}
               </p>
             ))}

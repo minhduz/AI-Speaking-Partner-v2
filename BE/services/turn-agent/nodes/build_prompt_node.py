@@ -15,6 +15,8 @@ async def build_prompt_node(state: dict) -> dict:
         "session_id": session_id,
         "user_level": state.get("user_level", "beginner"),
         "target_language": state.get("target_language", "english"),
+        "native_language": state.get("native_language", ""),
+        "learning_goal": state.get("learning_goal", ""),
         "user_name": state.get("user_name", ""),
         "current_datetime": state.get("current_datetime", ""),
         "layers": ["short_term", "long_term", "urgent"],

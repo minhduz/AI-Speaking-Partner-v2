@@ -60,21 +60,15 @@ async def run_consolidation(user_id: str, session_id: str):
         conversation = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in messages_to_extract
         )
-        log.info("step 3 — calling LLM (long-term + short-term) in parallel from %d messages",
+        log.info("step 3 — calling LLM (combined long-term + short-term) from %d messages",
                  len(messages_to_extract))
-        _lt_result, _st_result = await asyncio.gather(
-            _extract_facts(conversation, session_start_utc),
-            _extract_short_term_facts(conversation, session_start_utc),
-            return_exceptions=True,
-        )
-        if isinstance(_lt_result, Exception):
-            log.error("step 3 — long-term extraction FAILED: %s", _lt_result, exc_info=_lt_result)
-            _lt_result = []
-        if isinstance(_st_result, Exception):
-            log.error("step 3 — short-term extraction FAILED: %s", _st_result, exc_info=_st_result)
-            _st_result = []
-        raw_facts: list[dict] = _lt_result
-        raw_st_facts: list[dict] = _st_result
+        try:
+            _all = await _extract_all_facts(conversation, session_start_utc)
+            raw_facts: list[dict]    = _all.get("long_term", [])
+            raw_st_facts: list[dict] = _all.get("short_term", [])
+        except Exception as exc:
+            log.error("step 3 — combined extraction FAILED: %s", exc, exc_info=True)
+            raw_facts, raw_st_facts = [], []
         log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts",
                  len(raw_facts), len(raw_st_facts))
 
@@ -312,8 +306,14 @@ async def _batch_embed(texts: list[str]) -> list[list[float]]:
     return [e.embedding for e in ordered]
 
 
-async def _extract_facts(conversation: str, session_start_utc: datetime) -> list[dict]:
-    fmt_time = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> dict:
+    """
+    Single LLM call that extracts both long-term and short-term facts.
+    Returns {"long_term": [...], "short_term": [...]}.
+    Replaces the previous two separate calls to save one API round-trip.
+    """
+    fmt_time  = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+    week_end  = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
     example_abs = (session_start_utc + timedelta(minutes=10)).strftime(
         "%I:%M %p on %A, %B %d, %Y UTC"
     )
@@ -325,80 +325,53 @@ async def _extract_facts(conversation: str, session_start_utc: datetime) -> list
                 "role": "system",
                 "content": (
                     f"The conversation took place on {fmt_time}.\n\n"
-                    "Extract important facts about the USER from this conversation.\n"
-                    "Return ONLY valid JSON: {\"facts\": [...]}\n\n"
-                    "Each fact object:\n"
-                    "  content  : string — the fact in plain English; for time-sensitive facts\n"
-                    "             embed the absolute date/time in the content itself\n"
-                    "  priority : 'urgent' | 'high' | 'normal'\n\n"
-                    "Priority rules:\n"
+                    "Extract facts about the USER from this conversation.\n"
+                    "Return ONLY valid JSON with this exact structure:\n"
+                    "{\n"
+                    '  "long_term": [...],\n'
+                    '  "short_term": [...]\n'
+                    "}\n\n"
+                    "── long_term ──\n"
+                    "Durable facts about the user — extract even from brief or casual mentions.\n"
+                    "Each object: {\"content\": string, \"priority\": \"urgent\"|\"high\"|\"normal\"}\n"
                     "  urgent = time-sensitive within 7 days (exam, appointment, deadline)\n"
                     "  high   = important personal goal, job, study plan, family situation\n"
-                    "  normal = preferences, hobbies, background\n\n"
-                    "For time-sensitive facts, embed the absolute time in content:\n"
+                    "  normal = preferences, hobbies, pets, family members, relationships, background\n"
+                    "Extract facts even when stated as corrections or clarifications:\n"
+                    "  'I mean my dog named Kiki'  → {\"content\": \"User has a dog named Kiki\", \"priority\": \"normal\"}\n"
+                    "  'Actually I have two cats'  → {\"content\": \"User has two cats\", \"priority\": \"normal\"}\n"
+                    "For time-sensitive facts embed the absolute date/time in content:\n"
                     f"  Bad:  'User has an exam in 10 minutes'\n"
                     f"  Good: 'User has an exam at {example_abs}'\n\n"
-                    "DO NOT extract:\n"
-                    "  - The user's name (stored in profile)\n"
-                    "  - The language being studied (stored in profile)\n"
-                    "  - The user's proficiency level (stored in profile)\n"
-                    "  - Anything said by the AI coach\n"
-                    "  - Trivial small talk"
-                ),
-            },
-            {"role": "user", "content": conversation},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=600,
-    )
-    try:
-        return json.loads(res.choices[0].message.content).get("facts", [])
-    except Exception:
-        return []
-
-
-async def _extract_short_term_facts(conversation: str, session_start_utc: datetime) -> list[dict]:
-    """Extract ONLY time-sensitive facts within the next 7 days (schedules, deadlines, urgent situations)."""
-    fmt_time = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-    week_end = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
-    example_abs = (session_start_utc + timedelta(days=2)).strftime("%I:%M %p on %A, %B %d, %Y UTC")
-
-    res = await _openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    f"The conversation took place on {fmt_time}.\n\n"
-                    f"Extract ONLY USER facts that are relevant within the next 7 days (by {week_end}).\n"
-                    "Return ONLY valid JSON: {\"facts\": [...]}\n\n"
-                    "Each fact:\n"
-                    "  content  : ONE complete sentence describing WHAT the event is AND its absolute date/time\n"
-                    "  priority : 'urgent' | 'high'\n\n"
-                    "The content MUST describe the event type, not just the time:\n"
-                    f"  BAD:  '11:00 AM on Thursday, May 14, 2026'\n"
+                    "── short_term ──\n"
+                    f"ONLY USER facts relevant within the next 7 days (by {week_end}).\n"
+                    "Each object: {\"content\": string, \"priority\": \"urgent\"|\"high\"}\n"
+                    "Content MUST describe the event AND its absolute date/time:\n"
                     f"  BAD:  '{example_abs}'\n"
                     f"  GOOD: 'User has a meeting at {example_abs}'\n"
-                    f"  GOOD: 'User has a doctor appointment at {example_abs}'\n\n"
-                    "Include ONLY:\n"
-                    "  - Upcoming meetings, appointments, events within 7 days\n"
-                    "  - Deadlines, exams, deliverables within 7 days\n"
-                    "  - Active urgent situations (health crisis, work crisis)\n\n"
-                    "Never use relative terms like 'tomorrow' or 'next week' — always absolute date/time.\n\n"
-                    "DO NOT include: preferences, hobbies, long-term goals, name, language level, "
-                    "events more than 7 days away, AI statements, small talk.\n"
-                    "Return empty array if no qualifying facts."
+                    "Include only: upcoming meetings, appointments, deadlines, exams within 7 days, "
+                    "active urgent situations.\n"
+                    "Never use relative terms — always absolute date/time.\n"
+                    "Return empty array if no qualifying facts.\n\n"
+                    "DO NOT extract (for either list):\n"
+                    "  - The user's name, language being studied, or proficiency level (stored in profile)\n"
+                    "  - Anything said by the AI coach\n"
+                    "  - Pure greetings or filler with zero personal information"
                 ),
             },
             {"role": "user", "content": conversation},
         ],
         response_format={"type": "json_object"},
-        max_tokens=300,
+        max_tokens=900,
     )
     try:
-        return json.loads(res.choices[0].message.content).get("facts", [])
+        data = json.loads(res.choices[0].message.content)
+        return {
+            "long_term":  data.get("long_term", []),
+            "short_term": data.get("short_term", []),
+        }
     except Exception:
-        return []
+        return {"long_term": [], "short_term": []}
 
 
 def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
