@@ -207,9 +207,14 @@ export class TurnService {
 
   private async appendToShortTerm(sessionId: string, userId: string, userMsg: string, aiMsg: string) {
     const memUrl = this.cfg.get('MEMORY_SERVICE_URL');
-    await firstValueFrom(
-      this.http.post(`${memUrl}/short-term/${userId}/append`, { session_id: sessionId, user_message: userMsg, ai_message: aiMsg }),
-    );
+    try {
+      await firstValueFrom(
+        this.http.post(`${memUrl}/short-term/${userId}/append`, { session_id: sessionId, user_message: userMsg, ai_message: aiMsg }),
+      );
+      console.log(`[Turn][appendToShortTerm] ✓ appended  user=${userId}  session=${sessionId}`);
+    } catch (err: any) {
+      console.error(`[Turn][appendToShortTerm] ✖ FAILED  user=${userId}  session=${sessionId}  url=${memUrl}  error=${err?.message}`);
+    }
   }
 
   private async recordUsage(userId: string, tokens: number) {

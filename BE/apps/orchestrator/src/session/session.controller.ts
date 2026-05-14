@@ -101,14 +101,21 @@ export class SessionController {
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
       const logPrefix = sessionId ? `[Greeting][session=${sessionId}]` : '[Greeting]';
 
+      // Limit context to 400 chars so the greeting prompt stays cheap.
+      // The AI only needs a brief topic hint for a 2-sentence greeting.
+      const MAX_CONTEXT_CHARS = 400;
+      const trimmedContext = greetingContext.length > MAX_CONTEXT_CHARS
+        ? greetingContext.slice(0, MAX_CONTEXT_CHARS) + '…'
+        : greetingContext;
+
       const systemPrompt = [
         `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally.`,
         `Help with conversations, answer questions, and support language learning like a good friend.`,
         `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
         `Do not use emojis or special icons in your response.`,
         user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
-        greetingContext ? `Recent conversation context:\n${greetingContext}` : '',
-        greetingContext
+        trimmedContext ? `Recent conversation topics (brief):\n${trimmedContext}` : '',
+        trimmedContext
           ? `TEMPORAL REASONING: The context above may mention events at specific times. Compare those times to RIGHT NOW (${formattedDatetime}). If an event (meeting, appointment, task, activity) has already passed, ask how it went — do not wish them luck for it. If it is still upcoming, you may acknowledge it. Never treat a past event as if it is still in the future.`
           : '',
         '',
@@ -121,8 +128,8 @@ export class SessionController {
       console.log(`${logPrefix}   language     : ${user?.targetLanguage ?? 'English'}`);
       console.log(`${logPrefix}   datetime     : ${formattedDatetime}`);
       console.log(`${logPrefix}   sessionId    : ${sessionId ?? '(none — anon route)'}`);
-      console.log(`${logPrefix}   context src  : short_term (user-scoped rolling buffer)`);
-      console.log(`${logPrefix}   context len  : ${greetingContext.length} chars`);
+      console.log(`${logPrefix}   context src  : short_term (consolidated st_facts from previous sessions)`);
+      console.log(`${logPrefix}   context len  : ${trimmedContext.length} chars (raw: ${greetingContext.length})`);
       console.log(`${logPrefix}   system prompt:\n${systemPrompt.split('\n').map(l => `    | ${l}`).join('\n')}`);
       console.log(`${logPrefix} ────────────────────────────────────────────────`);
 

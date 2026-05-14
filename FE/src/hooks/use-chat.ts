@@ -473,16 +473,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           }
           setStatus('ready');
 
-          // Start 15-second inactivity timer — triggers consolidation if user goes quiet
+          // After 2 minutes of silence, trigger consolidation but keep the session alive
+          // so the user can continue talking without a new session being created.
           inactivityTimerRef.current = setTimeout(() => {
             const sid = sessionIdRef.current;
             if (!sid) return;
-            console.log('[Session] 15s inactivity — ending session to trigger consolidation');
+            console.log('[Session] 2min inactivity — triggering consolidation (session stays open)');
             sessionService.end(sid).catch(console.error);
-            sessionIdRef.current = null;
-            setCurrentSessionId(null);
             inactivityTimerRef.current = null;
-          }, 15_000);
+          }, 120_000);
 
           return;
         } else if (event.type === 'error') {
@@ -535,6 +534,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (status !== 'ready') return;
     isStoppingRef.current = false;
     pendingStopRef.current = false;
+
+    // Cancel any pending consolidation timer — user is still in this session.
+    if (inactivityTimerRef.current !== null) {
+      clearTimeout(inactivityTimerRef.current);
+      inactivityTimerRef.current = null;
+    }
+
     // Optimistic — closes the race where user releases before startRecording's
     // setStatus fires, leaving the mic stuck.
     setStatus('recording');

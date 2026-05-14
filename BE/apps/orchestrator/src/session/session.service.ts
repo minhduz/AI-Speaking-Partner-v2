@@ -82,7 +82,7 @@ export class SessionService {
     const payload = {
       query: 'recent conversation context',
       session_id: '',   // not used for short-term retrieval (user-scoped now)
-      limit: 10,
+      limit: 3,
       layers: ['short_term'],
     };
     console.log(`${prefix} → POST /retrieve layers=${JSON.stringify(payload.layers)}`);
