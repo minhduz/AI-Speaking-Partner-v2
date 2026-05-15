@@ -8,6 +8,7 @@ import { Turn } from './entities/turn.entity';
 import { Session } from '../session/entities/session.entity';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
+import { normalizeVoiceId } from '../user/voice-options';
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
@@ -119,7 +120,7 @@ export class TurnService {
             session_id: sessionId,
             user_level: user?.level ?? 'beginner',
             target_language: user?.targetLanguage ?? 'english',
-            user_name: user?.name ?? '',
+            user_name: (user?.name ?? '').trim().split(/\s+/)[0] ?? '',
             native_language: user?.nativeLanguage ?? 'vietnamese',
             learning_goal: user?.learningGoal ?? '',
             current_datetime: currentDatetime,
@@ -146,7 +147,11 @@ export class TurnService {
       // 5. TTS
       step = 'tts';
       const ttsRes = await firstValueFrom(
-        this.http.post(`${speechUrl}/tts`, { text: response_text }),
+        this.http.post(`${speechUrl}/tts`, {
+          text: response_text,
+          voice: normalizeVoiceId(user?.voiceId),
+          speech_rate: user?.speechRate ?? 1.0,
+        }),
       );
       const { audio_b64 } = ttsRes.data;
 

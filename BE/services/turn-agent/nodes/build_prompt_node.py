@@ -19,6 +19,7 @@ async def build_prompt_node(state: dict) -> dict:
         "learning_goal": state.get("learning_goal", ""),
         "user_name": state.get("user_name", ""),
         "current_datetime": state.get("current_datetime", ""),
+        "conversation_style": state.get("conversation_style", "friendly"),
         "layers": ["short_term", "long_term", "urgent"],
     }
 

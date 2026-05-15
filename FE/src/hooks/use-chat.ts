@@ -11,16 +11,16 @@ function splitSentences(text: string): string[] {
   return parts.length > 0 ? parts : [text];
 }
 
-// Greeting text cache — survives client-side navigation but resets on full page reload.
-// Prevents re-streaming the greeting when the user navigates away and returns.
-let _greetingTextCache: string | null = null;
+// Greeting cache — survives client-side navigation (cleared on logout/full reload).
+// Stores sentences as rendered so restore matches the live-stream layout.
+let _greetingTextCache: string[] | null = null;
 
 const TURN_PLAYBACK_RATE = 1.15;
-const TURN_REVEAL_MS_PER_WORD = 300;
+// Fallback reveal pace when audio is unavailable (suspended ctx / decode failure).
+const FALLBACK_REVEAL_MS_PER_WORD = 220;
 
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
-// Returns null during SSR where `window` does not exist.
 let _sharedAudioCtx: AudioContext | null = null;
 function getSharedAudioCtx(): AudioContext | null {
   if (typeof window === 'undefined') return null;
@@ -31,14 +31,13 @@ function getSharedAudioCtx(): AudioContext | null {
   return _sharedAudioCtx;
 }
 
-// Call on logout to immediately stop any playing audio
 export function stopAllAudio(): void {
   if (_sharedAudioCtx && _sharedAudioCtx.state !== 'closed') {
     _sharedAudioCtx.close();
   }
   _sharedAudioCtx = null;
+  _greetingTextCache = null;
 }
-
 
 export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processing' | 'error';
 
@@ -64,59 +63,40 @@ export interface UseChatReturn {
   loadMoreReview: () => Promise<void>;
 }
 
+// Reveal `text` word-by-word over `durationMs`. Returns a promise that resolves
+// when the last word is shown so callers can sequence the next segment cleanly.
 function revealWordsOverTime(
   text: string,
   durationMs: number,
   onWordReveal: (partial: string) => void,
-): void {
+): Promise<void> {
   const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) {
+    onWordReveal(text);
+    return Promise.resolve();
+  }
   const intervalMs = durationMs / words.length;
-  let built = '';
-  words.forEach((word, i) => {
-    setTimeout(() => {
-      built += (built ? ' ' : '') + word;
-      onWordReveal(built);
-    }, i * intervalMs);
+  return new Promise<void>((resolve) => {
+    let built = '';
+    words.forEach((word, i) => {
+      setTimeout(() => {
+        built += (built ? ' ' : '') + word;
+        onWordReveal(built);
+        if (i === words.length - 1) resolve();
+      }, i * intervalMs);
+    });
   });
 }
 
-async function playAudioWithSentence(
-  ctx: AudioContext,
-  b64: string,
-  text: string | undefined,
-  onText: ((t: string) => void) | undefined,
-  onWordReveal?: (partial: string) => void,
-  playbackRate = 1,
-): Promise<void> {
-  console.log(`[Audio] playAudioWithSentence — ctx state: ${ctx.state}, b64 len: ${b64?.length ?? 0}, text: "${text?.slice(0, 40) ?? 'none'}"`);
-  if (ctx.state === 'suspended') {
-    console.warn('[Audio] shared ctx still suspended — skipping audio, showing text');
-    if (text && onText) onText(text);
-    else if (text && onWordReveal) revealWordsOverTime(text, text.split(/\s+/).length * TURN_REVEAL_MS_PER_WORD, onWordReveal);
-    return;
-  }
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
-  console.log(`[Audio] decoded — duration: ${audioBuffer.duration.toFixed(2)}s`);
-  if (text && onText) onText(text);
-  const source = ctx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.playbackRate.value = playbackRate;
-  source.connect(ctx.destination);
-  source.start(0);
-  console.log('[Audio] source.start(0) called — playing');
-  if (text && onWordReveal) {
-    revealWordsOverTime(text, (audioBuffer.duration * 1000) / playbackRate, onWordReveal);
-  }
-  return new Promise((resolve) => {
-    source.onended = () => {
-      console.log('[Audio] source.onended — playback finished');
-      resolve();
-    };
-  });
-}
+// Each queue item carries the spoken text and a promise that, when resolved,
+// gives the scheduled playback timing (startTime in ctx.currentTime units,
+// durationMs after playback rate is applied). Audio scheduling is ordered and
+// eager — it happens as segments arrive, so playback is gapless.
+type SegmentQueueItem = {
+  text: string;
+  isGreeting: boolean;
+  audioReady: Promise<{ startTime: number; durationMs: number } | null>;
+};
 
 export function useChat(initialSessionId?: string): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
@@ -143,16 +123,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const initializedRef = useRef(false);
 
-  const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
-  const audioQueueIdleResolversRef = useRef<(() => void)[]>([]);
+  const segmentQueueRef = useRef<SegmentQueueItem[]>([]);
+  const segmentIdleResolversRef = useRef<(() => void)[]>([]);
   const isPlayingRef = useRef(false);
+  // Chains segment scheduling so audio is pushed onto the timeline in arrival order
+  // even when MP3 decode of an earlier segment happens to finish later.
+  const lastScheduleRef = useRef<Promise<unknown>>(Promise.resolve());
   const isStoppingRef = useRef(false);
   const sttWsRef = useRef<WebSocket | null>(null);
   const sttDoneResolverRef = useRef<((t: string) => void) | null>(null);
-  // Set when stopMic is called before startRecording has finished setting up the
-  // MediaRecorder — drains in startMic's .then() so the stop isn't lost.
   const pendingStopRef = useRef(false);
-  // Point to the module-level singleton — always exists on the client before any effect.
   const sharedPlaybackCtxRef = useRef<AudioContext | null>(getSharedAudioCtx());
 
   const turnsToMessages = useCallback((items: TurnHistoryItem[]): ChatMessage[] => {
@@ -187,172 +167,179 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     await loadReviewPage(sessionId, 1, false);
   }, [loadReviewPage]);
 
-  const resolveAudioQueueIdle = useCallback(() => {
-    if (isPlayingRef.current || audioQueueRef.current.length > 0) return;
-    const resolvers = audioQueueIdleResolversRef.current.splice(0);
+  const resolveSegmentIdle = useCallback(() => {
+    if (isPlayingRef.current || segmentQueueRef.current.length > 0) return;
+    const resolvers = segmentIdleResolversRef.current.splice(0);
     resolvers.forEach((resolve) => resolve());
   }, []);
 
-  const waitForAudioQueueIdle = useCallback((): Promise<void> => {
-    if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+  const waitForSegmentIdle = useCallback((): Promise<void> => {
+    if (!isPlayingRef.current && segmentQueueRef.current.length === 0) {
       return Promise.resolve();
     }
     return new Promise((resolve) => {
-      audioQueueIdleResolversRef.current.push(resolve);
+      segmentIdleResolversRef.current.push(resolve);
     });
   }, []);
 
-  const processAudioQueue = useCallback(async () => {
-    // During SSR, useRef(getSharedAudioCtx()) receives null because window doesn't exist.
-    // React doesn't re-run the initializer on hydration, so the ref stays null.
-    // Fix: always resolve the context directly from the singleton as a fallback.
-    let ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
-    if (ctx && !sharedPlaybackCtxRef.current) {
-      sharedPlaybackCtxRef.current = ctx; // repair the ref for subsequent calls
-    }
-    if (!ctx) {
-      // Very early call (SSR stub) — wait up to 2s for the client to mount.
-      for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 100));
-        ctx = getSharedAudioCtx();
-        if (ctx) { sharedPlaybackCtxRef.current = ctx; break; }
-      }
-    }
-    console.log(`[Audio] processAudioQueue called — isPlaying: ${isPlayingRef.current}, queue length: ${audioQueueRef.current.length}, ctx state: ${ctx?.state ?? 'none'}`);
-    if (isPlayingRef.current) {
-      console.log('[Audio] already playing — skipping');
-      return;
-    }
-    if (!ctx) {
-      console.warn('[Audio] no shared AudioContext yet — skipping');
-      while (audioQueueRef.current.length > 0) {
-        const item = audioQueueRef.current.shift()!;
-        if (!item.text) continue;
-        if (item.isGreeting) {
-          setGreetingSentences((prev) => [...prev, item.text!]);
-        } else {
-          setMessages((prev) => {
-            const msgs = [...prev];
-            const idx = msgs.findLastIndex((m) => m.role === 'ai');
-            if (idx >= 0) {
-              const existing = msgs[idx];
-              const sentences = [...(existing.sentences ?? []), item.text!];
-              msgs[idx] = { ...existing, pending: false, text: sentences.join(' '), sentences };
-            }
-            return msgs;
-          });
+  // Visual helpers — kept here so processSegmentQueue stays focused on timing.
+  const appendEmptySegment = useCallback((isGreeting: boolean) => {
+    if (isGreeting) {
+      setGreetingSentences((prev) => [...prev, '']);
+    } else {
+      setMessages((prev) => {
+        const msgs = [...prev];
+        const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+        if (idx >= 0) {
+          const existing = msgs[idx];
+          msgs[idx] = { ...existing, sentences: [...(existing.sentences ?? []), ''] };
         }
-      }
-      resolveAudioQueueIdle();
-      return;
+        return msgs;
+      });
     }
+  }, []);
+
+  const updateLastSegment = useCallback((partial: string, isGreeting: boolean) => {
+    if (isGreeting) {
+      setGreetingSentences((prev) => {
+        if (prev.length === 0) return [partial];
+        const next = [...prev];
+        next[next.length - 1] = partial;
+        return next;
+      });
+    } else {
+      setMessages((prev) => {
+        const msgs = [...prev];
+        const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
+        if (idx >= 0) {
+          const existing = msgs[idx];
+          const sentences = [...(existing.sentences ?? [])];
+          if (sentences.length === 0) sentences.push(partial);
+          else sentences[sentences.length - 1] = partial;
+          msgs[idx] = { ...existing, sentences };
+        }
+        return msgs;
+      });
+    }
+  }, []);
+
+  // Decode MP3 → AudioBuffer; returns null on failure or suspended ctx.
+  const decodeMp3 = useCallback(async (ctx: AudioContext, b64: string): Promise<AudioBuffer | null> => {
+    if (!b64) return null;
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return await ctx.decodeAudioData(bytes.buffer);
+    } catch (err) {
+      console.error('[Audio] decode failed:', err);
+      return null;
+    }
+  }, []);
+
+  // Eagerly decode + schedule audio for a segment, preserving arrival order via
+  // lastScheduleRef. Returns a promise resolving to the scheduled timing — used
+  // by the processor to align word reveal with the actual audio start time.
+  const enqueueSegment = useCallback((b64: string, text: string, isGreeting: boolean) => {
+    const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+    const playbackRate = isGreeting ? 1 : TURN_PLAYBACK_RATE;
+
+    // Decode runs in parallel for all segments; scheduling chains off the
+    // previous segment's schedule so the audio timeline stays ordered.
+    const decodePromise = ctx && ctx.state !== 'closed'
+      ? decodeMp3(ctx, b64)
+      : Promise.resolve(null);
+
+    const audioReady = lastScheduleRef.current.then(async () => {
+      const buffer = await decodePromise;
+      const liveCtx = sharedPlaybackCtxRef.current ?? ctx;
+      if (!buffer || !liveCtx || liveCtx.state === 'closed' || liveCtx.state === 'suspended') {
+        return null;
+      }
+      const startTime = Math.max(liveCtx.currentTime, nextPlayTimeRef.current);
+      const source = liveCtx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = playbackRate;
+      source.connect(liveCtx.destination);
+      source.start(startTime);
+      nextPlayTimeRef.current = startTime + buffer.duration / playbackRate;
+      return { startTime, durationMs: (buffer.duration * 1000) / playbackRate };
+    }).catch((err) => {
+      console.error('[Audio] schedule failed:', err);
+      return null;
+    });
+
+    lastScheduleRef.current = audioReady;
+    segmentQueueRef.current.push({ text, isGreeting, audioReady });
+  }, [decodeMp3]);
+
+  // Pulls segments off the queue one at a time. For each segment: wait until its
+  // audio actually starts on the timeline, then reveal its words over the audio
+  // duration. Sequential reveal + gapless audio = no drift, no layout jumps.
+  const processSegmentQueue = useCallback(async () => {
+    if (isPlayingRef.current) return;
     isPlayingRef.current = true;
     try {
-      while (audioQueueRef.current.length > 0) {
-        const item = audioQueueRef.current.shift()!;
-        console.log(`[Audio] dequeued item — queue remaining: ${audioQueueRef.current.length}`);
+      while (segmentQueueRef.current.length > 0) {
+        const item = segmentQueueRef.current.shift()!;
+        const scheduled = await item.audioReady;
+        const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
 
-        let onText: ((t: string) => void) | undefined;
-        let onWordReveal: ((partial: string) => void) | undefined;
+        appendEmptySegment(item.isGreeting);
 
-        if (item.text) {
-          if (item.isGreeting) {
-            setGreetingSentences((prev) => [...prev, '']);
-            onWordReveal = (partial: string) =>
-              setGreetingSentences((prev) => {
-                if (prev.length === 0) return [partial];
-                const next = [...prev];
-                next[next.length - 1] = partial;
-                return next;
-              });
-          } else {
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai');
-              if (idx >= 0) {
-                const existing = msgs[idx];
-                const sentences = [...(existing.sentences ?? []), ''];
-                msgs[idx] = { ...existing, pending: false, text: sentences.filter(Boolean).join(' '), sentences };
-              }
-              return msgs;
-            });
-            onWordReveal = (partial: string) =>
-              setMessages((prev) => {
-                const msgs = [...prev];
-                const idx = msgs.findLastIndex((m) => m.role === 'ai');
-                if (idx >= 0) {
-                  const existing = msgs[idx];
-                  const sentences = [...(existing.sentences ?? [])];
-                  if (sentences.length === 0) {
-                    sentences.push(partial);
-                  } else {
-                    sentences[sentences.length - 1] = partial;
-                  }
-                  msgs[idx] = { ...existing, pending: false, text: sentences.filter(Boolean).join(' '), sentences };
-                }
-                return msgs;
-              });
-          }
-        }
-
-        try {
-          await playAudioWithSentence(
-            ctx,
-            item.b64,
-            item.text,
-            onText,
-            onWordReveal,
-            item.isGreeting ? 1 : TURN_PLAYBACK_RATE,
+        if (!scheduled || !ctx) {
+          const wordCount = item.text.split(/\s+/).filter(Boolean).length;
+          const fallbackMs = Math.max(600, wordCount * FALLBACK_REVEAL_MS_PER_WORD);
+          await revealWordsOverTime(item.text, fallbackMs, (partial) =>
+            updateLastSegment(partial, item.isGreeting),
           );
-        } catch (err) {
-          console.error('[Audio] playback error:', err);
-          if (item.text) {
-            if (onText) onText(item.text);
-            else if (onWordReveal) revealWordsOverTime(item.text, item.text.split(/\s+/).length * 150, onWordReveal);
-          }
+          continue;
         }
+
+        const delayUntilStartMs = Math.max(0, (scheduled.startTime - ctx.currentTime) * 1000);
+        if (delayUntilStartMs > 0) {
+          await new Promise((r) => setTimeout(r, delayUntilStartMs));
+        }
+        await revealWordsOverTime(item.text, scheduled.durationMs, (partial) =>
+          updateLastSegment(partial, item.isGreeting),
+        );
       }
     } finally {
-      console.log('[Audio] queue drained — isPlaying reset to false');
       isPlayingRef.current = false;
-      resolveAudioQueueIdle();
+      resolveSegmentIdle();
     }
-  }, [resolveAudioQueueIdle, setMessages, setGreetingSentences]);
+  }, [appendEmptySegment, updateLastSegment, resolveSegmentIdle]);
 
-  // Greeting does not require a session — it's a pre-session welcome stream
+  // ── Greeting flow ───────────────────────────────────────────────────────────
   const runGreeting = useCallback(async () => {
     setStatus('greeting');
     setGreetingSentences([]);
-    let fullText = '';
-    let hadAudioText = false;
+    nextPlayTimeRef.current = 0;
+    lastScheduleRef.current = Promise.resolve();
+    const collectedSegments: string[] = [];
     try {
       const stream = await sessionService.streamGreetingAnon();
       for await (const event of stream) {
-        if (event.type === 'text') {
-          fullText += event.chunk;
-        } else if (event.type === 'audio') {
-          console.log(`[Audio][greeting] audio event received — b64 len: ${event.audio_b64?.length ?? 0}`);
-          if (event.text) hadAudioText = true;
-          audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
-          processAudioQueue();
+        if (event.type === 'segment') {
+          collectedSegments.push(event.text);
+          enqueueSegment(event.audio_b64, event.text, true);
+          void processSegmentQueue();
         } else if (event.type === 'done') {
-          // If TTS failed and no audio events carried text, fall back to the full LLM text
-          if (!hadAudioText && fullText.trim()) {
-            setGreetingSentences([fullText.trim()]);
-          }
-          if (fullText.trim()) _greetingTextCache = fullText.trim();
+          await waitForSegmentIdle();
+          if (collectedSegments.length > 0) _greetingTextCache = [...collectedSegments];
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
           throw new Error(event.message);
         }
       }
+      await waitForSegmentIdle();
     } catch (err) {
       console.error('[greeting]', err);
     } finally {
       setStatus('ready');
     }
-  }, [processAudioQueue]);
+  }, [enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
 
   const initSession = useCallback(async () => {
     setStatus('idle');
@@ -361,9 +348,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
-    // Restore cached greeting instead of re-streaming (survives client-side nav)
-    if (_greetingTextCache) {
-      setGreetingSentences([_greetingTextCache]);
+    if (_greetingTextCache && _greetingTextCache.length > 0) {
+      setGreetingSentences(_greetingTextCache);
       setStatus('ready');
       return;
     }
@@ -375,25 +361,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (authLoading || !isAuthenticated) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      if (initialSessionId) {
-        void enterReview(initialSessionId);
-      } else {
-        void initSession();
-      }
-    });
-    return () => { cancelled = true; };
+    if (initialSessionId) {
+      void enterReview(initialSessionId);
+    } else {
+      void initSession();
+    }
   }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
 
-  // Resume the shared AudioContext on every user gesture (Chrome blocks autoplay without one).
-  // Also explicitly assign the ref here because the useRef initializer runs during SSR
-  // (where window is undefined → null) and React doesn't re-run it on client hydration.
   useEffect(() => {
-    const ctx = getSharedAudioCtx(); // always returns the real context on the client
+    const ctx = getSharedAudioCtx();
     if (!ctx) return;
-    sharedPlaybackCtxRef.current = ctx; // repair ref that was null after SSR hydration
+    sharedPlaybackCtxRef.current = ctx;
     console.log(`[Audio] shared AudioContext on mount — state: ${ctx.state}`);
 
     const resume = () => {
@@ -416,9 +394,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, []);
 
-  // End the session on tab close (beforeunload) and on Next.js client-side navigation
-  // away from the chat page (component unmount). Uses keepalive:true so the request
-  // survives page unload without needing sendBeacon.
   useEffect(() => {
     const endOnLeave = () => {
       const sid = sessionIdRef.current;
@@ -430,7 +405,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     window.addEventListener('beforeunload', endOnLeave);
     return () => {
       window.removeEventListener('beforeunload', endOnLeave);
-      endOnLeave(); // fires when component unmounts (client-side nav away from chat)
+      endOnLeave();
     };
   }, []);
 
@@ -475,7 +450,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
     }, 100);
 
-    // Open STT WebSocket — browser streams audio chunks directly to Soniox in real-time
     const speechBase = (process.env.NEXT_PUBLIC_SPEECH_SERVICE_URL ?? 'http://localhost:8010')
       .replace(/^http(s?):\/\//, (_: string, s: string) => `ws${s}://`);
     const ws = new WebSocket(`${speechBase}/stt/ws`);
@@ -503,7 +477,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       sttDoneResolverRef.current = null;
     };
 
-    // Wait for WS to open before starting recorder
     if (ws.readyState !== WebSocket.OPEN) {
       await new Promise<void>((resolve, reject) => {
         ws.addEventListener('open', () => resolve(), { once: true });
@@ -511,12 +484,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       });
     }
 
-    // Pending user bubble appears as soon as recording starts
     setMessages((prev) => [...prev, { role: 'user', text: '', pending: true }]);
 
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
-    // Each 50ms chunk goes directly to Soniox via the WebSocket
     recorder.ondataavailable = (e) => {
       if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
         e.data.arrayBuffer().then((buf) => {
@@ -536,12 +507,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       const recorder = recorderRef.current!;
       const ws = sttWsRef.current;
-
-      // Store resolver — ws.onmessage 'done' handler calls it when Soniox is finished
       sttDoneResolverRef.current = resolve;
-
       recorder.onstop = () => {
-        // All ondataavailable chunks have been sent by this point — signal end of audio
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ end: true }));
         } else {
@@ -556,6 +523,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     });
   }, []);
 
+  // ── Turn flow ───────────────────────────────────────────────────────────────
   const processTurn = useCallback(async (transcript: string) => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
@@ -563,166 +531,66 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setStatus('processing');
     setErrorMessage(null);
     nextPlayTimeRef.current = 0;
+    lastScheduleRef.current = Promise.resolve();
 
-    // Replace the pending user bubble (filled by word events) with the final transcript
     setGreetingSentences([]);
     setMessages((prev) => {
       const withoutPending = prev.filter((m) => !m.pending);
       const userBubble = transcript.trim()
         ? [{ role: 'user' as const, text: transcript }]
         : [];
-      return [...withoutPending, ...userBubble, { role: 'ai', text: '', pending: true }];
+      return [...withoutPending, ...userBubble, { role: 'ai', text: '', sentences: [], pending: true }];
     });
 
     try {
       const stream = await sessionService.streamTurnText(sessionId, transcript);
-      let aiFullText = '';
-      let hadAudioChunks = false;
-      let hadSentenceAudio = false;
-      let wordsRevealed = 0;
-      let revealInterval: number | null = null;
-
-      const stopReveal = () => {
-        if (revealInterval !== null) { window.clearInterval(revealInterval); revealInterval = null; }
-      };
-
       for await (const event of stream) {
-        if (event.type === 'text') {
-          // Accumulate silently — interval reveals at speech rate once audio starts
-          aiFullText += event.chunk;
-        } else if (event.type === 'audio_chunk') {
-          hadAudioChunks = true;
-          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
-          if (ctx && ctx.state !== 'closed') {
-            try {
-              const binary = atob(event.audio_b64);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-              const pcm = new Int16Array(bytes.buffer);
-              const float32 = new Float32Array(pcm.length);
-              for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768.0;
-              const sampleRate = event.sample_rate || 24000;
-              const buffer = ctx.createBuffer(1, float32.length, sampleRate);
-              buffer.copyToChannel(float32, 0);
-              const source = ctx.createBufferSource();
-              source.buffer = buffer;
-              source.playbackRate.value = TURN_PLAYBACK_RATE;
-              source.connect(ctx.destination);
-              const startTime = Math.max(ctx.currentTime, nextPlayTimeRef.current);
-              source.start(startTime);
-              nextPlayTimeRef.current = startTime + (buffer.duration / TURN_PLAYBACK_RATE);
-
-              // Start word-reveal interval the moment first audio plays (~150 wpm)
-              if (revealInterval === null) {
-                revealInterval = window.setInterval(() => {
-                  const words = aiFullText.trim().split(/\s+/).filter(Boolean);
-                  if (wordsRevealed < words.length) {
-                    wordsRevealed++;
-                    const visible = words.slice(0, wordsRevealed).join(' ');
-                    setMessages((prev) => {
-                      const msgs = [...prev];
-                      const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
-                      if (idx >= 0) msgs[idx] = { ...msgs[idx], text: visible };
-                      return msgs;
-                    });
-                  }
-                }, TURN_REVEAL_MS_PER_WORD);
-              }
-            } catch (err) {
-              console.error('[Audio] PCM chunk playback error:', err);
-            }
-          }
-        } else if (event.type === 'audio_end') {
-          // Stop fixed-rate interval; spread any unrevealed words over remaining audio
-          stopReveal();
-          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
-          const remainingAudioMs = ctx && hadAudioChunks
-            ? Math.max(0, (nextPlayTimeRef.current - ctx.currentTime) * 1000)
-            : 0;
-          const words = aiFullText.trim().split(/\s+/).filter(Boolean);
-          const remaining = words.slice(wordsRevealed);
-          if (remaining.length === 0) {
-            // All words already revealed — nothing to do
-          } else if (remainingAudioMs < 100) {
-            // Audio almost done — show rest immediately
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
-              if (idx >= 0) msgs[idx] = { ...msgs[idx], text: aiFullText.trim() };
-              return msgs;
-            });
-          } else {
-            // Spread remaining words evenly over remaining audio time
-            const stepMs = remainingAudioMs / remaining.length;
-            let built = words.slice(0, wordsRevealed).join(' ');
-            remaining.forEach((word, i) => {
-              setTimeout(() => {
-                built += (built ? ' ' : '') + word;
-                setMessages((prev) => {
-                  const msgs = [...prev];
-                  const idx = msgs.findLastIndex((m) => m.role === 'ai' && m.pending);
-                  if (idx >= 0) msgs[idx] = { ...msgs[idx], text: built };
-                  return msgs;
-                });
-              }, i * stepMs);
-            });
-          }
-        } else if (event.type === 'audio') {
-          // Batch mp3 sentence audio: same contract as the greeting stream.
-          console.log(`[Audio][turn] audio event — b64 len: ${event.audio_b64?.length ?? 0}`);
-          if (event.text) hadSentenceAudio = true;
-          audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: false });
-          processAudioQueue();
+        if (event.type === 'segment') {
+          enqueueSegment(event.audio_b64, event.text, false);
+          void processSegmentQueue();
         } else if (event.type === 'title') {
           setSessionTitleUpdate({ sessionId, title: event.text });
         } else if (event.type === 'done') {
-          stopReveal();
-          if (hadSentenceAudio) {
-            await waitForAudioQueueIdle();
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai');
-              if (idx >= 0) {
-                const finalText = aiFullText.trim() || msgs[idx].text;
-                msgs[idx] = { ...msgs[idx], pending: false, text: finalText, sentences: splitSentences(finalText) };
-              }
-              return msgs;
-            });
-            setStatus('ready');
-            return;
-          }
-          // Delay finalization until audio finishes so the reveal timers
-          // can complete before we switch pending → sentences rendering branch
-          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
-          const remainingAudioMs = ctx && hadAudioChunks
-            ? Math.max(0, (nextPlayTimeRef.current - ctx.currentTime) * 1000)
-            : 0;
-          setTimeout(() => {
-            setMessages((prev) => {
-              const msgs = [...prev];
-              const idx = msgs.findLastIndex((m) => m.role === 'ai');
-              if (idx >= 0) {
-                const finalText = aiFullText.trim();
-                msgs[idx] = { ...msgs[idx], pending: false, text: finalText, sentences: splitSentences(finalText) };
-              }
-              return msgs;
-            });
-            setStatus('ready');
-          }, remainingAudioMs);
+          // Wait for all segments to finish revealing before flipping pending → false.
+          // The bubble was already rendered via `sentences[]`, so no layout change.
+          await waitForSegmentIdle();
+          setMessages((prev) => {
+            const msgs = [...prev];
+            const idx = msgs.findLastIndex((m) => m.role === 'ai');
+            if (idx >= 0) {
+              const sentences = msgs[idx].sentences ?? [];
+              msgs[idx] = {
+                ...msgs[idx],
+                pending: false,
+                text: sentences.join(' '),
+                sentences,
+              };
+            }
+            return msgs;
+          });
+          setStatus('ready');
           return;
         } else if (event.type === 'error') {
-          stopReveal();
           throw new Error(event.message);
         }
       }
-      stopReveal();
+      await waitForSegmentIdle();
+      setMessages((prev) => {
+        const msgs = [...prev];
+        const idx = msgs.findLastIndex((m) => m.role === 'ai');
+        if (idx >= 0) {
+          const sentences = msgs[idx].sentences ?? [];
+          msgs[idx] = { ...msgs[idx], pending: false, text: sentences.join(' '), sentences };
+        }
+        return msgs;
+      });
       setStatus('ready');
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.pending));
       setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
       setStatus('error');
     }
-  }, [processAudioQueue, waitForAudioQueueIdle]);
+  }, [enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -804,7 +672,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const stopMic = useCallback(() => {
     if (statusRef.current !== 'recording') return;
     if (isStoppingRef.current) return;
-    // Recorder not ready yet — queue the stop and let startMic's .then() drain it.
     if (!recorderRef.current || recorderRef.current.state !== 'recording') {
       pendingStopRef.current = true;
       return;
@@ -812,23 +679,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     runStop();
   }, [runStop]);
 
-
   const startNewSession = useCallback(() => {
-    // Exit review mode if active
     setReviewMode(false);
     setReviewSessionId(null);
     reviewSessionIdRef.current = null;
     reviewPageRef.current = 1;
     setReviewHasMore(false);
 
-    // Close any active STT WebSocket
     if (sttWsRef.current) {
       sttWsRef.current.close();
       sttWsRef.current = null;
     }
     sttDoneResolverRef.current = null;
 
-    // End the previous session (fire-and-forget) so consolidation triggers
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
       sessionService.end(prevSessionId).catch(console.error);
@@ -836,12 +699,24 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       setCurrentSessionId(null);
     }
 
-    // The button click is a user gesture — use it to resume the AudioContext so the
-    // greeting audio plays immediately without waiting for a subsequent interaction.
     const ctx = sharedPlaybackCtxRef.current;
     if (ctx && ctx.state === 'suspended') {
       ctx.resume().catch(() => {});
     }
+    // Reset chat state but reuse the cached greeting — we only restream on
+    // login or full page reload, not when the user clicks "New Chat" or
+    // comes back from an old session.
+    setMessages([]);
+    setErrorMessage(null);
+    setSessionTitle(null);
+    sessionIdRef.current = null;
+    setCurrentSessionId(null);
+    if (_greetingTextCache && _greetingTextCache.length > 0) {
+      setGreetingSentences(_greetingTextCache);
+      setStatus('ready');
+      return;
+    }
+    // No cache (rare — e.g. first session creation failed earlier) → stream fresh.
     initializedRef.current = false;
     initSession().then(() => { initializedRef.current = true; });
   }, [initSession]);

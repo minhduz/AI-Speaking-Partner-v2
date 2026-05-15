@@ -35,6 +35,59 @@ soniox_client = SonioxClient(api_key=settings.soniox_api_key)
 app = FastAPI(title="Speech Service")
 log = logging.getLogger("speech-service")
 
+SONIOX_TTS_VOICES = {
+    "Maya",
+    "Daniel",
+    "Noah",
+    "Nina",
+    "Emma",
+    "Jack",
+    "Adrian",
+    "Claire",
+    "Grace",
+    "Owen",
+    "Mina",
+    "Kenji",
+    "Rafael",
+    "Mateo",
+    "Lucia",
+    "Sofia",
+    "Oliver",
+    "Arthur",
+    "Isla",
+    "Victoria",
+    "Cooper",
+    "Mason",
+    "Ruby",
+    "Elise",
+    "Arjun",
+    "Rohan",
+    "Priya",
+    "Meera",
+}
+
+LEGACY_TTS_VOICE_ALIASES = {
+    "Sophia": "Sofia",
+    "Liam": "Daniel",
+    "Olivia": "Grace",
+}
+
+
+def _normalize_tts_voice(voice: str | None) -> str:
+    requested = (voice or settings.soniox_tts_voice or "Adrian").strip()
+    canonical = LEGACY_TTS_VOICE_ALIASES.get(requested, requested)
+    if canonical in SONIOX_TTS_VOICES:
+        return canonical
+
+    default_voice = (settings.soniox_tts_voice or "Adrian").strip()
+    default_voice = LEGACY_TTS_VOICE_ALIASES.get(default_voice, default_voice)
+    if default_voice in SONIOX_TTS_VOICES:
+        log.warning("[tts] Unsupported voice %r; using configured default %r", requested, default_voice)
+        return default_voice
+
+    log.warning("[tts] Unsupported voice %r and invalid default %r; using Adrian", requested, default_voice)
+    return "Adrian"
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -149,8 +202,11 @@ async def stt_ws(websocket: WebSocket):
 
                 try:
                     for event in session.receive_events():
-                        finals    = [t.text for t in event.tokens if t.is_final]
-                        nonfinals = [t.text for t in event.tokens if not t.is_final]
+                        # Soniox emits special control tokens like "<end>" when endpoint
+                        # detection fires. Strip anything wrapped in angle brackets so
+                        # they never reach the transcript shown to the user.
+                        finals    = [t.text for t in event.tokens if t.is_final     and not _is_control_token(t.text)]
+                        nonfinals = [t.text for t in event.tokens if not t.is_final and not _is_control_token(t.text)]
                         if finals:
                             final_text += "".join(finals)
                             hypothesis = ""
@@ -247,8 +303,8 @@ async def stt_stream(audio: UploadFile = File(...)):
                         session.send_byte_chunk(audio_bytes[i:i + chunk_size])
                     session.finish()
                     for event in session.receive_events():
-                        finals    = [t.text for t in event.tokens if t.is_final]
-                        nonfinals = [t.text for t in event.tokens if not t.is_final]
+                        finals    = [t.text for t in event.tokens if t.is_final     and not _is_control_token(t.text)]
+                        nonfinals = [t.text for t in event.tokens if not t.is_final and not _is_control_token(t.text)]
                         if finals:
                             final_text += "".join(finals)
                             hypothesis = ""
@@ -289,17 +345,29 @@ async def stt_stream(audio: UploadFile = File(...)):
 # ─── TTS (batch) ──────────────────────────────────────────────────────────────
 class TTSRequest(BaseModel):
     text: str
-    voice: str = None
+    voice: str | None = None
+    speech_rate: float | None = None  # 0.75–1.5, clamped server-side
 
 
 @app.post("/tts")
 async def tts(body: TTSRequest):
     """Batch TTS via Soniox — mp3 output for AudioContext.decodeAudioData compat."""
-    audio_bytes = await _run_soniox_tts_batch(body.text, body.voice)
+    audio_bytes = await _run_soniox_tts_batch(body.text, body.voice, body.speech_rate)
     return {
         "audio_b64": base64.b64encode(audio_bytes).decode(),
         "format":    "mp3",
     }
+
+
+# Soniox real-time STT emits control tokens like "<end>", "<fin>", etc. when
+# endpoint detection is enabled. They're meant for downstream logic, not for
+# display, so we strip anything wrapped in angle brackets before concatenating
+# the transcript.
+def _is_control_token(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    return stripped.startswith("<") and stripped.endswith(">")
 
 
 def _is_normal_ws_close(exc: Exception) -> bool:
@@ -340,7 +408,7 @@ async def tts_ws(websocket: WebSocket):
             stream_id=str(uuid.uuid4()),
             model=settings.soniox_tts_model,
             language=settings.stt_language,
-            voice=settings.soniox_tts_voice,
+            voice=_normalize_tts_voice(settings.soniox_tts_voice),
             audio_format="pcm_s16le",
             sample_rate=settings.soniox_tts_sample_rate,
         )
@@ -474,18 +542,45 @@ async def _run_soniox_stt_batch(audio_bytes: bytes) -> dict:
     return await fut
 
 
-async def _run_soniox_tts_batch(text: str, voice: str | None = None) -> bytes:
+def _build_tts_config(
+    voice: str | None,
+    speech_rate: float | None,
+    audio_format: str,
+) -> RealtimeTTSConfig:
+    """Try to attach speech_rate to the Soniox config; fall back gracefully if
+    the installed SDK version doesn't expose that field. Soniox's parameter
+    name has shifted across versions (speed/speech_rate), so we attempt both."""
+    base_kwargs = dict(
+        stream_id=str(uuid.uuid4()),
+        model=settings.soniox_tts_model,
+        language=settings.stt_language,
+        voice=_normalize_tts_voice(voice),
+        audio_format=audio_format,
+    )
+    if audio_format == "pcm_s16le":
+        base_kwargs["sample_rate"] = settings.soniox_tts_sample_rate
+
+    if speech_rate is not None:
+        clamped = max(0.75, min(1.5, float(speech_rate)))
+        for kw in ("speech_rate", "speed"):
+            try:
+                return RealtimeTTSConfig(**base_kwargs, **{kw: clamped})
+            except TypeError:
+                continue
+        log.warning("[tts] Soniox SDK rejected both speech_rate/speed kwargs — ignoring")
+    return RealtimeTTSConfig(**base_kwargs)
+
+
+async def _run_soniox_tts_batch(
+    text: str,
+    voice: str | None = None,
+    speech_rate: float | None = None,
+) -> bytes:
     loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
 
     def run():
-        config = RealtimeTTSConfig(
-            stream_id=str(uuid.uuid4()),
-            model=settings.soniox_tts_model,
-            language=settings.stt_language,
-            voice=voice or settings.soniox_tts_voice,
-            audio_format="mp3",
-        )
+        config = _build_tts_config(voice, speech_rate, audio_format="mp3")
         try:
             with soniox_client.realtime.tts.connect(config=config) as session:
                 session.send_text_chunk(text, text_end=False)
