@@ -214,7 +214,7 @@ Return ONLY valid JSON in this format: { "examples": ["example 1", "example 2"],
       const data = item.wordCache.data;
       if (!data) continue;
       
-      const topic = data.topic || 'Uncategorized';
+      const topic = item.contextSentence || data.topic || 'Uncategorized';
       if (!grouped[topic]) grouped[topic] = [];
       
       if (!grouped[topic].find(w => w.word === data.word)) {

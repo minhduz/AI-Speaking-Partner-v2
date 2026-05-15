@@ -11,6 +11,27 @@ import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
 
+const POPUP_W = 320;
+const POPUP_H = 440;
+const SNAP_M = 12;
+
+// Pick the corner opposite to where the user clicked so the popup never covers the word.
+function getSnapCorner(cx: number, cy: number) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  return {
+    top:  cy >= H / 2 ? SNAP_M : H - POPUP_H - SNAP_M,
+    left: cx >= W / 2 ? SNAP_M : W - POPUP_W - SNAP_M,
+  };
+}
+
+const CORNER_STYLES: React.CSSProperties[] = [
+  { top: SNAP_M, left: SNAP_M },
+  { top: SNAP_M, right: SNAP_M },
+  { bottom: SNAP_M, left: SNAP_M },
+  { bottom: SNAP_M, right: SNAP_M },
+];
+
 const Waveform = dynamic(
   () => import('@/components/chat/waveform/waveform').then((m) => m.Waveform),
   { ssr: false, loading: () => <div style={{ height: '100px' }} /> },
@@ -47,7 +68,7 @@ export default function ChatPage() {
   const prevSessionId = useRef<string | null>(null);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
-  const wordDictionary = useDictionary();
+  const wordDictionary = useDictionary(sessionTitleUpdate?.title);
   const [dictAnchor, setDictAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
@@ -76,9 +97,7 @@ export default function ChatPage() {
   }, [currentSessionId]);
 
   const handleWordDoubleClick = useCallback((word: string, e: React.MouseEvent) => {
-    const x = Math.min(e.clientX, window.innerWidth - 336);
-    const y = e.clientY + 12;
-    setDictAnchor({ top: y, left: x });
+    setDictAnchor(getSnapCorner(e.clientX, e.clientY));
     wordDictionary.translate(word);
   }, [wordDictionary]);
 
@@ -207,7 +226,15 @@ export default function ChatPage() {
         />
       </main>
 
-      {/* Dictionary popup — fixed position relative to double-clicked word */}
+      {/* 4 corner snap indicators — visible while popup is open */}
+      {wordDictionary.isOpen && CORNER_STYLES.map((cs, i) => (
+        <div
+          key={i}
+          style={{ position: 'fixed', ...cs, width: 14, height: 14, borderRadius: 4, border: '2px solid rgba(132,71,255,0.35)', background: 'rgba(132,71,255,0.08)', zIndex: 99, pointerEvents: 'none' }}
+        />
+      ))}
+
+      {/* Dictionary popup — snaps to one of 4 corners, draggable between them */}
       {wordDictionary.isOpen && dictAnchor && (
         <DictionaryPopup
           key={`${dictAnchor.top}-${dictAnchor.left}`}

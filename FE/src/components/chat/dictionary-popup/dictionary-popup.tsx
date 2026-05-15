@@ -1,11 +1,31 @@
 import { useState, useRef, useCallback } from 'react';
 import { useClickOutside } from '@/hooks/use-click-outside';
 
+const SNAP_M = 12;
+
+function getCorners(w: number, h: number) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  return [
+    { top: SNAP_M,         left: SNAP_M },
+    { top: SNAP_M,         left: W - w - SNAP_M },
+    { top: H - h - SNAP_M, left: SNAP_M },
+    { top: H - h - SNAP_M, left: W - w - SNAP_M },
+  ];
+}
+
+function nearestCorner(top: number, left: number, w: number, h: number) {
+  return getCorners(w, h).reduce((best, c) =>
+    Math.hypot(top - c.top, left - c.left) < Math.hypot(top - best.top, left - best.left) ? c : best
+  );
+}
+
 export interface DictionaryData {
   cacheId?: string;
   word: string;
   phonetic?: string;
   translation?: string;
+  topic?: string;
   meanings: {
     partOfSpeech: string;
     definitions: string[];
@@ -41,10 +61,12 @@ export function DictionaryPopup({ isOpen, onClose, isLoading, data, error, style
   const [isAdding, setIsAdding] = useState(false);
   const [addedWords, setAddedWords] = useState<Set<string>>(new Set());
   const [dragPos, setDragPos] = useState<{ top: number; left: number } | null>(null);
+  const [snapping, setSnapping] = useState(false);
   const dragRef = useRef<{ startX: number; startY: number; startTop: number; startLeft: number } | null>(null);
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
+    setSnapping(false);
     const initTop = typeof style?.top === 'number' ? style.top : 0;
     const initLeft = typeof style?.left === 'number' ? style.left : 0;
     dragRef.current = {
@@ -62,15 +84,25 @@ export function DictionaryPopup({ isOpen, onClose, isLoading, data, error, style
       });
     };
 
-    const onMouseUp = () => {
+    const onMouseUp = (ev: MouseEvent) => {
+      const drag = dragRef.current;
       dragRef.current = null;
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
+      if (!drag) return;
+      const finalTop = drag.startTop + ev.clientY - drag.startY;
+      const finalLeft = drag.startLeft + ev.clientX - drag.startX;
+      const el = popupRef.current;
+      const w = el?.offsetWidth ?? 320;
+      const h = el?.offsetHeight ?? 440;
+      const corner = nearestCorner(finalTop, finalLeft, w, h);
+      setSnapping(true);
+      setDragPos(corner);
     };
 
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
-  }, [style, dragPos]);
+  }, [style, dragPos, popupRef]);
 
   if (!isOpen) return null;
 
@@ -78,7 +110,12 @@ export function DictionaryPopup({ isOpen, onClose, isLoading, data, error, style
   const isAdded = data?.word ? addedWords.has(data.word) : false;
 
   const effectiveStyle: React.CSSProperties | undefined = style
-    ? { ...style, top: dragPos?.top ?? style.top, left: dragPos?.left ?? style.left }
+    ? {
+        ...style,
+        top: dragPos?.top ?? style.top,
+        left: dragPos?.left ?? style.left,
+        transition: snapping ? 'top 0.25s cubic-bezier(0.34,1.56,0.64,1), left 0.25s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
+      }
     : style;
 
   const handleAddFlashcard = async () => {
@@ -205,7 +242,12 @@ export function DictionaryPopup({ isOpen, onClose, isLoading, data, error, style
           </div>
 
           {data.cacheId && onAddFlashcard && (
-            <div className="px-5 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl shrink-0">
+            <div className="px-5 py-3 border-t border-gray-100 bg-gray-50/50 rounded-b-2xl shrink-0 space-y-2">
+              {data.topic && (
+                <p className="text-[11px] text-gray-400 text-center">
+                  Will be grouped into <span className="font-semibold text-[#8447FF]">{data.topic}</span>
+                </p>
+              )}
               <button
                 onClick={handleAddFlashcard}
                 disabled={isAdded || isAdding}
