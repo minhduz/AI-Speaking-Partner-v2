@@ -133,6 +133,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [reviewHasMore, setReviewHasMore] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
 
+  const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
   const reviewSessionIdRef = useRef<string | null>(null);
   const nextPlayTimeRef = useRef<number>(0);
@@ -433,13 +434,23 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, []);
 
+  // Keep statusRef in sync so callbacks that run within the same React batch
+  // (e.g. stopMic called from touchend before re-render) read the latest value.
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
 
   const startRecording = useCallback(async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
-    const audioCtx = new AudioContext();
+    // Re-use the AudioContext pre-created by startMic in the gesture handler.
+    // If for some reason it wasn't set, fall back to creating one here.
+    const audioCtx = (audioCtxRef.current && audioCtxRef.current.state !== 'closed')
+      ? audioCtxRef.current
+      : new AudioContext();
     audioCtxRef.current = audioCtx;
     const source = audioCtx.createMediaStreamSource(stream);
     const analyserNode = audioCtx.createAnalyser();
@@ -749,12 +760,20 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   }, [stopRecording, processTurn]);
 
   const startMic = useCallback(() => {
-    if (status !== 'ready') return;
+    if (statusRef.current !== 'ready' && statusRef.current !== 'error') return;
+    statusRef.current = 'recording';
     isStoppingRef.current = false;
     pendingStopRef.current = false;
 
-    // Optimistic — closes the race where user releases before startRecording's
-    // setStatus fires, leaving the mic stuck.
+    // Create AudioContext HERE, synchronously inside the gesture handler (mousedown /
+    // touchstart), so mobile browsers see it as user-initiated and start it in 'running'
+    // state. If created later inside a .then() after a network call, the gesture context
+    // has expired and the context is created 'suspended' — causing the analyser to return
+    // silence and hasSpokenRef to never become true.
+    const prevCtx = audioCtxRef.current;
+    if (prevCtx && prevCtx.state !== 'closed') prevCtx.close();
+    audioCtxRef.current = new AudioContext();
+
     setStatus('recording');
 
     const ensureSession = sessionIdRef.current
@@ -766,7 +785,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     ensureSession
       .then(() => startRecording())
       .then(() => {
-        // User released before the recorder was actually set up — drain the queued stop.
         if (pendingStopRef.current) {
           pendingStopRef.current = false;
           runStop();
@@ -775,13 +793,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       .catch((err) => {
         console.error('[startMic]', err);
         pendingStopRef.current = false;
+        const ctx = audioCtxRef.current;
+        if (ctx && ctx.state !== 'closed') ctx.close();
+        audioCtxRef.current = null;
         setStatus('ready');
         setErrorMessage('Failed to start recording');
       });
-  }, [status, startRecording, runStop]);
+  }, [startRecording, runStop]);
 
   const stopMic = useCallback(() => {
-    if (status !== 'recording') return;
+    if (statusRef.current !== 'recording') return;
     if (isStoppingRef.current) return;
     // Recorder not ready yet — queue the stop and let startMic's .then() drain it.
     if (!recorderRef.current || recorderRef.current.state !== 'recording') {
@@ -789,7 +810,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       return;
     }
     runStop();
-  }, [status, runStop]);
+  }, [runStop]);
 
 
   const startNewSession = useCallback(() => {

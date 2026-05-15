@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import type { DictionaryData } from '@/components/chat/dictionary-popup/dictionary-popup';
 import { httpClient } from '@/lib/http-client';
 
-export function useDictionary() {
+export function useDictionary(sessionTopic?: string) {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [data, setData] = useState<DictionaryData | null>(null);
@@ -46,16 +46,17 @@ export function useDictionary() {
   const close = useCallback(() => setIsOpen(false), []);
 
   const addFlashcard = useCallback(async (cacheId: string) => {
+    const topic = sessionTopic || data?.topic || 'Uncategorized';
     try {
       await httpClient.post('/api/dictionary/flashcards', {
         cacheId,
-        contextSentence: 'Please give me an example.',
+        contextSentence: topic,
       });
     } catch (err) {
       console.error('Failed to add flashcard', err);
       throw err;
     }
-  }, []);
+  }, [sessionTopic, data]);
 
   return {
     isOpen,

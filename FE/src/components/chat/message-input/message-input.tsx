@@ -1,12 +1,31 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { MessageInputProps } from './message-input.types';
 import { DictionaryPopup } from '../dictionary-popup/dictionary-popup';
 import { useDictionary } from '@/hooks/use-dictionary';
 
 export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, disabled, hideMic }: MessageInputProps) {
   const [text, setText] = useState('');
+  const micBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Non-passive touch listeners so e.preventDefault() works, preventing the browser
+  // from also firing synthetic mouse events (mousedown/mouseup) after touch events.
+  // Without this, startMic gets called twice on touch (touchstart + mousedown).
+  useEffect(() => {
+    const btn = micBtnRef.current;
+    if (!btn || hideMic) return;
+    const handleTouchStart = (e: TouchEvent) => { e.preventDefault(); onStartMic(); };
+    const handleTouchEnd = (e: TouchEvent) => { e.preventDefault(); onStopMic(); };
+    btn.addEventListener('touchstart', handleTouchStart, { passive: false });
+    btn.addEventListener('touchend', handleTouchEnd, { passive: false });
+    btn.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+    return () => {
+      btn.removeEventListener('touchstart', handleTouchStart);
+      btn.removeEventListener('touchend', handleTouchEnd);
+      btn.removeEventListener('touchcancel', handleTouchEnd);
+    };
+  }, [hideMic, onStartMic, onStopMic]);
   const dictionary = useDictionary();
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -69,14 +88,12 @@ export function MessageInput({ onSendText, onStartMic, onStopMic, isRecording, d
           </button>
         ) : !hideMic ? (
           <button
+            ref={micBtnRef}
             disabled={disabled}
             aria-label={isRecording ? 'Release to send' : 'Hold to talk'}
             onMouseDown={onStartMic}
             onMouseUp={onStopMic}
             onMouseLeave={onStopMic}
-            onTouchStart={(e) => { e.preventDefault(); onStartMic(); }}
-            onTouchEnd={(e) => { e.preventDefault(); onStopMic(); }}
-            onTouchCancel={(e) => { e.preventDefault(); onStopMic(); }}
             className={`w-10 h-10 rounded-full flex items-center justify-center shadow-md transition-all select-none disabled:opacity-50 disabled:cursor-not-allowed shrink-0 ${
               isRecording
                 ? 'bg-rose-500 scale-110 ring-4 ring-rose-200 animate-pulse'
