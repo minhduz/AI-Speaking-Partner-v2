@@ -20,6 +20,9 @@ class TurnState(TypedDict):
     learning_goal: str
     current_datetime: str
     turn_index: int
+    voice_id: str
+    speech_rate: float
+    conversation_style: str
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

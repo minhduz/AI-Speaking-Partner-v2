@@ -25,18 +25,41 @@ GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
 
 -- ─── SPEAKING_APP SCHEMA ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS speaking_app.users (
-  id               UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  email            VARCHAR   UNIQUE NOT NULL,
-  password_hash    VARCHAR   NOT NULL DEFAULT '',
-  name             VARCHAR   NOT NULL,
-  google_id        VARCHAR   UNIQUE,
-  target_language  VARCHAR   NOT NULL DEFAULT 'english',
-  level            VARCHAR   NOT NULL DEFAULT 'beginner',
-  native_language  VARCHAR   NOT NULL DEFAULT 'vietnamese',
-  learning_goal    VARCHAR,
-  timezone         VARCHAR   NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
-  created_at       TIMESTAMP DEFAULT NOW(),
-  updated_at       TIMESTAMP DEFAULT NOW()
+  id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  email                VARCHAR   UNIQUE NOT NULL,
+  password_hash        VARCHAR   NOT NULL DEFAULT '',
+  name                 VARCHAR   NOT NULL,
+  google_id            VARCHAR   UNIQUE,
+  target_language      VARCHAR   NOT NULL DEFAULT 'english',
+  level                VARCHAR   NOT NULL DEFAULT 'beginner',
+  native_language      VARCHAR   NOT NULL DEFAULT 'vietnamese',
+  learning_goal        VARCHAR,
+  timezone             VARCHAR   NOT NULL DEFAULT 'Asia/Ho_Chi_Minh',
+  voice_id             VARCHAR   NOT NULL DEFAULT 'Adrian',
+  speech_rate          FLOAT     NOT NULL DEFAULT 1.0,
+  conversation_style   VARCHAR   NOT NULL DEFAULT 'friendly',
+  created_at           TIMESTAMP DEFAULT NOW(),
+  updated_at           TIMESTAMP DEFAULT NOW()
+);
+
+-- Idempotent column additions for installs predating the voice/style settings.
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS voice_id           VARCHAR NOT NULL DEFAULT 'Adrian';
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS speech_rate        FLOAT   NOT NULL DEFAULT 1.0;
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS conversation_style VARCHAR NOT NULL DEFAULT 'friendly';
+
+-- Normalize old app voice IDs to valid Soniox tts-rt-v1 voices.
+UPDATE speaking_app.users
+SET voice_id = CASE
+  WHEN voice_id = 'Sophia' THEN 'Sofia'
+  WHEN voice_id = 'Liam' THEN 'Daniel'
+  WHEN voice_id = 'Olivia' THEN 'Grace'
+  ELSE 'Adrian'
+END
+WHERE voice_id NOT IN (
+  'Maya', 'Daniel', 'Noah', 'Nina', 'Emma', 'Jack', 'Adrian', 'Claire',
+  'Grace', 'Owen', 'Mina', 'Kenji', 'Rafael', 'Mateo', 'Lucia', 'Sofia',
+  'Oliver', 'Arthur', 'Isla', 'Victoria', 'Cooper', 'Mason', 'Ruby', 'Elise',
+  'Arjun', 'Rohan', 'Priya', 'Meera'
 );
 
 CREATE TABLE IF NOT EXISTS speaking_app.sessions (

@@ -5,6 +5,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { User } from './entities/user.entity';
+import { normalizeVoiceId } from './voice-options';
 
 @Injectable()
 export class UserService {
@@ -17,11 +18,20 @@ export class UserService {
   async findById(id: string) {
     const user = await this.repo.findOne({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+    const normalizedVoiceId = normalizeVoiceId(user.voiceId);
+    if (normalizedVoiceId !== user.voiceId) {
+      await this.repo.update(id, { voiceId: normalizedVoiceId });
+      user.voiceId = normalizedVoiceId;
+    }
     return user;
   }
 
-  async update(id: string, data: Partial<Pick<User, 'name' | 'targetLanguage' | 'level' | 'timezone' | 'nativeLanguage' | 'learningGoal'>>) {
-    await this.repo.update(id, data);
+  async update(id: string, data: Partial<Pick<User, 'name' | 'targetLanguage' | 'level' | 'timezone' | 'nativeLanguage' | 'learningGoal' | 'voiceId' | 'speechRate' | 'conversationStyle'>>) {
+    const patch = { ...data };
+    if (patch.voiceId !== undefined) {
+      patch.voiceId = normalizeVoiceId(patch.voiceId);
+    }
+    await this.repo.update(id, patch);
     return this.findById(id);
   }
 

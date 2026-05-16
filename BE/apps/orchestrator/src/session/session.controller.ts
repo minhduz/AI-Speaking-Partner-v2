@@ -6,6 +6,7 @@ import { SessionService } from './session.service';
 import { UserService } from '../user/user.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { normalizeVoiceId } from '../user/voice-options';
 
 class EndSessionDto { @IsString() session_id: string; }
 
@@ -26,6 +27,27 @@ function formatDatetimeInTimezone(date: Date, timezone: string): string {
   }
 }
 
+// Take the first whitespace-separated word — addresses users by a single given
+// name ("Đức" from "Đức Nguyễn Minh") instead of dumping the full stored name
+// into the prompt. Returns empty string for null/empty input.
+function firstName(fullName: string | null | undefined): string {
+  if (!fullName) return '';
+  return fullName.trim().split(/\s+/)[0] ?? '';
+}
+
+// One-line tone primer per conversation style. Mirrored in memory-service so
+// turn responses follow the same persona as the greeting.
+const STYLE_HINTS: Record<string, string> = {
+  friendly:     'Tone: warm and casual, like a supportive friend. Use contractions and natural phrasing.',
+  formal:       'Tone: polite and respectful, with complete sentences and no slang.',
+  casual:       'Tone: relaxed and brief, like texting a buddy.',
+  playful:      'Tone: light and witty, gentle humor when it fits naturally.',
+  professional: 'Tone: clear, focused, and expert — like a tutor on the clock.',
+};
+function styleHint(style: string | null | undefined): string {
+  return STYLE_HINTS[style ?? 'friendly'] ?? STYLE_HINTS.friendly;
+}
+
 function resolveClientDatetime(queryDatetime: string | undefined, timezone: string): string {
   if (queryDatetime) {
     try {
@@ -38,7 +60,41 @@ function resolveClientDatetime(queryDatetime: string | undefined, timezone: stri
   return formatDatetimeInTimezone(new Date(), timezone);
 }
 
-const SENTENCE_RE = /^([\s\S]*?[.!?]+\s)/;
+// Matches one complete sentence ending in .!? followed by whitespace or EOS.
+const SENTENCE_RE = /^([\s\S]*?[.!?]+(?:\s+|$))/;
+const TTS_MIN_CHARS = 42;
+const TTS_MAX_CHARS = 80;
+
+// Same chunking strategy as turn-agent's llm_tts_node._split_tts_segment:
+// prefer sentence boundary, else split at comma/whitespace inside a 42-80 char window
+// so the first TTS segment is small enough to play fast.
+function splitTtsSegment(buffer: string, force = false): [string | null, string] {
+  const m = buffer.match(SENTENCE_RE);
+  if (m) {
+    return [m[1].trim(), buffer.slice(m[1].length)];
+  }
+  if (buffer.length >= TTS_MAX_CHARS) {
+    const window = buffer.slice(0, TTS_MAX_CHARS);
+    let splitAt = -1;
+    for (const match of window.matchAll(/[,;:]\s+/g)) {
+      const end = (match.index ?? 0) + match[0].length;
+      if (end >= TTS_MIN_CHARS) splitAt = end;
+    }
+    if (splitAt < 0) {
+      for (const match of window.matchAll(/\s+/g)) {
+        const end = (match.index ?? 0) + match[0].length;
+        if (end >= TTS_MIN_CHARS) splitAt = end;
+      }
+    }
+    if (splitAt > 0) {
+      return [buffer.slice(0, splitAt).trim(), buffer.slice(splitAt)];
+    }
+  }
+  if (force && buffer.trim()) {
+    return [buffer.trim(), ''];
+  }
+  return [null, buffer];
+}
 
 @Controller('session')
 @UseGuards(JwtAuthGuard)
@@ -111,9 +167,10 @@ export class SessionController {
       const systemPrompt = [
         `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally.`,
         `Help with conversations, answer questions, and support language learning like a good friend.`,
+        styleHint(user?.conversationStyle),
         `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
         `Do not use emojis or special icons in your response.`,
-        user?.name ? `You are greeting ${user.name} (${user.level ?? 'beginner'} level learner).` : '',
+        user?.name ? `You are greeting ${firstName(user.name)} (${user.level ?? 'beginner'} level learner). Always address them by this single given name — never by the full stored name.` : '',
         user?.nativeLanguage ? `Their native language is ${user.nativeLanguage}.` : '',
         user?.learningGoal ? `Their learning goal is: ${user.learningGoal}.` : '',
         trimmedContext ? `Recent conversation topics (brief):\n${trimmedContext}` : '',
@@ -122,7 +179,7 @@ export class SessionController {
           : '',
         '',
         'Greet the user warmly by name if you know it.',
-        'Keep your greeting to 2 sentences maximum.',
+        'Keep your greeting to 15 words maximum. Be concise — a single short sentence.',
       ].filter(Boolean).join('\n');
 
       console.log(`${logPrefix} ── greeting prompt built ──────────────────────`);
@@ -144,42 +201,41 @@ export class SessionController {
       );
 
       let fullText = '';
-      let sentenceBuffer = '';
-      let ttsChain: Promise<void> = Promise.resolve();
+      let ttsBuffer = '';
+      // Chain of segment emissions — TTS kicks off in parallel as soon as a segment
+      // is split off, but events fire to the FE in segment order via this chain.
+      let segmentChain: Promise<void> = Promise.resolve();
+
+      const ttsBody: Record<string, unknown> = { text: '' };
+      ttsBody.voice = normalizeVoiceId(user?.voiceId);
+      if (user?.speechRate)  ttsBody.speech_rate = user.speechRate;
+
+      const flushSegment = (segment: string) => {
+        const p = this.http.axiosRef.post(`${speechUrl}/tts`, { ...ttsBody, text: segment })
+          .catch(e => { console.error(`${logPrefix}[TTS] FAILED: "${segment}" —`, e?.message); return null; });
+        segmentChain = segmentChain.then(async () => {
+          const r = await p;
+          if (r) send({ type: 'segment', text: segment, audio_b64: r.data.audio_b64 });
+        });
+      };
 
       llmRes.data.on('data', (chunk: Buffer) => {
         const text = chunk.toString();
         fullText += text;
-        sentenceBuffer += text;
-        send({ type: 'text', chunk: text });
+        ttsBuffer += text;
 
-        let m: RegExpMatchArray | null;
-        while ((m = sentenceBuffer.match(SENTENCE_RE))) {
-          const sentence = m[1];
-          sentenceBuffer = sentenceBuffer.slice(sentence.length);
-          const clean = sentence.trim();
-          if (clean) {
-            const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: clean })
-              .catch(e => { console.error(`${logPrefix}[TTS] FAILED: "${clean}" —`, e?.message); return null; });
-            ttsChain = ttsChain.then(async () => {
-              const r = await p;
-              if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: clean });
-            });
-          }
+        while (true) {
+          const [segment, remaining] = splitTtsSegment(ttsBuffer);
+          ttsBuffer = remaining;
+          if (!segment) break;
+          flushSegment(segment);
         }
       });
 
       llmRes.data.on('end', async () => {
-        const rem = sentenceBuffer.trim();
-        if (rem) {
-          const p = this.http.axiosRef.post(`${speechUrl}/tts`, { text: rem })
-            .catch(e => { console.error(`${logPrefix}[TTS] FAILED remaining: "${rem}" —`, e?.message); return null; });
-          ttsChain = ttsChain.then(async () => {
-            const r = await p;
-            if (r) send({ type: 'audio', audio_b64: r.data.audio_b64, text: rem });
-          });
-        }
-        await ttsChain;
+        const [segment] = splitTtsSegment(ttsBuffer, true);
+        if (segment) flushSegment(segment);
+        await segmentChain;
         send({ type: 'done', greeting: fullText });
         res.end();
       });

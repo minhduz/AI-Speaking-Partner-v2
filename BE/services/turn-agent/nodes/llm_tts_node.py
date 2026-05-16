@@ -7,24 +7,14 @@ from db import settings
 
 log = logging.getLogger("llm_tts")
 
-# Pricing (USD per 1M tokens) — Gemini 2.0 Flash (primary gateway provider)
 _GEMINI_IN  = 0.10
 _GEMINI_OUT = 0.40
 
-# Prefer punctuation boundaries, but split long first sentences at a safe word
-# boundary so realtime TTS can start before the full LLM sentence is complete.
+# Aggressive splitting so the first TTS segment is short — first audio plays
+# fast — while later segments can grow up to a full sentence.
 _SENTENCE_RE = re.compile(r"([\s\S]*?[.!?]+(?:\s+|$))")
 _TTS_MIN_CHARS = 42
 _TTS_MAX_CHARS = 80
-
-
-def _tts_ws_url() -> str:
-    base = settings.speech_service_url.rstrip("/")
-    if base.startswith("https://"):
-        return f"wss://{base[len('https://'):]}/tts/ws"
-    if base.startswith("http://"):
-        return f"ws://{base[len('http://'):]}/tts/ws"
-    return f"ws://{base}/tts/ws"
 
 
 def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, str]:
@@ -53,6 +43,15 @@ def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, st
 
 
 async def llm_tts_node(state: dict) -> dict:
+    """
+    Streams the LLM response, splits it into TTS-sized segments, and synthesizes
+    each segment in parallel via speech-service /tts (batch MP3). Segments are
+    emitted to the FE *in order* via a producer/consumer queue, so each
+    `segment` event carries both the spoken text and its complete audio.
+
+    Event shape (single unified type):
+        {type: 'segment', text: <str>, audio_b64: <mp3 base64>}
+    """
     writer = get_stream_writer()
     full_response = ""
 
@@ -68,79 +67,72 @@ async def llm_tts_node(state: dict) -> dict:
     recent = state.get("recent_messages", [])
     messages_for_llm = recent + [{"role": "user", "content": state["transcript"]}]
 
+    # Producer puts (segment_text, synth_task) tuples onto the queue in order.
+    # Consumer awaits each task and emits the segment event when audio is ready.
+    seg_queue: asyncio.Queue = asyncio.Queue()
+
+    voice_id    = state.get("voice_id") or "Adrian"
+    speech_rate = state.get("speech_rate") or 1.0
+    tts_payload_base = {"voice": voice_id, "speech_rate": speech_rate}
+
     async with aiohttp.ClientSession() as sess:
-        async with sess.ws_connect(_tts_ws_url(), heartbeat=20) as tts_ws:
 
-            async def send_tts_text(text: str = "", end: bool = False) -> None:
-                if tts_ws.closed:
+        async def synthesize(text: str) -> str:
+            """POST /tts → returns MP3 base64. Empty string on failure."""
+            try:
+                async with sess.post(
+                    f"{settings.speech_service_url}/tts",
+                    json={**tts_payload_base, "text": text},
+                ) as r:
+                    if r.status != 200:
+                        log.warning("[llm_tts] /tts HTTP %s for segment %r", r.status, text[:40])
+                        return ""
+                    data = await r.json()
+                    return data.get("audio_b64", "")
+            except Exception as e:
+                log.warning("[llm_tts] /tts failed: %s", e)
+                return ""
+
+        async def produce() -> None:
+            nonlocal full_response
+            tts_buffer = ""
+            try:
+                async with sess.post(
+                    f"{settings.llm_gateway_url}/stream",
+                    json={"system": system, "messages": messages_for_llm},
+                ) as resp:
+                    resp.raise_for_status()
+                    async for chunk_bytes in resp.content.iter_chunked(256):
+                        text = chunk_bytes.decode("utf-8", errors="replace")
+                        if not text:
+                            continue
+                        full_response += text
+                        tts_buffer += text
+
+                        while True:
+                            segment, tts_buffer = _split_tts_segment(tts_buffer)
+                            if not segment:
+                                break
+                            task = asyncio.create_task(synthesize(segment))
+                            await seg_queue.put((segment, task))
+
+                segment, _ = _split_tts_segment(tts_buffer, force=True)
+                if segment:
+                    task = asyncio.create_task(synthesize(segment))
+                    await seg_queue.put((segment, task))
+            finally:
+                await seg_queue.put(None)
+
+        async def consume() -> None:
+            while True:
+                item = await seg_queue.get()
+                if item is None:
                     return
-                try:
-                    await tts_ws.send_json({"text": text, "end": end})
-                except Exception as e:
-                    log.warning("[llm_tts] TTS websocket send failed: %s", e)
+                segment, task = item
+                audio_b64 = await task
+                writer({"type": "segment", "text": segment, "audio_b64": audio_b64})
 
-            async def produce():
-                nonlocal full_response
-                tts_buffer = ""
-                try:
-                    async with sess.post(
-                        f"{settings.llm_gateway_url}/stream",
-                        json={"system": system, "messages": messages_for_llm},
-                    ) as resp:
-                        resp.raise_for_status()
-                        async for chunk_bytes in resp.content.iter_chunked(256):
-                            text = chunk_bytes.decode("utf-8", errors="replace")
-                            if not text:
-                                continue
-                            full_response += text
-                            tts_buffer += text
-                            writer({"type": "text", "chunk": text})
-
-                            while True:
-                                segment, tts_buffer = _split_tts_segment(tts_buffer)
-                                if not segment:
-                                    break
-                                await send_tts_text(segment)
-
-                    segment, _ = _split_tts_segment(tts_buffer, force=True)
-                    if segment:
-                        await send_tts_text(segment)
-                finally:
-                    await send_tts_text(end=True)
-
-            async def consume():
-                audio_end_sent = False
-
-                def emit_audio_end() -> None:
-                    nonlocal audio_end_sent
-                    if audio_end_sent:
-                        return
-                    writer({"type": "audio_end"})
-                    audio_end_sent = True
-
-                async for msg in tts_ws:
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        data = msg.json()
-                        if data.get("audio_b64"):
-                            writer({
-                                "type": "audio_chunk",
-                                "audio_b64": data["audio_b64"],
-                                "sample_rate": data.get("sample_rate", 24000),
-                            })
-                        if data.get("done"):
-                            emit_audio_end()
-                            return
-                        if data.get("error"):
-                            log.error("[llm_tts] TTS websocket error: %s", data["error"])
-                            emit_audio_end()
-                            return
-                    elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        log.warning("[llm_tts] TTS websocket closed early: %s", tts_ws.exception())
-                        emit_audio_end()
-                        return
-                emit_audio_end()
-
-            await asyncio.gather(produce(), consume())
+        await asyncio.gather(produce(), consume())
 
     input_tokens  = len(state["transcript"]) // 4
     output_tokens = len(full_response) // 4

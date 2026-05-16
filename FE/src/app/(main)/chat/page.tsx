@@ -273,30 +273,39 @@ function MessageBubble({
     }
   }, [onWordDoubleClick]);
 
+  // AI bubbles always render as a sentence-per-line list. While streaming, the
+  // last item is the currently-revealing segment (filled in word-by-word). When
+  // pending flips to false, the layout is unchanged — same flex column, same
+  // gap — so there is no visual jump at end-of-turn.
+  const aiSentences = isAi
+    ? (message.sentences && message.sentences.length > 0
+        ? message.sentences
+        : message.text
+          ? [message.text]
+          : [])
+    : null;
+  const showThinkingDots = message.pending && isAi && (aiSentences?.length ?? 0) === 0;
+
   return (
     <div className={`flex w-full ${isAi ? 'justify-start' : 'justify-end'} px-2 py-1`}>
       <div
         onDoubleClick={handleDoubleClick}
         className={`max-w-[85%] md:max-w-[75%] flex flex-col select-text cursor-text ${isAi ? 'items-start' : 'items-end'}`}
       >
-        {message.pending && isAi && !message.text ? (
+        {showThinkingDots ? (
           <ThinkingDots />
-        ) : message.pending && isAi && message.text ? (
-          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-900">
-            {message.text}
-          </p>
-        ) : message.pending && !isAi ? (
-          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
-            {message.text || '…'}
-          </p>
-        ) : isAi && message.sentences && message.sentences.length > 0 ? (
+        ) : isAi && aiSentences ? (
           <div className="flex flex-col gap-1.5">
-            {message.sentences.map((s, i) => (
+            {aiSentences.map((s, i) => (
               <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight">
                 {s}
               </p>
             ))}
           </div>
+        ) : message.pending ? (
+          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
+            {message.text || '…'}
+          </p>
         ) : (
           <p className={`text-xl md:text-2xl font-medium leading-relaxed tracking-tight ${isAi ? 'text-gray-900' : 'text-gray-400'}`}>
             {message.text}
