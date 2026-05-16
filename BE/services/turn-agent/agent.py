@@ -20,6 +20,7 @@ class TurnState(TypedDict):
     learning_goal: str
     current_datetime: str
     turn_index: int
+    is_onboarding: bool
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

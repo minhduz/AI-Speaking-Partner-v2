@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, LessThan } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -24,6 +24,18 @@ function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   } catch {
     return date.toUTCString();
   }
+}
+
+function buildActiveMissionBlock(activeMission: string | null): string {
+  if (!activeMission) return '';
+  return [
+    '',
+    'ACTIVE SESSION MISSION (override everything else):',
+    `"${activeMission}"`,
+    'Stay on this mission. If the user drifts, redirect gently.',
+    'Do NOT switch to any other challenge or topic from memory.',
+    'This mission has absolute priority over previous-session challenges.',
+  ].join('\n');
 }
 
 @Injectable()
@@ -72,6 +84,35 @@ export class TurnService {
     return session?.totalTokens ?? 0;
   }
 
+  /**
+   * Returns true when the given session is the user's first-ever speaking session.
+   * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs
+   * onboarding intent extraction during the first session.
+   */
+  async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
+    if (!sessionId) return false;
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId, userId } });
+    if (!session) return false;
+    const earlier = await this.sessionRepo.count({
+      where: { userId, startedAt: LessThan(session.startedAt) },
+    });
+    return earlier === 0;
+  }
+
+  async getActiveMission(userId: string): Promise<string | null> {
+    const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+    try {
+      const { data } = await firstValueFrom<any>(
+        this.http.get<any>(`${memoryUrl}/today-challenge/${userId}`),
+      );
+      const mission = data?.active_mission;
+      return typeof mission === 'string' && mission.trim() ? mission.trim() : null;
+    } catch (err: any) {
+      console.error(`[Turn] active mission fetch failed:`, err?.message);
+      return null;
+    }
+  }
+
   async processTurn(sessionId: string, userId: string, audioBuffer: Buffer, mimetype: string) {
     const started = Date.now();
     const elapsed = () => `${Date.now() - started}ms`;
@@ -85,9 +126,10 @@ export class TurnService {
     try {
       // 1. Turn index + user entity (parallel)
       step = 'turn-index';
-      const [turnCount, user] = await Promise.all([
+      const [turnCount, user, activeMission] = await Promise.all([
         this.turnRepo.count({ where: { sessionId } }),
         this.getUserEntity(userId),
+        this.getActiveMission(userId),
       ]);
       const turnIndex = turnCount + 1;
       const currentDatetime = getCurrentDatetime(user?.timezone ?? 'UTC');
@@ -127,9 +169,11 @@ export class TurnService {
           }),
         );
         system_prompt = promptRes.data.system_prompt;
+        system_prompt += buildActiveMissionBlock(activeMission);
         console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
       } catch {
         system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
+        system_prompt += buildActiveMissionBlock(activeMission);
       }
 
       // 4. LLM complete

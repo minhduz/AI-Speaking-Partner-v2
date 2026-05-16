@@ -7,7 +7,63 @@ from openai import AsyncOpenAI
 
 from layers.short_term import ShortTermMemory
 from layers.long_term import LongTermMemory
+from layers import onboarding_state as onboarding
+from layers import today_challenge
 from db import database, settings
+
+
+# Maps onboarding motivation → a recommended challenge for the next session.
+# Used by first-session consolidation only; keep neutral, never judgmental.
+_MOTIVATION_TO_CHALLENGE = {
+    "casual":    "Have a relaxed 5-minute conversation about something that happened this week.",
+    "career":    "Practice introducing yourself confidently in a professional context.",
+    "travel":    "Handle a short travel problem, such as a delayed flight or hotel check-in.",
+    "education": "Explain a topic you know well as if teaching someone younger.",
+    "social":    "Tell a short story about a memorable experience with another person.",
+}
+
+
+def _enrich_first_session_insight(insight: dict, ob_state: dict) -> dict:
+    """
+    Fold onboarding signals into the first session_insight. Never overwrites
+    confident values already in `insight`; only fills gaps.
+    """
+    insight = dict(insight or {})
+    insight["is_first_session_insight"] = True
+    insight["source"] = "onboarding_conversation"
+
+    insight["inferred_motivation"] = (
+        insight.get("inferred_motivation") or ob_state.get("motivation")
+    )
+    insight["confidence_level"] = (
+        insight.get("confidence_level") or ob_state.get("confidence_signal")
+    )
+    insight["speaking_style"] = (
+        insight.get("speaking_style") or ob_state.get("speaking_style")
+    )
+    insight["emotional_energy"] = (
+        insight.get("emotional_energy") or ob_state.get("emotional_energy")
+    )
+
+    insight.setdefault("speaking_weaknesses", [])
+    for weakness in ob_state.get("notable_weakness_hints", []) or []:
+        if weakness and weakness not in insight["speaking_weaknesses"]:
+            insight["speaking_weaknesses"].append(weakness)
+
+    insight.setdefault("evidence", [])
+    for fact in ob_state.get("facts", []) or []:
+        if fact and fact not in insight["evidence"]:
+            insight["evidence"].append(fact)
+
+    motivation = ob_state.get("motivation")
+    if motivation in _MOTIVATION_TO_CHALLENGE and not insight.get("recommended_next_session"):
+        insight["recommended_next_session"] = {
+            "type":               motivation,
+            "reason":             "Based on the user's first conversation signals.",
+            "suggested_challenge": _MOTIVATION_TO_CHALLENGE[motivation],
+        }
+
+    return insight
 
 log = logging.getLogger("consolidation")
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
@@ -74,14 +130,31 @@ async def run_consolidation(user_id: str, session_id: str):
                  len(messages_to_extract))
         extract_usage = None
         try:
-            _all, extract_usage = await _extract_all_facts(conversation, session_start_utc)
+            _all, extract_usage = await _extract_all_facts(
+                conversation, session_start_utc, user_turn_count=_count_user_turns(messages_to_extract)
+            )
             raw_facts: list[dict]    = _all.get("long_term", [])
             raw_st_facts: list[dict] = _all.get("short_term", [])
+            session_insight: dict | None = _all.get("session_insight")
         except Exception as exc:
             log.error("step 3 — combined extraction FAILED: %s", exc, exc_info=True)
-            raw_facts, raw_st_facts = [], []
-        log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts",
-                 len(raw_facts), len(raw_st_facts))
+            raw_facts, raw_st_facts, session_insight = [], [], None
+        log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts, session_insight=%s",
+                 len(raw_facts), len(raw_st_facts), "yes" if session_insight else "no")
+
+        # 3b. If this user has an onboarding state in Redis, this is their first
+        # speaking session. Fold the extracted onboarding signals into the
+        # session_insight so the next session's greeting can reference them.
+        try:
+            ob_state = await onboarding.get(user_id)
+        except Exception as ob_err:
+            log.warning("step 3b — onboarding state fetch failed user=%s: %s", user_id, ob_err)
+            ob_state = {}
+        is_first_session_consolidation = bool(ob_state)
+        if is_first_session_consolidation:
+            log.info("step 3b — first-session consolidation: merging onboarding state "
+                     "(fields=%s)", sorted(ob_state.keys()))
+            session_insight = _enrich_first_session_insight(session_insight or {}, ob_state)
 
         # 4. Stamp added_at and expires_at entirely in Python — never trust the LLM for dates.
         #    expires_at = consolidation time + long_term_ttl_days (default 365 days).
@@ -102,6 +175,24 @@ async def run_consolidation(user_id: str, session_id: str):
             new_facts.append(fact)
             log.info("  [new] priority=%-6s expires=%s  %r",
                      fact["priority"], default_expires.strftime("%Y-%m-%d"), fact["content"][:80])
+
+        # Append a one-line session log to long-term memory for trajectory tracking.
+        # Format: "Session log [YYYY-MM-DD]: struggled with X, improved on Y, energy=Z"
+        if session_insight and _has_insight_content(session_insight):
+            struggled  = (session_insight.get("struggled_with")     or "nothing notable").strip()
+            improved   = (session_insight.get("improved_vs_before") or "nothing noted").strip()
+            energy     = (session_insight.get("energy_level")       or "medium").strip()
+            session_log_line = (
+                f"Session log [{session_start_utc.strftime('%Y-%m-%d')}]: "
+                f"struggled with {struggled}, improved on {improved}, energy={energy}"
+            )
+            new_facts.append({
+                "content":    session_log_line,
+                "priority":   "normal",
+                "added_at":   now,
+                "expires_at": default_expires,
+            })
+            log.info("  [new][session-log] %r", session_log_line[:100])
 
         # 5. Load existing per-fact rows, prune expired, merge with new facts
         existing_facts = await LongTermMemory.get_facts(user_id)
@@ -149,6 +240,41 @@ async def run_consolidation(user_id: str, session_id: str):
             now_st = datetime.now(timezone.utc)
             st_expires = now_st + timedelta(seconds=settings.short_term_ttl_seconds)
             new_st_facts: list[dict] = []
+
+            # SESSION_INSIGHT is stored FIRST so it gets priority during retrieval.
+            # It is identified by the "SESSION_INSIGHT:" content prefix.
+            # First-session insights also carry the onboarding-enriched fields so
+            # the next greeting can reference them naturally (CHANGE L).
+            insight_payload_keys = (
+                "struggled_with",
+                "improved_vs_before",
+                "next_challenge",
+                "speaking_duration_estimate",
+                "energy_level",
+                # Onboarding-enriched fields (present on first-session insight only)
+                "is_first_session_insight",
+                "source",
+                "inferred_motivation",
+                "confidence_level",
+                "speaking_style",
+                "emotional_energy",
+                "recommended_next_session",
+            )
+            if session_insight and _has_insight_content(session_insight):
+                insight_payload = {
+                    k: session_insight.get(k)
+                    for k in insight_payload_keys
+                    if session_insight.get(k) is not None
+                }
+                insight_fact = {
+                    "content":      "SESSION_INSIGHT:" + json.dumps(insight_payload, ensure_ascii=False),
+                    "priority":     "urgent",
+                    "extracted_at": now_st.isoformat(),
+                    "expires_at":   st_expires.isoformat(),
+                }
+                new_st_facts.append(insight_fact)
+                log.info("  [st-new][SESSION_INSIGHT] %r", insight_fact["content"][:120])
+
             for raw in raw_st_facts:
                 content = raw.get("content", "").strip()
                 if not content:
@@ -183,6 +309,12 @@ async def run_consolidation(user_id: str, session_id: str):
             await ShortTermMemory.replace_st_facts(user_id, merged_st)
             log.info("step 10 — ✓ stored %d short-term facts in Redis key user:%s:st_facts",
                      len(merged_st), user_id)
+
+            if session_insight:
+                next_challenge = (session_insight.get("next_challenge") or "").strip()
+                if next_challenge:
+                    await today_challenge.save(user_id, next_challenge)
+                    log.info("step 10 — promoted next_challenge to today_challenge")
         except Exception as st_err:
             log.error("step 10 — short-term consolidation FAILED (long-term already saved): %s",
                       st_err, exc_info=True)
@@ -207,6 +339,16 @@ async def run_consolidation(user_id: str, session_id: str):
         await _mark_done(user_id, session_id, len(new_facts), pruned_count)
         log.info("── done  new_facts=%d  pruned=%d  total=%d  st_facts=%d",
                  len(new_facts), pruned_count, len(merged), len(merged_st))
+
+        # 11. First-session cleanup — only delete onboarding state once consolidation
+        # has committed. On failure we leave Redis alone so the 24h TTL lets a retry
+        # (or a manual retrigger) still see the state.
+        if is_first_session_consolidation:
+            try:
+                await onboarding.delete(user_id)
+            except Exception as cleanup_err:
+                log.warning("step 11 — onboarding cleanup failed user=%s: %s",
+                            user_id, cleanup_err)
 
     except Exception as e:
         log.error("✖ FAILED: %s", e, exc_info=True)
@@ -342,17 +484,49 @@ async def _batch_embed(texts: list[str]) -> tuple[list[list[float]], int]:
     return [e.embedding for e in ordered], embed_tokens
 
 
-async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> tuple[dict, object]:
+async def _extract_all_facts(
+    conversation: str,
+    session_start_utc: datetime,
+    user_turn_count: int = 0,
+) -> tuple[dict, object]:
     """
-    Single LLM call that extracts both long-term and short-term facts.
-    Returns {"long_term": [...], "short_term": [...]}.
-    Replaces the previous two separate calls to save one API round-trip.
+    Single LLM call that extracts long-term facts, short-term facts, AND
+    a structured `session_insight` block used to drive trajectory.
+    Returns {"long_term": [...], "short_term": [...], "session_insight": {...} | None}.
     """
     fmt_time  = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
     week_end  = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
     example_abs = (session_start_utc + timedelta(minutes=10)).strftime(
         "%I:%M %p on %A, %B %d, %Y UTC"
     )
+    # Sessions shorter than 4 user turns can't reliably be judged for trajectory.
+    insight_too_short = user_turn_count < 4
+
+    insight_instructions = (
+        "── session_insight ──\n"
+        "A structured snapshot of THIS session's trajectory, extracted from USER turns only.\n"
+        "Return as an object (NOT an array) with these exact keys:\n"
+        "  {\n"
+        '    "struggled_with":              string | null,\n'
+        '    "improved_vs_before":          string | null,\n'
+        '    "next_challenge":              string | null,\n'
+        '    "speaking_duration_estimate":  "short" | "medium" | "long" | null,\n'
+        '    "energy_level":                "low" | "medium" | "high" | null\n'
+        "  }\n"
+        "Rules:\n"
+        "- `struggled_with` MUST be specific and behavioral, never vague.\n"
+        "  BAD: \"fluency\"  GOOD: \"stopped mid-sentence when asked follow-up questions\".\n"
+        "- `improved_vs_before` is null if not clearly noticeable.\n"
+        "- `next_challenge` MUST be a concrete, actionable instruction the AI can use in the next greeting.\n"
+        "  GOOD: \"Ask the user to tell a 2-minute story without stopping\".\n"
+        "- `speaking_duration_estimate`: rough estimate of how much the user spoke overall.\n"
+        "- `energy_level`: based on engagement and response depth.\n"
+        "- Extract from USER turns only, never from the AI coach's turns.\n"
+    )
+    if insight_too_short:
+        insight_instructions += (
+            "- THIS SESSION HAD FEWER THAN 4 USER TURNS — set ALL fields to null.\n"
+        )
 
     res = await _openai.chat.completions.create(
         model="gpt-4o-mini",
@@ -365,7 +539,8 @@ async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> 
                     "Return ONLY valid JSON with this exact structure:\n"
                     "{\n"
                     '  "long_term": [...],\n'
-                    '  "short_term": [...]\n'
+                    '  "short_term": [...],\n'
+                    '  "session_insight": {...}\n'
                     "}\n\n"
                     "── long_term ──\n"
                     "Durable facts about the user — extract even from brief or casual mentions.\n"
@@ -389,7 +564,8 @@ async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> 
                     "active urgent situations.\n"
                     "Never use relative terms — always absolute date/time.\n"
                     "Return empty array if no qualifying facts.\n\n"
-                    "DO NOT extract (for either list):\n"
+                    + insight_instructions +
+                    "\nDO NOT extract (for long_term / short_term):\n"
                     "  - The user's name, language being studied, or proficiency level (stored in profile)\n"
                     "  - Anything said by the AI coach\n"
                     "  - Pure greetings or filler with zero personal information"
@@ -398,7 +574,7 @@ async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> 
             {"role": "user", "content": conversation},
         ],
         response_format={"type": "json_object"},
-        max_tokens=900,
+        max_tokens=1100,
     )
     usage = res.usage
     log.info("[token] extract_facts  prompt=%d  completion=%d  total=%d  cost=$%.6f",
@@ -406,18 +582,42 @@ async def _extract_all_facts(conversation: str, session_start_utc: datetime) -> 
              _usd(usage.prompt_tokens, usage.completion_tokens))
     try:
         data = json.loads(res.choices[0].message.content)
+        insight = data.get("session_insight")
+        # Normalize: if LLM returned an empty/invalid object or this session was too short,
+        # treat as no insight.
+        if insight_too_short or not isinstance(insight, dict):
+            insight = None
         return {
-            "long_term":  data.get("long_term", []),
-            "short_term": data.get("short_term", []),
+            "long_term":      data.get("long_term", []),
+            "short_term":     data.get("short_term", []),
+            "session_insight": insight,
         }, usage
     except Exception:
-        return {"long_term": [], "short_term": []}, usage
+        return {"long_term": [], "short_term": [], "session_insight": None}, usage
 
 
 def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
-    """Merge new short-term facts into existing, replacing by first-60-char content key."""
-    result = list(existing)
+    """
+    Merge new short-term facts into existing.
+
+    Special case: SESSION_INSIGHT facts are matched by their "SESSION_INSIGHT:" prefix
+    (only one is allowed at a time — the newest session always replaces the older).
+    Other facts merge by first-60-char content key.
+    """
+    SESSION_INSIGHT_PREFIX = "SESSION_INSIGHT:"
+    result: list[dict] = []
+    # Drop any pre-existing SESSION_INSIGHT — the new one in new_facts (if any) replaces it.
+    new_has_insight = any(f.get("content", "").startswith(SESSION_INSIGHT_PREFIX) for f in new_facts)
+    for ef in existing:
+        if new_has_insight and ef.get("content", "").startswith(SESSION_INSIGHT_PREFIX):
+            continue
+        result.append(ef)
+
     for new in new_facts:
+        if new.get("content", "").startswith(SESSION_INSIGHT_PREFIX):
+            # Always insert SESSION_INSIGHT first (highest retrieval priority).
+            result.insert(0, new)
+            continue
         key = new["content"].lower().strip()[:60]
         replaced = False
         for i, ef in enumerate(result):
@@ -428,6 +628,28 @@ def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
         if not replaced:
             result.append(new)
     return result
+
+
+def _count_user_turns(messages: list[dict]) -> int:
+    return sum(1 for m in messages if m.get("role") == "user")
+
+
+def _has_insight_content(insight: dict | None) -> bool:
+    if not insight:
+        return False
+    return any(
+        insight.get(k)
+        for k in (
+            "struggled_with",
+            "improved_vs_before",
+            "next_challenge",
+            # First-session enrichment may carry only these from the onboarding state
+            "inferred_motivation",
+            "confidence_level",
+            "speaking_style",
+            "emotional_energy",
+        )
+    )
 
 
 async def _mark_done(user_id: str, session_id: str, written: int, pruned: int):

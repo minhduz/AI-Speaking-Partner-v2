@@ -68,13 +68,15 @@ export class TurnController {
     }
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
           .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
           .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
         this.turnService.getSessionTokens(sessionId),
+        this.turnService.isOnboardingSession(req.user.id, sessionId),
+        this.turnService.getActiveMission(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -112,6 +114,8 @@ export class TurnController {
             'X-Learning-Goal':    user?.learningGoal ?? '',
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
+            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
           },
         },
       );
@@ -171,14 +175,16 @@ export class TurnController {
     }
 
     try {
-      // Parallel: user entity + turn index + limits + current session tokens
-      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
+      // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
           .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
           .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
         this.turnService.getSessionTokens(sessionId),
+        this.turnService.isOnboardingSession(req.user.id, sessionId),
+        this.turnService.getActiveMission(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -227,6 +233,8 @@ export class TurnController {
             'X-Learning-Goal':    user?.learningGoal ?? '',
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
+            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
           },
         },
       );

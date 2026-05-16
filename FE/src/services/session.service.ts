@@ -50,6 +50,33 @@ function log(label: string, data?: unknown) {
   }
 }
 
+export interface SessionInsight {
+  has_insight: boolean;
+  struggled_with?: string | null;
+  improved_vs_before?: string | null;
+  next_challenge?: string | null;
+  active_mission?: string | null;
+  active_mission_source?: string | null;
+  energy_level?: string | null;
+  speaking_duration_estimate?: string | null;
+  last_session_days_ago?: number | null;
+}
+
+export interface StartSessionResponse {
+  session_id: string;
+  is_first_session: boolean;
+}
+
+export interface OnboardingState {
+  motivation?: string | null;
+  confidence_signal?: string | null;
+  speaking_style?: string | null;
+  emotional_energy?: string | null;
+  notable_weakness_hints?: string[];
+  facts?: string[];
+  updated_at?: string;
+}
+
 export interface TurnResult {
   turn_id: string;
   transcript: string;
@@ -61,16 +88,24 @@ export interface TurnResult {
 }
 
 export const sessionService = {
-  start: async (): Promise<{ session_id: string }> => {
+  start: async (): Promise<StartSessionResponse> => {
     log('POST /session/start');
     const res = await fetchWithAuth(`${API_BASE}/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
     if (!res.ok) throw new Error('Failed to start session');
-    const data = await res.json();
+    const data: StartSessionResponse = await res.json();
     log('POST /session/start →', data);
     return data;
+  },
+
+  getOnboardingState: async (): Promise<OnboardingState | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/onboarding-state`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || Object.keys(data).length === 0) return null;
+    return data as OnboardingState;
   },
 
   streamGreetingAnon: async (): Promise<AsyncGenerator<GreetingEvent>> => {
@@ -87,6 +122,24 @@ export const sessionService = {
       }
     }
     return wrapped();
+  },
+
+  getInsight: async (): Promise<SessionInsight> => {
+    log(`GET /session/insight`);
+    const res = await fetchWithAuth(`${API_BASE}/session/insight`);
+    if (!res.ok) return { has_insight: false };
+    const data: SessionInsight = await res.json();
+    log(`GET /session/insight →`, data);
+    return data;
+  },
+
+  setTodayChallenge: async (challenge: string): Promise<void> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/today-challenge`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ challenge }),
+    });
+    if (!res.ok) throw new Error('Failed to save today challenge');
   },
 
   list: async (page: number, limit = 25): Promise<{ items: SessionSummary[]; total: number; hasMore: boolean }> => {

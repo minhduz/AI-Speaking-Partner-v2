@@ -3,9 +3,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
+import { X } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
 import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
+import { MissionCard } from '@/components/chat/mission-card/mission-card';
+import { OnboardingPanel } from '@/components/chat/onboarding-panel/onboarding-panel';
 import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
@@ -55,8 +58,11 @@ export default function ChatPage() {
     reviewSessionId,
     reviewHasMore,
     reviewLoading,
+    isOnboardingSession,
+    onboardingState,
     startMic,
     stopMic,
+    endSession,
     startNewSession,
     enterReview,
     loadMoreReview,
@@ -125,6 +131,78 @@ export default function ChatPage() {
   // Sidebar highlights: reviewed session takes priority over live session
   const activeSidebarSessionId = reviewSessionId ?? currentSessionId;
 
+  // First-ever speaking session: render a focused, sidebar-less layout that
+  // makes the moment feel like a real first conversation, not tool onboarding.
+  // Uses the same flex-1 + overflow-y-auto scrolling pattern as normal mode so
+  // MessageInput stays pinned at the bottom no matter how long the chat gets.
+  if (isOnboardingSession) {
+    return (
+      <main className="flex flex-1 flex-col overflow-hidden bg-white">
+        {/* AI presence indicator — replaces the normal header */}
+        <div className="shrink-0 grid grid-cols-[80px_1fr_80px] items-start px-4 pt-6 pb-2">
+          <div />
+          <div className="h-12 w-12 justify-self-center rounded-full bg-violet-100 flex items-center justify-center animate-pulse">
+            <div className="h-6 w-6 rounded-full bg-[#8447FF]" />
+          </div>
+          <div className="flex justify-end">
+            <EndSessionButton onClick={() => { void endSession(); }} />
+          </div>
+        </div>
+
+        {/* Scrolling conversation area — same pattern as normal mode */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
+        >
+          <div className="w-full max-w-md flex flex-col gap-3">
+            {/* Greeting shown large until the user replies */}
+            {messages.length === 0 && greetingSentences.length > 0 && (
+              <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
+                {greetingSentences.map((sentence, index) => (
+                  <p key={index}>{sentence}</p>
+                ))}
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
+            ))}
+
+            {errorMessage && (
+              <div className="flex justify-center my-2">
+                <div className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-full text-sm font-medium shadow-sm border border-red-100">
+                  {errorMessage}
+                </div>
+              </div>
+            )}
+
+            {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && (
+              <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        {isRecording && (
+          <div className="flex justify-center py-2 shrink-0">
+            <Waveform isRecording={isRecording} analyser={analyser} />
+          </div>
+        )}
+
+        <MessageInput
+          onSendText={() => {}}
+          onStartMic={startMic}
+          onStopMic={stopMic}
+          isRecording={isRecording}
+          disabled={micDisabled}
+        />
+
+        <OnboardingPanel isVisible={isOnboardingSession} state={onboardingState} />
+      </main>
+    );
+  }
+
   return (
     <>
       <Sidebar
@@ -138,12 +216,16 @@ export default function ChatPage() {
 
       <main className="flex flex-1 flex-col overflow-hidden">
         <header className="flex items-center justify-between px-6 pt-6 pb-2 z-10 shrink-0">
-          <div className="w-8" />
+          <div className="w-20" />
           {reviewMode
             ? <span className="text-xs font-medium text-gray-400">History</span>
             : <StatusBadge status={status} />
           }
-          <div className="w-8" />
+          <div className="w-20 flex justify-end">
+            {!reviewMode && hasSession && (
+              <EndSessionButton onClick={() => { void endSession(); }} />
+            )}
+          </div>
         </header>
 
         <div
@@ -162,6 +244,14 @@ export default function ChatPage() {
           {reviewMode && reviewLoading && messages.length > 0 && (
             <div className="flex justify-center py-3">
               <div className="w-4 h-4 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
+            </div>
+          )}
+
+          {/* Mission card — pre-session anchor showing last-session continuity.
+              Hidden once a live session starts or while reviewing history. */}
+          {!reviewMode && !hasSession && (
+            <div className="px-4 pt-2">
+              <MissionCard />
             </div>
           )}
 
@@ -250,6 +340,21 @@ export default function ChatPage() {
         />
       )}
     </>
+  );
+}
+
+function EndSessionButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-9 items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 text-xs font-medium text-gray-500 shadow-sm transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500"
+      aria-label="End session"
+      title="End session"
+    >
+      <X className="h-4 w-4" aria-hidden="true" />
+      <span>End</span>
+    </button>
   );
 }
 

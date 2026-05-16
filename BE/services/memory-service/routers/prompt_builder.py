@@ -70,4 +70,7 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         "system_prompt": system_prompt,
         "context_chunks_used": len(parts),
         "estimated_tokens": used // CHARS_PER_TOKEN,
+        # Expose retrieved chunks so the turn-agent can spot SESSION_INSIGHT and
+        # promote it to an active mission block in the system prompt.
+        "chunks_debug": chunks,
     }

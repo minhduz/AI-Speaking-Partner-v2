@@ -1,6 +1,6 @@
 import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThanOrEqual } from 'typeorm';
+import { Repository, MoreThanOrEqual, LessThan } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -18,6 +18,31 @@ export class SessionService {
     const todayMidnight = new Date();
     todayMidnight.setHours(0, 0, 0, 0);
     return this.repo.count({ where: { userId, startedAt: MoreThanOrEqual(todayMidnight) } });
+  }
+
+  /**
+   * Returns true when the user has never had a speaking session yet.
+   * Used by the greeting route BEFORE a session exists (no sessionId available).
+   * Counts all sessions including orphaned/ended ones to stay deterministic.
+   */
+  async isFirstSession(userId: string): Promise<boolean> {
+    const count = await this.repo.count({ where: { userId } });
+    return count === 0;
+  }
+
+  /**
+   * Returns true when the given session is the user's first session ever.
+   * Preferred over isFirstSession when a sessionId is in hand (greeting tied to id,
+   * turn routing) because it's stable across orphaned-session edge cases.
+   */
+  async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
+    if (!sessionId) return false;
+    const session = await this.repo.findOne({ where: { id: sessionId, userId } });
+    if (!session) return false;
+    const earlier = await this.repo.count({
+      where: { userId, startedAt: LessThan(session.startedAt) },
+    });
+    return earlier === 0;
   }
 
   async start(userId: string) {
@@ -57,12 +82,17 @@ export class SessionService {
     const session = this.repo.create({ userId, status: 'active' });
     await this.repo.save(session);
 
+    // First-session detection: count AFTER saving. == 1 → this is the user's first
+    // ever speaking session (no prior or orphaned rows). Drives the onboarding UI/prompt.
+    const totalSessions = await this.repo.count({ where: { userId } });
+    const isFirstSession = totalSessions === 1;
+
     // Fire-and-forget: record session start in billing analytics
     firstValueFrom(
       this.http.post(`${billingUrl}/internal/usage/increment-session`, { user_id: userId }),
     ).catch((err) => console.error('[Session] failed to increment session count in billing:', err?.message));
 
-    return { session_id: session.id };
+    return { session_id: session.id, is_first_session: isFirstSession };
   }
 
   async end(sessionId: string, userId: string) {
@@ -101,6 +131,54 @@ export class SessionService {
     } catch (err: any) {
       console.error(`${prefix} ✖ failed:`, err?.message);
       return '';
+    }
+  }
+
+  async getSessionInsight(userId: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/session-insight/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] session-insight fetch failed:`, err?.message);
+      // Fail open: FE treats this as "no insight" and renders nothing.
+      return { has_insight: false };
+    }
+  }
+
+  async getTodayChallenge(userId: string): Promise<string | null> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/today-challenge/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      const mission = data?.active_mission;
+      return typeof mission === 'string' && mission.trim() ? mission.trim() : null;
+    } catch (err: any) {
+      console.error(`[Session] today-challenge fetch failed:`, err?.message);
+      return null;
+    }
+  }
+
+  async setTodayChallenge(userId: string, challenge: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/today-challenge/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, { challenge }));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] today-challenge save failed:`, err?.message);
+      return { active_mission: null, source: 'none' };
+    }
+  }
+
+  async getOnboardingState(userId: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/onboarding-state/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      // Memory-service returns {} when no state — pass it through; the FE
+      // treats an empty object as "no insight yet".
+      return data ?? {};
+    } catch (err: any) {
+      console.error(`[Session] onboarding-state fetch failed:`, err?.message);
+      return {};
     }
   }
 

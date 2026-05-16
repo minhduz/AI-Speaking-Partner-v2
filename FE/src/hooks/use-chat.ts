@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { sessionService } from '@/services/session.service';
+import { sessionService, type OnboardingState } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
@@ -9,6 +9,13 @@ function splitSentences(text: string): string[] {
   if (!text?.trim()) return text ? [text] : [];
   const parts = text.split(/(?<=[.!?…])\s+/).map(s => s.trim()).filter(Boolean);
   return parts.length > 0 ? parts : [text];
+}
+
+// Soniox emits control tokens like `<end>` / `<fin>` inside the streaming transcript.
+// Strip them before rendering so they don't leak into the UI bubbles.
+function stripSttControlTokens(text: string): string {
+  if (!text) return text;
+  return text.replace(/<\/?(end|fin)>/gi, '').replace(/\s+([.,!?])/g, '$1').trim();
 }
 
 // Greeting text cache — survives client-side navigation but resets on full page reload.
@@ -56,12 +63,51 @@ export interface UseChatReturn {
   reviewSessionId: string | null;
   reviewHasMore: boolean;
   reviewLoading: boolean;
+  isOnboardingSession: boolean;
+  onboardingState: OnboardingState | null;
   startMic: () => void;
   stopMic: () => void;
+  endSession: () => Promise<void>;
   startNewSession: () => void;
   enterReview: (sessionId: string) => Promise<void>;
   exitReview: () => void;
   loadMoreReview: () => Promise<void>;
+}
+
+function isEndSessionIntent(transcript: string): boolean {
+  const normalized = transcript
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s']/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return false;
+
+  return [
+    'end session',
+    'finish session',
+    'stop session',
+    'close session',
+    'exit session',
+    'quit session',
+    'end the session',
+    'finish the session',
+    'stop the session',
+    'close the session',
+    'exit the session',
+    "i'm done",
+    'i am done',
+    'that is all',
+    "that's all",
+    'kết thúc',
+    'ket thuc',
+    'thoát',
+    'thoat',
+    'dừng lại',
+    'dung lai',
+    'dừng buổi',
+    'dung buoi',
+  ].some((phrase) => normalized.includes(phrase));
 }
 
 function revealWordsOverTime(
@@ -132,6 +178,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [reviewHasMore, setReviewHasMore] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
+  const [isOnboardingSession, setIsOnboardingSession] = useState(false);
+  const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -361,6 +409,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
+    setIsOnboardingSession(false);
+    setOnboardingState(null);
     // Restore cached greeting instead of re-streaming (survives client-side nav)
     if (_greetingTextCache) {
       setGreetingSentences([_greetingTextCache]);
@@ -375,16 +425,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (authLoading || !isAuthenticated) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
-    let cancelled = false;
-    void Promise.resolve().then(() => {
-      if (cancelled) return;
-      if (initialSessionId) {
-        void enterReview(initialSessionId);
-      } else {
-        void initSession();
-      }
-    });
-    return () => { cancelled = true; };
+    // Direct call — initializedRef already guarantees single-run.
+    // The earlier Promise.resolve().then(...) + cancelled pattern could race with
+    // the cleanup fired when deps change (e.g. authLoading flipping false), leaving
+    // init skipped while initializedRef stays true → greeting never fires.
+    if (initialSessionId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void enterReview(initialSessionId);
+    } else {
+      void initSession();
+    }
   }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
 
   // Resume the shared AudioContext on every user gesture (Chrome blocks autoplay without one).
@@ -440,6 +490,30 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     statusRef.current = status;
   }, [status]);
 
+  // Poll onboarding state only during the user's first speaking session.
+  // The extractor on the backend writes to Redis after each turn; we surface
+  // its progress to the "Learning about you..." panel here.
+  useEffect(() => {
+    if (!isOnboardingSession || !currentSessionId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const next = await sessionService.getOnboardingState();
+        if (!cancelled) setOnboardingState(next);
+      } catch (err) {
+        console.error('[onboarding-state poll]', err);
+      }
+    };
+
+    void poll();
+    const interval = window.setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [isOnboardingSession, currentSessionId]);
+
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
 
@@ -484,16 +558,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'word') {
+        const cleanText = stripSttControlTokens(data.text ?? '');
         setMessages((prev) => {
           const msgs = [...prev];
           const idx = msgs.findLastIndex((m) => m.role === 'user' && m.pending);
-          if (idx >= 0) msgs[idx] = { ...msgs[idx], text: data.text };
+          if (idx >= 0) msgs[idx] = { ...msgs[idx], text: cleanText };
           return msgs;
         });
       } else if (data.type === 'done' || data.type === 'error') {
         sttWsRef.current = null;
         ws.close();
-        sttDoneResolverRef.current?.(data.transcript ?? '');
+        sttDoneResolverRef.current?.(stripSttControlTokens(data.transcript ?? ''));
         sttDoneResolverRef.current = null;
       }
     };
@@ -587,6 +662,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       };
 
       for await (const event of stream) {
+        if (sessionIdRef.current !== sessionId) {
+          stopReveal();
+          return;
+        }
         if (event.type === 'text') {
           // Accumulate silently — interval reveals at speech rate once audio starts
           aiFullText += event.chunk;
@@ -733,6 +812,49 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setReviewHasMore(false);
   }, []);
 
+  const endSession = useCallback(async () => {
+    setReviewMode(false);
+    setReviewSessionId(null);
+    reviewSessionIdRef.current = null;
+    reviewPageRef.current = 1;
+    setReviewHasMore(false);
+
+    if (checkVolumeIntervalRef.current !== null) {
+      window.clearInterval(checkVolumeIntervalRef.current);
+      checkVolumeIntervalRef.current = null;
+    }
+    if (recorderRef.current?.state === 'recording') {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (sttWsRef.current) {
+      sttWsRef.current.close();
+      sttWsRef.current = null;
+    }
+    audioQueueRef.current = [];
+    sttDoneResolverRef.current?.('');
+    sttDoneResolverRef.current = null;
+    pendingStopRef.current = false;
+    isStoppingRef.current = false;
+
+    const prevSessionId = sessionIdRef.current;
+    sessionIdRef.current = null;
+    setCurrentSessionId(null);
+    setIsOnboardingSession(false);
+    setOnboardingState(null);
+    setMessages([]);
+    setErrorMessage(null);
+    setStatus('ready');
+
+    if (prevSessionId) {
+      await sessionService.end(prevSessionId).catch(console.error);
+    }
+
+    await initSession();
+  }, [initSession]);
+
   const loadMoreReview = useCallback(async () => {
     const sessionId = reviewSessionIdRef.current;
     if (!sessionId || !reviewHasMore || reviewLoading) return;
@@ -751,13 +873,23 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           setStatus('ready');
           return;
         }
+        if (isEndSessionIntent(transcript)) {
+          setMessages((prev) => {
+            const withoutPending = prev.filter((m) => !m.pending);
+            return transcript.trim()
+              ? [...withoutPending, { role: 'user' as const, text: transcript }]
+              : withoutPending;
+          });
+          void endSession();
+          return;
+        }
         return processTurn(transcript);
       })
       .catch((err) => {
         isStoppingRef.current = false;
         console.error(err);
       });
-  }, [stopRecording, processTurn]);
+  }, [stopRecording, processTurn, endSession]);
 
   const startMic = useCallback(() => {
     if (statusRef.current !== 'ready' && statusRef.current !== 'error') return;
@@ -778,9 +910,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
     const ensureSession = sessionIdRef.current
       ? Promise.resolve()
-      : sessionService.start().then(({ session_id }) => {
+      : sessionService.start().then(({ session_id, is_first_session }) => {
           sessionIdRef.current = session_id;
           setCurrentSessionId(session_id);
+          setIsOnboardingSession(Boolean(is_first_session));
         });
     ensureSession
       .then(() => startRecording())
@@ -860,8 +993,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewSessionId,
     reviewHasMore,
     reviewLoading,
+    isOnboardingSession,
+    onboardingState,
     startMic,
     stopMic,
+    endSession,
     startNewSession,
     enterReview,
     exitReview,

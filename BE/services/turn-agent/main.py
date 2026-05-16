@@ -1,6 +1,7 @@
 import json
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import unquote
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from db import database
@@ -20,6 +21,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Turn Agent", lifespan=lifespan)
+
+
+def _decode_header(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return unquote(value).strip()
+    except Exception:
+        return value.strip()
 
 
 @app.post("/turn/stream")
@@ -44,6 +54,8 @@ async def turn_stream(request: Request):
         "learning_goal":    h.get("x-learning-goal", ""),
         "current_datetime": h.get("x-current-datetime", ""),
         "turn_index":       int(h.get("x-turn-index", "1")),
+        "is_onboarding":    h.get("x-is-onboarding", "false").lower() == "true",
+        "active_mission":   _decode_header(h.get("x-active-mission")),
         # Intermediates — empty until nodes populate them
         "transcript":            "",
         "confidence":            0.0,
@@ -90,6 +102,8 @@ async def turn_stream_text(request: Request):
         "learning_goal":        h.get("x-learning-goal", ""),
         "current_datetime":     h.get("x-current-datetime", ""),
         "turn_index":           int(h.get("x-turn-index", "1")),
+        "is_onboarding":        h.get("x-is-onboarding", "false").lower() == "true",
+        "active_mission":       _decode_header(h.get("x-active-mission")),
         "transcript":           transcript,
         "confidence":           1.0,
         "pronunciation":        {"score": None, "per_word": []},
