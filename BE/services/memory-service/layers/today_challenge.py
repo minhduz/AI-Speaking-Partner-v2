@@ -12,7 +12,7 @@ from db import redis_client
 
 log = logging.getLogger("today_challenge")
 
-TTL_SECONDS = 86400
+TTL_SECONDS = 259200  # 72h — survives overnight / next-morning return flows
 
 
 def _key(user_id: str) -> str:

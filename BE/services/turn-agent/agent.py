@@ -21,6 +21,7 @@ class TurnState(TypedDict):
     current_datetime: str
     turn_index: int
     is_onboarding: bool
+    active_mission: str
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

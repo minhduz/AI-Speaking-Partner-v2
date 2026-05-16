@@ -21,13 +21,27 @@ export class SessionService {
   }
 
   /**
-   * Returns true when the user has never had a speaking session yet.
+   * Returns true for pre-session onboarding greetings.
+   * A single active orphan can happen on refresh before the user really speaks;
+   * keep that as onboarding. Any ended session means they are returning.
    * Used by the greeting route BEFORE a session exists (no sessionId available).
    * Counts all sessions including orphaned/ended ones to stay deterministic.
    */
   async isFirstSession(userId: string): Promise<boolean> {
-    const count = await this.repo.count({ where: { userId } });
-    return count === 0;
+    const [total, ended, onlySession] = await Promise.all([
+      this.repo.count({ where: { userId } }),
+      this.repo.count({ where: { userId, status: 'ended' } }),
+      this.repo.findOne({
+        where: { userId },
+        order: { startedAt: 'ASC' },
+        select: ['id', 'status', 'totalTokens'],
+      }),
+    ]);
+    return total === 0 || (
+      total === 1
+      && ended === 0
+      && (onlySession?.totalTokens ?? 0) === 0
+    );
   }
 
   /**
@@ -65,6 +79,16 @@ export class SessionService {
       }
     }
 
+    const [sessionsBeforeStart, endedBeforeStart, onlySessionBeforeStart] = await Promise.all([
+      this.repo.count({ where: { userId } }),
+      this.repo.count({ where: { userId, status: 'ended' } }),
+      this.repo.findOne({
+        where: { userId },
+        order: { startedAt: 'ASC' },
+        select: ['id', 'status', 'totalTokens'],
+      }),
+    ]);
+
     // Close any orphaned active sessions (e.g. page refresh without clicking "New Chat")
     // and trigger consolidation for each, so long-term memory is not lost.
     const orphaned = await this.repo.find({ where: { userId, status: 'active' }, select: ['id'] });
@@ -82,10 +106,15 @@ export class SessionService {
     const session = this.repo.create({ userId, status: 'active' });
     await this.repo.save(session);
 
-    // First-session detection: count AFTER saving. == 1 → this is the user's first
-    // ever speaking session (no prior or orphaned rows). Drives the onboarding UI/prompt.
-    const totalSessions = await this.repo.count({ where: { userId } });
-    const isFirstSession = totalSessions === 1;
+    // First-session detection: preserve refresh/orphan behavior. If the only
+    // prior row was an active orphan and no session has ever ended, this is still
+    // the first real speaking session.
+    const isFirstSession = sessionsBeforeStart === 0
+      || (
+        sessionsBeforeStart === 1
+        && endedBeforeStart === 0
+        && (onlySessionBeforeStart?.totalTokens ?? 0) === 0
+      );
 
     // Fire-and-forget: record session start in billing analytics
     firstValueFrom(

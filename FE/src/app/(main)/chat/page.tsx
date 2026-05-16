@@ -131,11 +131,13 @@ export default function ChatPage() {
   // Sidebar highlights: reviewed session takes priority over live session
   const activeSidebarSessionId = reviewSessionId ?? currentSessionId;
 
-  // First-ever speaking session: render a focused, sidebar-less layout that
-  // makes the moment feel like a real first conversation, not tool onboarding.
+  const isFocusedLiveSession = !reviewMode && hasSession;
+
+  // Live speaking session: render a focused, sidebar-less layout once the user
+  // starts talking. First onboarding sessions also show the onboarding panel.
   // Uses the same flex-1 + overflow-y-auto scrolling pattern as normal mode so
   // MessageInput stays pinned at the bottom no matter how long the chat gets.
-  if (isOnboardingSession) {
+  if (isFocusedLiveSession || isOnboardingSession) {
     return (
       <main className="flex flex-1 flex-col overflow-hidden bg-white">
         {/* AI presence indicator — replaces the normal header */}

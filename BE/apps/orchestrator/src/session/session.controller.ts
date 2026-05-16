@@ -140,6 +140,7 @@ export class SessionController {
         : greetingContext;
 
       const hasInsight = insight?.has_insight === true;
+      const shouldUseOnboarding = isOnboarding && !hasInsight;
       const activeMissionCandidates = [
         todayChallenge,
         typeof insight?.active_mission === 'string' ? insight.active_mission.trim() : '',
@@ -169,7 +170,7 @@ export class SessionController {
           ].join('\n')
         : '';
 
-      if (isOnboarding) {
+      if (shouldUseOnboarding) {
         // Onboarding greeting — first speaking session ever. Conversational,
         // not survey-style. Discovers motivation/style/confidence via natural
         // dialogue; data is silently extracted by the turn-agent in parallel.
@@ -281,18 +282,19 @@ export class SessionController {
           `4. 2 sentences MAX. No emojis.`,
         ].filter(Boolean).join('\n');
       } else {
-        // Case B — first-time user (or first session with data). Warm, scoped, no mission yet.
+        // Case B — returning user with no usable insight/mission yet. Never call
+        // this a first session; consolidation may simply be late or too thin.
         systemPrompt = [
-          `You are a warm AI speaking coach meeting this user for the first time (or first session with data).`,
+          `You are a warm AI speaking coach greeting a returning user.`,
           `Speak in ${targetLang} or whatever language the user uses naturally.`,
           `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
           '',
           profileLines ? `User profile:\n${profileLines}` : '',
           '',
           `YOUR GREETING:`,
-          `1. Welcome them warmly by name${user?.name ? '' : ' if you know it'}.`,
-          `2. Tell them ONE thing you'll do together today based on their learning goal.`,
-          `3. Make it feel like the beginning of something, not a tool onboarding.`,
+          `1. Welcome them back naturally by name${user?.name ? '' : ' if you know it'}.`,
+          `2. Give them ONE simple practice direction based on their learning goal.`,
+          `3. Do not say this is their first session. Do not mention missing memory or missing insight.`,
           `4. 2 sentences MAX. No emojis.`,
         ].filter(Boolean).join('\n');
       }
@@ -308,7 +310,7 @@ export class SessionController {
       console.log(`${logPrefix}   context len  : ${trimmedContext.length} chars (raw: ${greetingContext.length})`);
       console.log(`${logPrefix}   insight      : has=${hasInsight} daysAgo=${daysAgo ?? 'n/a'} absent5+=${isAbsent5Plus}`);
       console.log(`${logPrefix}   activeMission: ${activeMission ?? '(none)'}`);
-      console.log(`${logPrefix}   onboarding   : ${isOnboarding}`);
+      console.log(`${logPrefix}   onboarding   : raw=${isOnboarding} effective=${shouldUseOnboarding}`);
       console.log(`${logPrefix}   system prompt:\n${systemPrompt.split('\n').map(l => `    | ${l}`).join('\n')}`);
       console.log(`${logPrefix} ────────────────────────────────────────────────`);
 

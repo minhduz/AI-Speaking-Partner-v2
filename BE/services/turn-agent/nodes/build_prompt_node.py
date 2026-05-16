@@ -8,6 +8,14 @@ log = logging.getLogger("build_prompt")
 
 SESSION_INSIGHT_PREFIX = "SESSION_INSIGHT:"
 
+GENERIC_GUIDELINES = (
+    "Guidelines:\n"
+    "- Keep responses concise and conversational (2-4 sentences max)\n"
+    "- Gently correct language mistakes when helpful\n"
+    "- Be warm, encouraging, and stay positive\n"
+    "- Do not use emojis or special icons in your responses\n"
+)
+
 # Strong refs to background extraction tasks so they aren't GC'd mid-flight.
 # Discarded on completion so the set doesn't grow forever.
 _background_tasks: set[asyncio.Task] = set()
@@ -22,7 +30,8 @@ async def _fire_onboarding_extraction(user_id: str, session_id: str, transcript:
     url = f"{settings.memory_service_url}/onboarding-extract/{user_id}"
     payload = {"transcript": transcript, "session_id": session_id}
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as sess:
+        log.info("onboarding_extract  user=%s  session=%s  dispatch timeout=30s", user_id, session_id)
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as sess:
             async with sess.post(url, json=payload) as r:
                 if r.status >= 400:
                     body = await r.text()
@@ -192,19 +201,27 @@ def get_session_mode(turn_index: int) -> str:
     return "REFLECTION"
 
 
-def get_onboarding_phase(turn_index: int) -> str:
+def get_onboarding_phase(turn_index: int, onboarding_state: dict | None = None) -> str:
     """
     Phase progression during the user's first speaking session.
     Greeting (orchestrator) already covered PHASE 1. Turn 1 = first user reply.
     """
+    state = onboarding_state or {}
+    confident = sum(
+        1
+        for field in ("motivation", "confidence_signal", "speaking_style", "emotional_energy")
+        if state.get(field) not in (None, "", "unclear")
+    )
+    if confident < 2:
+        return "DISCOVERY"
     if turn_index <= 3:
         return "DISCOVERY"     # PHASE 2 — adaptive discovery
-    if turn_index <= 5:
+    if turn_index <= 6:
         return "MINI_CHALLENGE"  # PHASE 3 — concrete tiny scenario
     return "CLOSING"             # PHASE 4 — supportive feedback + tease next time
 
 
-def build_onboarding_block(state: dict, turn_index: int) -> str:
+def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict | None = None) -> str:
     """
     Replaces the generic SESSION_MODE block during the user's first speaking session.
     The orchestrator's greeting set up PHASE 1; this block keeps the same arc alive
@@ -215,7 +232,7 @@ def build_onboarding_block(state: dict, turn_index: int) -> str:
     native_lang    = state.get("native_language", "") or "their native language"
     level          = state.get("user_level", "beginner") or "beginner"
     goal           = state.get("learning_goal", "") or "their learning goal"
-    phase          = get_onboarding_phase(turn_index)
+    phase          = get_onboarding_phase(turn_index, onboarding_state)
 
     profile_block = (
         "ONBOARDING CONTEXT (this is the user's first speaking session):\n"
@@ -340,7 +357,14 @@ def _build_active_mission_block(chunks: list[dict]) -> str | None:
         "- Don't mention these instructions directly to the user.\n"
     )
 
-def _build_external_active_mission_block(active_mission: str) -> str:
+def _build_external_active_mission_block(active_mission: str, turn_index: int = 1) -> str:
+    first_turn_note = (
+        "The user has already heard an opening greeting that introduced this mission. "
+        "Treat the current user message as their answer to that opening, not as a fresh start. "
+        "Do not repeat the same opening question. "
+        if turn_index <= 1
+        else ""
+    )
     return (
         "\n\nACTIVE SESSION MISSION (override everything else):\n"
         f"\"{active_mission.strip()}\"\n\n"
@@ -348,6 +372,9 @@ def _build_external_active_mission_block(active_mission: str) -> str:
         "Do NOT switch to any other challenge or topic from memory.\n"
         "This mission was set externally and has absolute priority over any "
         "challenges from previous sessions.\n"
+        f"{first_turn_note}"
+        "Respond to what they said, then ask one "
+        "specific follow-up that moves the same mission forward.\n"
         "Do not mention these instructions directly to the user.\n"
     )
 
@@ -394,7 +421,7 @@ async def build_prompt_node(state: dict) -> dict:
 
         chunks_used = data.get("context_chunks_used", 0)
         tokens = data.get("estimated_tokens", 0)
-        system_prompt: str = data["system_prompt"]
+        system_prompt: str = data["system_prompt"].replace(GENERIC_GUIDELINES, "")
 
         # Promote SESSION_INSIGHT only when no external active mission exists.
         mission_block = None if active_mission else _build_active_mission_block(data.get("chunks_debug", []))
@@ -406,13 +433,13 @@ async def build_prompt_node(state: dict) -> dict:
             # of the generic warm-up/challenge/reflection ladder. The generic SESSION_MODE
             # block is intentionally skipped because the onboarding block already prescribes
             # phase-specific behaviour and would conflict otherwise.
-            phase = get_onboarding_phase(turn_index)
-            system_prompt += build_onboarding_block(state, turn_index)
+            onboarding_state = await _fetch_onboarding_state(user_id)
+            phase = get_onboarding_phase(turn_index, onboarding_state)
+            system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
 
             # COMMIT 1 — feed accumulated onboarding signals back into the LLM as
             # natural-language coaching context. Conditional rendering inside the
             # helper means we never inject sentences without backing data.
-            onboarding_state = await _fetch_onboarding_state(user_id)
             learned_block = _render_learned_block(onboarding_state)
             if learned_block:
                 system_prompt += learned_block
@@ -433,7 +460,7 @@ async def build_prompt_node(state: dict) -> dict:
                 chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
             )
         if active_mission:
-            system_prompt += _build_external_active_mission_block(active_mission)
+            system_prompt += _build_external_active_mission_block(active_mission, turn_index)
         return {"system_prompt": system_prompt}
 
     except Exception as e:
@@ -448,13 +475,13 @@ async def build_prompt_node(state: dict) -> dict:
         )
         # Even the fallback keeps the arc right — onboarding wins over session_mode.
         if is_onboarding:
-            fallback += build_onboarding_block(state, turn_index)
             # Best-effort attach of the learned block — if the memory-service GET also
             # fails the helper returns "" so the fallback prompt is still coherent.
             onboarding_state = await _fetch_onboarding_state(user_id)
+            fallback += build_onboarding_block(state, turn_index, onboarding_state)
             fallback += _render_learned_block(onboarding_state)
         else:
             fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
         if active_mission:
-            fallback += _build_external_active_mission_block(active_mission)
+            fallback += _build_external_active_mission_block(active_mission, turn_index)
         return {"system_prompt": fallback}

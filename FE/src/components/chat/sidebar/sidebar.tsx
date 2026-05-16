@@ -124,13 +124,14 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           <FlashcardIcon />
           Flashcards
         </Link>
-        <Link
-          href="/profile"
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+        <button
+          type="button"
+          disabled
+          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 opacity-50 cursor-not-allowed"
         >
           <UserIcon />
-          Profile
-        </Link>
+          Profile (coming soon)
+        </button>
         <Link
           href="/billing"
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
@@ -138,13 +139,14 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           <BillingIcon />
           Billing
         </Link>
-        <Link
-          href="/settings"
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+        <button
+          type="button"
+          disabled
+          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 opacity-50 cursor-not-allowed"
         >
           <SettingsIcon />
-          Settings
-        </Link>
+          Settings (coming soon)
+        </button>
         <button
           onClick={onLogout}
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-500 hover:bg-gray-50 hover:text-red-500 transition-colors mt-1"
