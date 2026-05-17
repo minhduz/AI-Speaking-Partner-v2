@@ -137,6 +137,7 @@ async def _context_as_chunks(user_id: str, query: str, active_layers: set, sessi
 
 
 _ST_FACT_SCORE = {"urgent": 0.92, "high": 0.88}
+_MAX_ST_FACTS = 10  # guard against large cross-session fact bleed
 
 
 async def _short_term_as_chunks(user_id: str) -> list[dict]:
@@ -144,6 +145,10 @@ async def _short_term_as_chunks(user_id: str) -> list[dict]:
     if not user_id:
         return []
     st_facts = await ShortTermMemory.get_st_facts(user_id)
+    if len(st_facts) > _MAX_ST_FACTS:
+        log.warning("[short_term] user=%s  %d st_facts exceeds cap %d — truncating to most recent",
+                    user_id, len(st_facts), _MAX_ST_FACTS)
+        st_facts = st_facts[-_MAX_ST_FACTS:]
     log.info("[short_term] loaded %d consolidated st_facts for user=%s", len(st_facts), user_id)
     return [
         {

@@ -1,13 +1,13 @@
 'use client';
 import { useState } from 'react';
 import {
-  Zap, Target, Clock, Crown, AlertCircle,
+  Zap, Target, Clock, Crown,
   TrendingUp, Sparkles, CheckCircle2, Package,
-  Plus, CreditCard, Receipt, Download, Heart, Share2, Link2,
+  CreditCard, Receipt, Download, Heart, Share2,
 } from 'lucide-react';
 
-import type { Subscription, Usage, Plan, AddonPackage, BillingHistoryItem } from '@/services/billing.service';
-import { UsageBar, Badge, Card, CardHeader, IconBox } from './ui';
+import type { Subscription, Usage, Plan, BillingHistoryItem } from '@/services/billing.service';
+import { Badge, Card, CardHeader, IconBox } from './ui';
 
 const fmtVnd  = (n: number) => `${n.toLocaleString('vi-VN')}đ`;
 const fmtDate = (iso: string) =>
@@ -73,7 +73,7 @@ export function CurrentPlanCard({ subscription, usage, isPro, planLabel, onCance
               </span>
             </div>
             <p className="text-xs text-violet-500 font-medium pl-9">
-              {isUnlimited ? '∞ Unlimited tokens' : `${fmtTok(usage.session_token_limit)} per session`}
+              {isUnlimited ? 'Unlimited practice length' : `${fmtTok(usage.session_token_limit)} token safety limit per session`}
             </p>
           </div>
 
@@ -148,7 +148,7 @@ export function UpgradeCard({ proHighlight, monthlyPlan, onSelectPlan }: {
         <ul className="space-y-2.5 mb-6 flex-1">
           {[
             'Unlimited AI sessions, every day',
-            'Unlimited tokens per session',
+            'Unlimited practice length',
             'Detailed pronunciation analysis',
             'Priority processing speed',
           ].map(f => (
@@ -224,7 +224,7 @@ export function ProLoveCard() {
         <ul className="space-y-2 mb-5 flex-1">
           {[
             'Unlimited speaking sessions',
-            'Unlimited tokens, every session',
+            'Unlimited practice length',
             'Priority AI processing',
           ].map(perk => (
             <li key={perk} className="flex items-center gap-2 text-sm text-gray-600">
@@ -249,53 +249,12 @@ export function ProLoveCard() {
   );
 }
 
-// ─── Token Packs Card ─────────────────────────────────────────────────────────
-export function TokenPacksCard({ packages, balance, onSelectAddon }: {
-  packages: AddonPackage[]; balance: number;
-  onSelectAddon: (pkg: AddonPackage) => void;
-}) {
-  return (
-    <Card>
-      <CardHeader
-        icon={<IconBox color="amber"><Package className="w-4 h-4 text-amber-600" /></IconBox>}
-        title="Token Packs"
-        right={balance > 0 ? <Badge variant="soft">Balance: {fmtTok(balance)}</Badge> : undefined}
-      />
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {packages.map(pkg => (
-          <div
-            key={pkg.id}
-            className="flex items-center gap-3 p-4 rounded-2xl bg-gray-50 hover:bg-violet-50 hover:shadow-sm transition-all"
-          >
-            <IconBox color="amber">
-              <Zap className="w-4 h-4 text-amber-600" />
-            </IconBox>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-bold text-gray-800 truncate">{pkg.name}</p>
-              <p className="text-xs text-gray-400">+{fmtTok(pkg.tokenAmount)} tokens</p>
-            </div>
-            <div className="flex items-center gap-2.5 flex-shrink-0">
-              <span className="text-sm font-bold text-[#8447FF]">{fmtVnd(pkg.priceVnd)}</span>
-              <button
-                onClick={() => onSelectAddon(pkg)}
-                className="w-9 h-9 rounded-full bg-[#8447FF] text-white flex items-center justify-center hover:bg-[#7C3AED] transition shadow-sm flex-shrink-0"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
 // ─── Invoice generator ────────────────────────────────────────────────────────
 function openInvoice(item: BillingHistoryItem) {
   const shortId = item.id.slice(-8).toUpperCase();
   const date    = new Date(item.paid_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
   const amount  = item.amount_vnd.toLocaleString('vi-VN');
-  const type    = item.order_type === 'subscription' ? 'Subscription' : 'Token Pack';
+  const type    = item.order_type === 'subscription' ? 'Subscription' : 'Legacy add-on';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -372,15 +331,15 @@ tbody td:last-child{text-align:right;font-weight:600}
 }
 
 // ─── Billing History Card ─────────────────────────────────────────────────────
-export function BillingHistoryCard({ history }: { history: BillingHistoryItem[] }) {
+export function BillingHistoryCard({ history, className = '' }: { history: BillingHistoryItem[]; className?: string }) {
   return (
-    <Card>
+    <Card className={`flex flex-col ${className}`}>
       <CardHeader
         icon={<IconBox color="gray"><Receipt className="w-4 h-4 text-gray-500" /></IconBox>}
         title="Invoices"
       />
       {history.length === 0 ? (
-        <div className="text-center py-10 flex flex-col items-center gap-2">
+        <div className="flex-1 min-h-40 text-center py-10 flex flex-col items-center justify-center gap-2">
           <div className="w-14 h-14 rounded-2xl bg-gray-50 flex items-center justify-center">
             <Receipt className="w-7 h-7 text-gray-200" />
           </div>

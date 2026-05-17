@@ -58,3 +58,10 @@ ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal VARCHAR;
 
 -- Google OAuth
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id VARCHAR UNIQUE;
+
+-- End-session: idle detection + reason tracking
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR; -- 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close' | 'orphan'
+CREATE INDEX IF NOT EXISTS idx_sessions_active_idle
+  ON speaking_app.sessions(user_id, last_activity_at)
+  WHERE status = 'active';

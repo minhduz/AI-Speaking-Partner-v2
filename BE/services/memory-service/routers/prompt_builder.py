@@ -4,8 +4,11 @@ from retriever import fan_out_retrieve
 
 router = APIRouter()
 
-TOKEN_BUDGET    = 2000
+TOKEN_BUDGET    = 2500   # ~2500 tokens of context headroom
 CHARS_PER_TOKEN = 4
+# Per-source caps — prevents one layer from monopolising the context window
+_MAX_SHORT_TERM = 5
+_MAX_LONG_TERM  = 8
 
 class BuildPromptRequest(BaseModel):
     query: str
@@ -39,15 +42,24 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         layers=body.layers if body.layers else None,
     )
 
-    # Trim to token budget
+    # Trim to token budget with per-source caps to prevent any layer flooding context
     parts, used = [], 0
     budget = TOKEN_BUDGET * CHARS_PER_TOKEN
+    source_counts: dict[str, int] = {}
+    _SOURCE_CAPS = {"short_term": _MAX_SHORT_TERM, "long_term": _MAX_LONG_TERM, "urgent": _MAX_LONG_TERM}
     for chunk in chunks:
+        source = chunk.get("source", "long_term")
+        cap = _SOURCE_CAPS.get(source, _MAX_LONG_TERM)
+        if source_counts.get(source, 0) >= cap:
+            continue
         text = chunk["text"]
         if used + len(text) > budget:
             break
-        parts.append(f"- {text}")
+        # Label the source so LLM can weigh recency vs long-term knowledge
+        label = {"short_term": "[recent]", "urgent": "[urgent]", "long_term": "[memory]"}.get(source, "[memory]")
+        parts.append(f"{label} {text}")
         used += len(text)
+        source_counts[source] = source_counts.get(source, 0) + 1
 
     context = "\n".join(parts) if parts else "No prior context available."
 
@@ -91,4 +103,7 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         "system_prompt": system_prompt,
         "context_chunks_used": len(parts),
         "estimated_tokens": used // CHARS_PER_TOKEN,
+        # Expose retrieved chunks so the turn-agent can spot SESSION_INSIGHT and
+        # promote it to an active mission block in the system prompt.
+        "chunks_debug": chunks,
     }

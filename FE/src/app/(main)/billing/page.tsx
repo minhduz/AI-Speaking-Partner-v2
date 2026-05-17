@@ -6,20 +6,18 @@ import { ArrowLeft, Loader2 } from 'lucide-react';
 import {
   billingService, streamPaymentStatus,
   type Subscription, type Usage, type Plan,
-  type AddonPackage, type CheckoutResult, type BillingHistoryItem,
+  type CheckoutResult, type BillingHistoryItem,
 } from '@/services/billing.service';
 import { ErrorBanner } from './_components/ui';
 import { CancelModal, CheckoutModal, type PendingOrder, type PlanOption } from './_components/modals';
 import {
-  CurrentPlanCard, UpgradeCard, TokenPacksCard, BillingHistoryCard, ProLoveCard,
+  CurrentPlanCard, UpgradeCard, BillingHistoryCard, ProLoveCard,
 } from './_components/cards';
 
 export default function BillingPage() {
   const [subscription,    setSubscription]    = useState<Subscription | null>(null);
   const [usage,           setUsage]           = useState<Usage | null>(null);
   const [paidPlans,       setPaidPlans]       = useState<Plan[]>([]);
-  const [addonPackages,   setAddonPackages]   = useState<AddonPackage[]>([]);
-  const [addonBalance,    setAddonBalance]    = useState(0);
   const [history,         setHistory]         = useState<BillingHistoryItem[]>([]);
   const [loading,         setLoading]         = useState(true);
   const [showCancel,      setShowCancel]      = useState(false);
@@ -29,20 +27,21 @@ export default function BillingPage() {
 
   const loadData = useCallback(async () => {
     try {
-      const [sub, usg, plans, addons, balance] = await Promise.all([
+      const [sub, usg, plans] = await Promise.all([
         billingService.getSubscription(), billingService.getUsage(),
-        billingService.getPlans(), billingService.getAddonPackages(),
-        billingService.getAddonBalance(),
+        billingService.getPlans(),
       ]);
       setSubscription(sub); setUsage(usg);
       setPaidPlans(plans.filter(p => p.priceVnd > 0));
-      setAddonPackages(addons); setAddonBalance(balance.balance);
     } catch (err) { console.error('[Billing] load failed:', err); }
     finally { setLoading(false); }
     billingService.getHistory().then(setHistory).catch(() => {});
   }, []);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadData();
+  }, [loadData]);
 
   /** Called by CheckoutModal after QR is generated. Returns a Promise that resolves when payment.paid is received via SSE. */
   const handleConfirmCheckout = useCallback((result: CheckoutResult): Promise<void> => {
@@ -80,8 +79,8 @@ export default function BillingPage() {
     priceVnd: plan.priceVnd,
     interval: plan.interval,
     features: [
-      '5M AI tokens per month',
       'Unlimited speaking sessions',
+      'Unlimited practice length',
       'Detailed pronunciation analysis',
       'Priority processing speed',
     ],
@@ -97,17 +96,6 @@ export default function BillingPage() {
       alt:     other ? toPlanOption(other) : undefined,
     });
   }, [paidPlans, toPlanOption]);
-
-  /** Open order review modal for an addon token pack */
-  const openAddonCheckout = useCallback((pkg: AddonPackage) => {
-    setPendingOrder({
-      label:    pkg.name,
-      priceVnd: pkg.priceVnd,
-      type:     'addon',
-      features: [`+${pkg.tokenAmount.toLocaleString()} tokens added to your balance`, 'Never expires'],
-      factory:  () => billingService.addonCheckout(pkg.id),
-    });
-  }, []);
 
   if (loading) {
     return (
@@ -136,7 +124,7 @@ export default function BillingPage() {
         </Link>
         <div>
           <h1 className="text-lg font-bold text-gray-900">Billing &amp; Subscription</h1>
-          <p className="text-xs text-gray-400">Manage your plan and AI tokens</p>
+          <p className="text-xs text-gray-400">Manage your speaking plan</p>
         </div>
       </div>
 
@@ -149,23 +137,24 @@ export default function BillingPage() {
           {/* ══ Bento Grid ══ */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-            <div className={hasUpgrade || isPro ? 'lg:col-span-2' : 'lg:col-span-3'}>
+            <div className={`${hasUpgrade || isPro ? 'lg:col-span-2' : 'lg:col-span-3'} flex min-h-0 flex-col gap-4 self-stretch`}>
               <CurrentPlanCard
                 subscription={subscription} usage={usage}
                 isPro={isPro} planLabel={planLabel}
                 onCancel={() => setShowCancel(true)}
               />
+              <BillingHistoryCard history={history} className="lg:flex-1" />
             </div>
 
             {/* Love card — Pro only, mirrors UpgradeCard slot */}
             {isPro && (
-              <div className="lg:row-span-2">
+              <div className="self-stretch">
                 <ProLoveCard />
               </div>
             )}
 
             {hasUpgrade && (
-              <div className="lg:row-span-2">
+              <div className="self-stretch">
                 <UpgradeCard
                   proHighlight={proHighlight!}
                   monthlyPlan={monthlyPlan}
@@ -173,18 +162,6 @@ export default function BillingPage() {
                 />
               </div>
             )}
-
-            <div className={hasUpgrade || isPro ? 'lg:col-span-2' : 'lg:col-span-3'}>
-              <TokenPacksCard
-                packages={addonPackages}
-                balance={addonBalance}
-                onSelectAddon={openAddonCheckout}
-              />
-            </div>
-
-            <div className="lg:col-span-3">
-              <BillingHistoryCard history={history} />
-            </div>
 
           </div>
 

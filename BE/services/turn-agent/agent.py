@@ -20,6 +20,8 @@ class TurnState(TypedDict):
     learning_goal: str
     current_datetime: str
     turn_index: int
+    is_onboarding: bool
+    active_mission: str
     voice_id: str
     speech_rate: float
     conversation_style: str

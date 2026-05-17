@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const PUBLIC_PATHS = ['/login', '/register'];
 
-export function proxy(req: NextRequest) {
+export function middleware(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
   const hasSession = req.cookies.has('refresh_token');
 

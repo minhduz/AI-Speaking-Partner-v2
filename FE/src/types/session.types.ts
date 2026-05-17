@@ -51,7 +51,7 @@ export type TurnEvent =
   | SegmentEvent
   | { type: 'title'; text: string }
   | { type: 'done'; tokens_used: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; limit?: number; used?: number };
 
 export interface ChatMessage {
   role: 'ai' | 'user';

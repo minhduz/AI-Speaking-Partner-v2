@@ -1,6 +1,6 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, LessThan } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -8,6 +8,7 @@ import { Turn } from './entities/turn.entity';
 import { Session } from '../session/entities/session.entity';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
+import { SessionService } from '../session/session.service';
 import { normalizeVoiceId } from '../user/voice-options';
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
@@ -27,6 +28,30 @@ function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   }
 }
 
+function buildActiveMissionBlock(activeMission: string | null): string {
+  if (!activeMission) return '';
+  return [
+    '',
+    'ACTIVE SESSION MISSION (override everything else):',
+    `"${activeMission}"`,
+    'Stay on this mission. If the user drifts, redirect gently.',
+    'Do NOT switch to any other challenge or topic from memory.',
+    'This mission has absolute priority over previous-session challenges.',
+  ].join('\n');
+}
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function getErrorResponse(err: unknown): { status?: unknown; data?: unknown } | undefined {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  const response = (err as { response?: unknown }).response;
+  return typeof response === 'object' && response !== null
+    ? response as { status?: unknown; data?: unknown }
+    : undefined;
+}
+
 @Injectable()
 export class TurnService {
   constructor(
@@ -35,6 +60,8 @@ export class TurnService {
     private readonly http: HttpService,
     private readonly cfg: ConfigService,
     private readonly userService: UserService,
+    @Inject(forwardRef(() => SessionService))
+    private readonly sessionService: SessionService,
   ) {}
 
   async getBySession(sessionId: string, userId: string, page = 1, limit = 20) {
@@ -73,6 +100,35 @@ export class TurnService {
     return session?.totalTokens ?? 0;
   }
 
+  /**
+   * Returns true when the given session is the user's first-ever speaking session.
+   * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs
+   * onboarding intent extraction during the first session.
+   */
+  async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
+    if (!sessionId) return false;
+    const session = await this.sessionRepo.findOne({ where: { id: sessionId, userId } });
+    if (!session) return false;
+    const earlier = await this.sessionRepo.count({
+      where: { userId, startedAt: LessThan(session.startedAt) },
+    });
+    return earlier === 0;
+  }
+
+  async getActiveMission(userId: string): Promise<string | null> {
+    const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+    try {
+      const { data } = await firstValueFrom<any>(
+        this.http.get<any>(`${memoryUrl}/today-challenge/${userId}`),
+      );
+      const mission = data?.active_mission;
+      return typeof mission === 'string' && mission.trim() ? mission.trim() : null;
+    } catch (err: any) {
+      console.error(`[Turn] active mission fetch failed:`, err?.message);
+      return null;
+    }
+  }
+
   async processTurn(sessionId: string, userId: string, audioBuffer: Buffer, mimetype: string) {
     const started = Date.now();
     const elapsed = () => `${Date.now() - started}ms`;
@@ -86,9 +142,10 @@ export class TurnService {
     try {
       // 1. Turn index + user entity (parallel)
       step = 'turn-index';
-      const [turnCount, user] = await Promise.all([
+      const [turnCount, user, activeMission] = await Promise.all([
         this.turnRepo.count({ where: { sessionId } }),
         this.getUserEntity(userId),
+        this.getActiveMission(userId),
       ]);
       const turnIndex = turnCount + 1;
       const currentDatetime = getCurrentDatetime(user?.timezone ?? 'UTC');
@@ -128,9 +185,11 @@ export class TurnService {
           }),
         );
         system_prompt = promptRes.data.system_prompt;
+        system_prompt += buildActiveMissionBlock(activeMission);
         console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
       } catch {
         system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
+        system_prompt += buildActiveMissionBlock(activeMission);
       }
 
       // 4. LLM complete
@@ -169,16 +228,18 @@ export class TurnService {
       this.updateSessionTotals(sessionId, tokens_used, pronunciation?.score ?? 0).catch(console.error);
       this.appendToShortTerm(sessionId, userId, transcript, response_text).catch(console.error);
       this.recordUsage(userId, tokens_used).catch(console.error);
+      this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
       if (turnIndex === 1) this.generateTitle(sessionId, transcript).catch(console.error);
 
       console.log(`[Turn] ── processTurn done (${elapsed()}) ────────────────`);
       return { turn_id: turn.id, transcript, confidence, pronunciation, response_text, audio_b64, tokens_used };
 
-    } catch (err) {
-      console.error(`[Turn] ✖ FAILED at step "${step}" (${elapsed()}):`, err.message);
-      if (err.response) {
-        console.error(`[Turn]   upstream status :`, err.response.status);
-        console.error(`[Turn]   upstream body   :`, JSON.stringify(err.response.data ?? '').slice(0, 300));
+    } catch (err: unknown) {
+      const response = getErrorResponse(err);
+      console.error(`[Turn] ✖ FAILED at step "${step}" (${elapsed()}):`, getErrorMessage(err));
+      if (response) {
+        console.error(`[Turn]   upstream status :`, response.status);
+        console.error(`[Turn]   upstream body   :`, JSON.stringify(response.data ?? '').slice(0, 300));
       }
       throw err;
     }
@@ -195,6 +256,7 @@ export class TurnService {
     this.updateSessionTotals(sessionId, data.tokens_used, data.pronunciation?.score ?? 0).catch(console.error);
     this.appendToShortTerm(sessionId, userId, data.transcript, data.response_text).catch(console.error);
     this.recordUsage(userId, data.tokens_used).catch(console.error);
+    this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
     if (turnIndex === 1) this.generateTitle(sessionId, data.transcript).catch(console.error);
     return turn;
   }

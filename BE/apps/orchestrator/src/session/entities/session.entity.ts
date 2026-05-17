@@ -1,6 +1,15 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
 
+/**
+ * status values:
+ *   active    – session in progress
+ *   ending    – AI closing message is being played (transient)
+ *   ended     – user consciously finished the session (has closing summary)
+ *   abandoned – user disappeared / idle-timeout / tab close (no closing)
+ *
+ * end_reason values: user_clicked | voice_intent | idle_timeout | tab_close | orphan
+ */
 @Entity({ schema: 'speaking_app', name: 'sessions' })
 export class Session {
   @PrimaryGeneratedColumn('uuid') id: string;
@@ -14,4 +23,6 @@ export class Session {
   @Column({ name: 'archived_at', nullable: true }) archivedAt: Date;
   @CreateDateColumn({ name: 'started_at' }) startedAt: Date;
   @Column({ name: 'ended_at', nullable: true }) endedAt: Date;
+  @Column({ name: 'last_activity_at', nullable: true }) lastActivityAt: Date;
+  @Column({ name: 'end_reason', nullable: true }) endReason: string;
 }

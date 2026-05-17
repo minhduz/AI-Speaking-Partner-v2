@@ -30,6 +30,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Turn Agent", lifespan=lifespan)
 
 
+def _decode_header(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        return unquote(value).strip()
+    except Exception:
+        return value.strip()
+
+
 @app.post("/turn/stream")
 async def turn_stream(request: Request):
     form = await request.form()
@@ -52,6 +61,8 @@ async def turn_stream(request: Request):
         "learning_goal":    _h(h, "x-learning-goal"),
         "current_datetime": h.get("x-current-datetime", ""),
         "turn_index":       int(h.get("x-turn-index", "1")),
+        "is_onboarding":    h.get("x-is-onboarding", "false").lower() == "true",
+        "active_mission":   _decode_header(h.get("x-active-mission")),
         "voice_id":         h.get("x-voice-id", "Adrian"),
         "speech_rate":      float(h.get("x-speech-rate", "1.0")),
         "conversation_style": h.get("x-conversation-style", "friendly"),
@@ -101,6 +112,8 @@ async def turn_stream_text(request: Request):
         "learning_goal":        _h(h, "x-learning-goal"),
         "current_datetime":     h.get("x-current-datetime", ""),
         "turn_index":           int(h.get("x-turn-index", "1")),
+        "is_onboarding":        h.get("x-is-onboarding", "false").lower() == "true",
+        "active_mission":       _decode_header(h.get("x-active-mission")),
         "voice_id":             h.get("x-voice-id", "Adrian"),
         "speech_rate":          float(h.get("x-speech-rate", "1.0")),
         "conversation_style":   h.get("x-conversation-style", "friendly"),

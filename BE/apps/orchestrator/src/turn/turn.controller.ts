@@ -12,6 +12,13 @@ import { normalizeVoiceId } from '../user/voice-options';
 
 const SENTENCE_BOUNDARY = /^([\s\S]*?[.!?]+\s+)/;
 
+type UploadedAudioFile = {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+  size: number;
+};
+
 // Take the first whitespace-separated word so the agent addresses the user by a
 // single given name (e.g. "Đức" from "Đức Nguyễn Minh") instead of the full name.
 function firstName(fullName: string | null | undefined): string {
@@ -83,13 +90,15 @@ export class TurnController {
     }
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
           .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
           .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
         this.turnService.getSessionTokens(sessionId),
+        this.turnService.isOnboardingSession(req.user.id, sessionId),
+        this.turnService.getActiveMission(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -127,6 +136,8 @@ export class TurnController {
             'X-Learning-Goal':    encodeHeader(user?.learningGoal),
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
+            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
             'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
@@ -152,7 +163,7 @@ export class TurnController {
   @UseInterceptors(FileInterceptor('audio'))
   async processTurn(
     @Param('session_id') sessionId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedAudioFile,
     @Req() req,
   ) {
     const fileInfo = file ? `${file.size}b  ${file.mimetype}  "${file.originalname}"` : 'MISSING';
@@ -173,7 +184,7 @@ export class TurnController {
   @UseInterceptors(FileInterceptor('audio'))
   async streamTurn(
     @Param('session_id') sessionId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedAudioFile,
     @Req() req,
     @Res() res: Response,
   ) {
@@ -189,14 +200,16 @@ export class TurnController {
     }
 
     try {
-      // Parallel: user entity + turn index + limits + current session tokens
-      const [user, turnIndex, limitsRes, sessionTokens] = await Promise.all([
+      // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
           .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
           .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
         this.turnService.getSessionTokens(sessionId),
+        this.turnService.isOnboardingSession(req.user.id, sessionId),
+        this.turnService.getActiveMission(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -245,6 +258,8 @@ export class TurnController {
             'X-Learning-Goal':    encodeHeader(user?.learningGoal),
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
+            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
             'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',

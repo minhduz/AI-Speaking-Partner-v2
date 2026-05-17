@@ -78,7 +78,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-2xl bg-violet-50 text-[#8447FF] text-sm font-bold hover:bg-violet-100 active:scale-[0.98] transition-all"
         >
           <span className="text-lg leading-none">+</span>
-          New Chat
+          New Topic
         </button>
       </div>
 
@@ -88,7 +88,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
         </p>
 
         {sessions.length === 0 && !loading && (
-          <p className="text-xs text-gray-400 px-1 py-2">No conversations yet.</p>
+          <p className="text-xs text-gray-400 px-1 py-2">Your sessions will appear here.</p>
         )}
 
         <nav className="flex flex-col">
@@ -126,13 +126,14 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           <FlashcardIcon />
           Flashcards
         </Link>
-        <Link
-          href="/profile"
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+        <button
+          type="button"
+          disabled
+          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 opacity-50 cursor-not-allowed"
         >
           <UserIcon />
-          Profile
-        </Link>
+          Profile (coming soon)
+        </button>
         <Link
           href="/billing"
           className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"

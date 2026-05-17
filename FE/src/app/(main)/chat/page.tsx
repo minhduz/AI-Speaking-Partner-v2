@@ -2,10 +2,14 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { X } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
 import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
+import { MissionCard } from '@/components/chat/mission-card/mission-card';
+import { OnboardingPanel } from '@/components/chat/onboarding-panel/onboarding-panel';
 import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
@@ -49,18 +53,27 @@ export default function ChatPage() {
     isRecording,
     analyser,
     errorMessage,
+    billingLimitCode,
     currentSessionId,
     sessionTitleUpdate,
     reviewMode,
     reviewSessionId,
     reviewHasMore,
     reviewLoading,
+    isOnboardingSession,
+    onboardingState,
+    isEnding,
+    closingText,
     startMic,
     stopMic,
+    endSession,
     startNewSession,
     enterReview,
     loadMoreReview,
   } = useChat(urlSessionId);
+
+  // Local UI state: confirm dialog before ending
+  const [confirmEnd, setConfirmEnd] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -107,6 +120,7 @@ export default function ChatPage() {
 
   // Mic is disabled while greeting plays, processing, or idle startup
   const micDisabled = status === 'idle' || status === 'greeting' || status === 'processing';
+
   // Scroll-up handler for review mode: load earlier messages when near top
   const handleReviewScroll = useCallback(() => {
     if (!reviewMode || !reviewHasMore || reviewLoading) return;
@@ -125,6 +139,135 @@ export default function ChatPage() {
   // Sidebar highlights: reviewed session takes priority over live session
   const activeSidebarSessionId = reviewSessionId ?? currentSessionId;
 
+  const isFocusedLiveSession = !reviewMode && hasSession;
+
+  // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
+  // Shown while the AI farewell message is playing. Blocks all interaction.
+  if (isEnding) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
+        <div className="h-14 w-14 rounded-full bg-violet-100 flex items-center justify-center">
+          {closingText ? (
+            <div className="h-7 w-7 rounded-full bg-[#8447FF] animate-pulse" />
+          ) : (
+            <div className="h-7 w-7 rounded-full border-[3px] border-[#8447FF] border-t-transparent animate-spin" />
+          )}
+        </div>
+        <div className="max-w-md">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-widest mb-3">
+            Session ending
+          </p>
+          {closingText ? (
+            <p className="text-xl font-medium text-gray-800 leading-relaxed">
+              {closingText}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-400 animate-pulse">Preparing your recap…</p>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  // ── Confirm dialog ──────────────────────────────────────────────────────────
+  // Shown when user clicks the End button before the closing flow starts.
+  if (confirmEnd) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
+        <p className="text-lg font-semibold text-gray-800">End this session?</p>
+        <p className="text-sm text-gray-400 max-w-xs">
+          The AI will give you a short recap before wrapping up.
+        </p>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setConfirmEnd(false)}
+            className="h-10 px-5 rounded-full border border-gray-200 text-sm font-medium text-gray-600 hover:border-gray-300 transition-colors"
+          >
+            Keep talking
+          </button>
+          <button
+            type="button"
+            onClick={() => { setConfirmEnd(false); void endSession('user_clicked'); }}
+            className="h-10 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+          >
+            End session
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Focused live-session layout ─────────────────────────────────────────────
+  // Sidebar-less view shown once the user starts talking.
+  // Also shown during the first onboarding session (with the onboarding panel).
+  if (isFocusedLiveSession || isOnboardingSession) {
+    return (
+      <main className="flex flex-1 flex-col overflow-hidden bg-white">
+        {/* AI presence indicator — replaces the normal header */}
+        <div className="shrink-0 grid grid-cols-[80px_1fr_80px] items-start px-4 pt-6 pb-2">
+          <div />
+          <div className="h-12 w-12 justify-self-center rounded-full bg-violet-100 flex items-center justify-center animate-pulse">
+            <div className="h-6 w-6 rounded-full bg-[#8447FF]" />
+          </div>
+          <div className="flex justify-end">
+            <EndSessionButton onClick={() => setConfirmEnd(true)} />
+          </div>
+        </div>
+
+        {/* Scrolling conversation area — same pattern as normal mode */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
+        >
+          <div className="w-full max-w-md flex flex-col gap-3">
+            {/* Greeting shown large until the user replies */}
+            {messages.length === 0 && greetingSentences.length > 0 && (
+              <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
+                {greetingSentences.map((sentence, index) => (
+                  <p key={index}>{sentence}</p>
+                ))}
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
+            ))}
+
+            {errorMessage && (
+              <div className="flex justify-center my-2">
+                <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
+              </div>
+            )}
+
+            {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && (
+              <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
+
+        {isRecording && (
+          <div className="flex justify-center py-2 shrink-0">
+            <Waveform isRecording={isRecording} analyser={analyser} />
+          </div>
+        )}
+
+        <MessageInput
+          onSendText={() => {}}
+          onStartMic={startMic}
+          onStopMic={stopMic}
+          isRecording={isRecording}
+          disabled={micDisabled}
+        />
+
+        <OnboardingPanel isVisible={isOnboardingSession} state={onboardingState} />
+      </main>
+    );
+  }
+
+  // ── Normal layout (pre-session + review) ────────────────────────────────────
   return (
     <>
       <Sidebar
@@ -138,12 +281,16 @@ export default function ChatPage() {
 
       <main className="flex flex-1 flex-col overflow-hidden">
         <header className="flex items-center justify-between px-6 pt-6 pb-2 z-10 shrink-0">
-          <div className="w-8" />
+          <div className="w-20" />
           {reviewMode
             ? <span className="text-xs font-medium text-gray-400">History</span>
             : <StatusBadge status={status} />
           }
-          <div className="w-8" />
+          <div className="w-20 flex justify-end">
+            {!reviewMode && hasSession && (
+              <EndSessionButton onClick={() => setConfirmEnd(true)} />
+            )}
+          </div>
         </header>
 
         <div
@@ -162,6 +309,14 @@ export default function ChatPage() {
           {reviewMode && reviewLoading && messages.length > 0 && (
             <div className="flex justify-center py-3">
               <div className="w-4 h-4 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
+            </div>
+          )}
+
+          {/* Mission card — pre-session anchor showing last-session continuity.
+              Hidden once a live session starts or while reviewing history. */}
+          {!reviewMode && !hasSession && (
+            <div className="px-4 pt-2">
+              <MissionCard />
             </div>
           )}
 
@@ -200,9 +355,7 @@ export default function ChatPage() {
           {/* Error banner (live mode only) */}
           {!reviewMode && errorMessage && (
             <div className="flex justify-center my-2">
-              <div className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-full text-sm font-medium shadow-sm border border-red-100">
-                {errorMessage}
-              </div>
+              <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
             </div>
           )}
 
@@ -250,6 +403,37 @@ export default function ChatPage() {
         />
       )}
     </>
+  );
+}
+
+function ErrorBanner({ message, showUpgrade }: { message: string; showUpgrade: boolean }) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-2xl text-sm font-medium shadow-sm border border-red-100">
+      <span>{message}</span>
+      {showUpgrade && (
+        <Link
+          href="/billing"
+          className="inline-flex h-8 shrink-0 items-center justify-center rounded-full bg-[#8447FF] px-3 text-xs font-semibold text-white hover:bg-violet-700 transition-colors"
+        >
+          Upgrade
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function EndSessionButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex h-9 items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 text-xs font-medium text-gray-500 shadow-sm transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500"
+      aria-label="End session"
+      title="End session"
+    >
+      <X className="h-4 w-4" aria-hidden="true" />
+      <span>End</span>
+    </button>
   );
 }
 
