@@ -137,23 +137,24 @@ export default function BillingPage() {
           {/* ══ Bento Grid ══ */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-            <div className={hasUpgrade || isPro ? 'lg:col-span-2' : 'lg:col-span-3'}>
+            <div className={`${hasUpgrade || isPro ? 'lg:col-span-2' : 'lg:col-span-3'} flex min-h-0 flex-col gap-4 self-stretch`}>
               <CurrentPlanCard
                 subscription={subscription} usage={usage}
                 isPro={isPro} planLabel={planLabel}
                 onCancel={() => setShowCancel(true)}
               />
+              <BillingHistoryCard history={history} className="lg:flex-1" />
             </div>
 
             {/* Love card — Pro only, mirrors UpgradeCard slot */}
             {isPro && (
-              <div className="lg:row-span-2">
+              <div className="self-stretch">
                 <ProLoveCard />
               </div>
             )}
 
             {hasUpgrade && (
-              <div className="lg:row-span-2">
+              <div className="self-stretch">
                 <UpgradeCard
                   proHighlight={proHighlight!}
                   monthlyPlan={monthlyPlan}
@@ -161,10 +162,6 @@ export default function BillingPage() {
                 />
               </div>
             )}
-
-            <div className="lg:col-span-3">
-              <BillingHistoryCard history={history} />
-            </div>
 
           </div>
 

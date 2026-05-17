@@ -331,15 +331,15 @@ tbody td:last-child{text-align:right;font-weight:600}
 }
 
 // ─── Billing History Card ─────────────────────────────────────────────────────
-export function BillingHistoryCard({ history }: { history: BillingHistoryItem[] }) {
+export function BillingHistoryCard({ history, className = '' }: { history: BillingHistoryItem[]; className?: string }) {
   return (
-    <Card>
+    <Card className={`flex flex-col ${className}`}>
       <CardHeader
         icon={<IconBox color="gray"><Receipt className="w-4 h-4 text-gray-500" /></IconBox>}
         title="Invoices"
       />
       {history.length === 0 ? (
-        <div className="text-center py-10 flex flex-col items-center gap-2">
+        <div className="flex-1 min-h-40 text-center py-10 flex flex-col items-center justify-center gap-2">
           <div className="w-14 h-14 rounded-2xl bg-gray-50 flex items-center justify-center">
             <Receipt className="w-7 h-7 text-gray-200" />
           </div>
