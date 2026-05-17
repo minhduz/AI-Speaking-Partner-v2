@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { Logo } from '@/components/shared/logo/logo';
 import { sessionService } from '@/services/session.service';
+import { SettingsModal } from '@/components/chat/settings-modal/settings-modal';
 import type { SidebarProps } from './sidebar.types';
 import type { SessionSummary } from '@/types/session.types';
 
@@ -12,6 +13,7 @@ const PAGE_LIMIT = 25;
 export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId, refreshKey = 0, titleUpdate }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef(1);
   const hasMoreRef = useRef(true);
@@ -140,12 +142,11 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           Billing
         </Link>
         <button
-          type="button"
-          disabled
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 opacity-50 cursor-not-allowed"
+          onClick={() => setSettingsOpen(true)}
+          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors text-left"
         >
           <SettingsIcon />
-          Settings (coming soon)
+          Settings
         </button>
         <button
           onClick={onLogout}
@@ -155,6 +156,8 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           Sign out
         </button>
       </div>
+
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </aside>
   );
 }

@@ -8,8 +8,30 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TurnService } from './turn.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { normalizeVoiceId } from '../user/voice-options';
 
 const SENTENCE_BOUNDARY = /^([\s\S]*?[.!?]+\s+)/;
+
+type UploadedAudioFile = {
+  buffer: Buffer;
+  mimetype: string;
+  originalname: string;
+  size: number;
+};
+
+// Take the first whitespace-separated word so the agent addresses the user by a
+// single given name (e.g. "Đức" from "Đức Nguyễn Minh") instead of the full name.
+function firstName(fullName: string | null | undefined): string {
+  if (!fullName) return '';
+  return fullName.trim().split(/\s+/)[0] ?? '';
+}
+
+// HTTP headers default to ISO-8859-1, which silently drops Vietnamese diacritics
+// (Đ, ứ, ễ …). URL-encode any field that may carry non-ASCII before sending; the
+// turn-agent decodes on receipt.
+function encodeHeader(value: string | null | undefined): string {
+  return encodeURIComponent(value ?? '');
+}
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
@@ -107,15 +129,18 @@ export class TurnController {
             'X-User-Id':          req.user.id,
             'X-Session-Id':       sessionId,
             'X-Turn-Index':       String(turnIndex),
-            'X-User-Name':        user?.name ?? '',
+            'X-User-Name':        encodeHeader(firstName(user?.name)),
             'X-User-Level':       user?.level ?? 'beginner',
             'X-Target-Language':  user?.targetLanguage ?? 'english',
             'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
-            'X-Learning-Goal':    user?.learningGoal ?? '',
+            'X-Learning-Goal':    encodeHeader(user?.learningGoal),
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
             'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
             'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
+            'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
+            'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
           },
         },
       );
@@ -138,7 +163,7 @@ export class TurnController {
   @UseInterceptors(FileInterceptor('audio'))
   async processTurn(
     @Param('session_id') sessionId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedAudioFile,
     @Req() req,
   ) {
     const fileInfo = file ? `${file.size}b  ${file.mimetype}  "${file.originalname}"` : 'MISSING';
@@ -159,7 +184,7 @@ export class TurnController {
   @UseInterceptors(FileInterceptor('audio'))
   async streamTurn(
     @Param('session_id') sessionId: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: UploadedAudioFile,
     @Req() req,
     @Res() res: Response,
   ) {
@@ -226,15 +251,18 @@ export class TurnController {
             'X-User-Id':          req.user.id,
             'X-Session-Id':       sessionId,
             'X-Turn-Index':       String(turnIndex),
-            'X-User-Name':        user?.name ?? '',
+            'X-User-Name':        encodeHeader(firstName(user?.name)),
             'X-User-Level':       user?.level ?? 'beginner',
             'X-Target-Language':  user?.targetLanguage ?? 'english',
             'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
-            'X-Learning-Goal':    user?.learningGoal ?? '',
+            'X-Learning-Goal':    encodeHeader(user?.learningGoal),
             'X-User-Timezone':    user?.timezone ?? 'UTC',
             'X-Current-Datetime': currentDatetime,
             'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
             'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
+            'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
+            'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
           },
         },
       );

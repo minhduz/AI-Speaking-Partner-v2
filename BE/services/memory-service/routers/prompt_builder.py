@@ -19,7 +19,19 @@ class BuildPromptRequest(BaseModel):
     learning_goal: str = ""
     user_name: str = ""
     current_datetime: str = ""
+    conversation_style: str = "friendly"
     layers: list[str] = []
+
+
+# Must stay in sync with STYLE_HINTS in orchestrator session.controller.ts so the
+# greeting persona matches the turn persona for the same user.
+STYLE_HINTS = {
+    "friendly":     "Tone: warm and casual, like a supportive friend. Use contractions and natural phrasing.",
+    "formal":       "Tone: polite and respectful, with complete sentences and no slang.",
+    "casual":       "Tone: relaxed and brief, like texting a buddy.",
+    "playful":      "Tone: light and witty, gentle humor when it fits naturally.",
+    "professional": "Tone: clear, focused, and expert — like a tutor on the clock.",
+}
 
 @router.post("/{user_id}")
 async def build_prompt(user_id: str, body: BuildPromptRequest):
@@ -52,9 +64,17 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
     context = "\n".join(parts) if parts else "No prior context available."
 
     datetime_line = f"RIGHT NOW it is: {body.current_datetime}." if body.current_datetime else ""
-    name_line = f"The user's name is {body.user_name}." if body.user_name else ""
+    # Orchestrator already sends just the given name (first whitespace-separated
+    # word), so this instruction reinforces that the LLM should address the user
+    # by that single name rather than echoing a longer form.
+    name_line = (
+        f"The user's given name is {body.user_name}. Always address them as {body.user_name} — never by a longer or full name."
+        if body.user_name else ""
+    )
     native_line = f"Their native language is {body.native_language}." if body.native_language else ""
     goal_line = f"Their learning goal is: {body.learning_goal}." if body.learning_goal else ""
+
+    style_line = STYLE_HINTS.get(body.conversation_style, STYLE_HINTS["friendly"])
 
     system_prompt = (
         # Datetime goes first so it anchors all temporal reasoning below
@@ -62,6 +82,7 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         + f"You are a warm, friendly AI companion. "
         f"Speak in {body.target_language} or whatever language the user uses naturally. "
         f"Help with conversations, answer questions, and support language learning like a good friend.\n"
+        f"{style_line}\n"
         f"The user is at {body.user_level} level.\n"
         + (f"{name_line}\n" if name_line else "")
         + (f"{native_line}\n" if native_line else "")

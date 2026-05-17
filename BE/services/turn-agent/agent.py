@@ -22,6 +22,9 @@ class TurnState(TypedDict):
     turn_index: int
     is_onboarding: bool
     active_mission: str
+    voice_id: str
+    speech_rate: float
+    conversation_style: str
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

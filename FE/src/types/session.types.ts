@@ -34,9 +34,13 @@ export interface HistoryGroup {
   sessions: Session[];
 }
 
+// Unified segment event: one text segment + its complete TTS audio (MP3 base64).
+// Used by both greeting and turn flows. Segments are emitted in order, but TTS
+// runs in parallel server-side so first-audio latency stays low.
+export interface SegmentEvent { type: 'segment'; text: string; audio_b64: string }
+
 export type GreetingEvent =
-  | { type: 'text'; chunk: string }
-  | { type: 'audio'; audio_b64: string; text?: string }
+  | SegmentEvent
   | { type: 'done'; greeting: string }
   | { type: 'error'; message: string };
 
@@ -44,13 +48,10 @@ export type TurnEvent =
   | { type: 'word'; text: string; is_final: boolean }
   | { type: 'transcript'; text: string }
   | { type: 'pronunciation'; data: { score?: number } }
-  | { type: 'text'; chunk: string }
-  | { type: 'audio'; audio_b64: string; text?: string }
-  | { type: 'audio_chunk'; audio_b64: string; sample_rate: number }
-  | { type: 'audio_end' }
+  | SegmentEvent
   | { type: 'title'; text: string }
   | { type: 'done'; tokens_used: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; limit?: number; used?: number };
 
 export interface ChatMessage {
   role: 'ai' | 'user';

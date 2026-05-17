@@ -69,6 +69,22 @@ export interface StartSessionResponse {
   is_first_session: boolean;
 }
 
+export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
+
+export class BillingLimitError extends Error {
+  code: BillingLimitCode;
+  limit?: number;
+  used?: number;
+
+  constructor(code: BillingLimitCode, limit?: number, used?: number) {
+    super(code);
+    this.name = 'BillingLimitError';
+    this.code = code;
+    this.limit = limit;
+    this.used = used;
+  }
+}
+
 export interface OnboardingState {
   motivation?: string | null;
   confidence_signal?: string | null;
@@ -116,7 +132,13 @@ export const sessionService = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!res.ok) throw new Error('Failed to start session');
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body?.error === 'SESSION_LIMIT_REACHED') {
+        throw new BillingLimitError('SESSION_LIMIT_REACHED', body.limit, body.used);
+      }
+      throw new Error(body?.message ?? 'Failed to start session');
+    }
     const data: StartSessionResponse = await res.json();
     log('POST /session/start →', data);
     return data;
@@ -139,7 +161,7 @@ export const sessionService = {
     if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
       for await (const event of parseSSE<GreetingEvent>(res)) {
-        log('greeting event ←', event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        log('greeting event ←', event.type === 'segment' ? { type: 'segment', text: event.text, audio_b64: '[base64]' } : event);
         yield event;
       }
     }
@@ -179,7 +201,7 @@ export const sessionService = {
 
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
       for await (const event of parseSSE<GreetingEvent>(res)) {
-        log(`greeting event ←`, event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        log(`greeting event ←`, event.type === 'segment' ? { type: 'segment', text: event.text, audio_b64: '[base64]' } : event);
         yield event;
       }
     }
@@ -203,17 +225,10 @@ export const sessionService = {
       throw new Error(`Turn text stream failed: ${res.status}`);
     }
     async function* wrapped(): AsyncGenerator<TurnEvent> {
-      let audioChunkCount = 0;
       for await (const event of parseSSE<TurnEvent>(res)) {
-        if (event.type === 'audio_chunk') {
-          audioChunkCount++;
-        } else {
-          log(`turn-text event ←`, event.type === 'audio'
-            ? { type: event.type, audio_b64: '[base64]', text: event.text }
-            : event.type === 'audio_end'
-              ? { type: event.type, chunks: audioChunkCount }
-              : event);
-        }
+        log(`turn-text event ←`, event.type === 'segment'
+          ? { type: 'segment', text: event.text, audio_b64: '[base64]' }
+          : event);
         yield event;
       }
     }
@@ -239,7 +254,9 @@ export const sessionService = {
 
     async function* wrapped(): AsyncGenerator<TurnEvent> {
       for await (const event of parseSSE<TurnEvent>(res)) {
-        log(`turn event ←`, event.type === 'audio' ? { type: 'audio', audio_b64: '[base64]' } : event);
+        log(`turn event ←`, event.type === 'segment'
+          ? { type: 'segment', text: event.text, audio_b64: '[base64]' }
+          : event);
         yield event;
       }
     }

@@ -9,6 +9,7 @@ import { Session } from '../session/entities/session.entity';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
 import { SessionService } from '../session/session.service';
+import { normalizeVoiceId } from '../user/voice-options';
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
@@ -37,6 +38,18 @@ function buildActiveMissionBlock(activeMission: string | null): string {
     'Do NOT switch to any other challenge or topic from memory.',
     'This mission has absolute priority over previous-session challenges.',
   ].join('\n');
+}
+
+function getErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function getErrorResponse(err: unknown): { status?: unknown; data?: unknown } | undefined {
+  if (typeof err !== 'object' || err === null || !('response' in err)) return undefined;
+  const response = (err as { response?: unknown }).response;
+  return typeof response === 'object' && response !== null
+    ? response as { status?: unknown; data?: unknown }
+    : undefined;
 }
 
 @Injectable()
@@ -164,7 +177,7 @@ export class TurnService {
             session_id: sessionId,
             user_level: user?.level ?? 'beginner',
             target_language: user?.targetLanguage ?? 'english',
-            user_name: user?.name ?? '',
+            user_name: (user?.name ?? '').trim().split(/\s+/)[0] ?? '',
             native_language: user?.nativeLanguage ?? 'vietnamese',
             learning_goal: user?.learningGoal ?? '',
             current_datetime: currentDatetime,
@@ -193,7 +206,11 @@ export class TurnService {
       // 5. TTS
       step = 'tts';
       const ttsRes = await firstValueFrom(
-        this.http.post(`${speechUrl}/tts`, { text: response_text }),
+        this.http.post(`${speechUrl}/tts`, {
+          text: response_text,
+          voice: normalizeVoiceId(user?.voiceId),
+          speech_rate: user?.speechRate ?? 1.0,
+        }),
       );
       const { audio_b64 } = ttsRes.data;
 
@@ -217,11 +234,12 @@ export class TurnService {
       console.log(`[Turn] ── processTurn done (${elapsed()}) ────────────────`);
       return { turn_id: turn.id, transcript, confidence, pronunciation, response_text, audio_b64, tokens_used };
 
-    } catch (err) {
-      console.error(`[Turn] ✖ FAILED at step "${step}" (${elapsed()}):`, err.message);
-      if (err.response) {
-        console.error(`[Turn]   upstream status :`, err.response.status);
-        console.error(`[Turn]   upstream body   :`, JSON.stringify(err.response.data ?? '').slice(0, 300));
+    } catch (err: unknown) {
+      const response = getErrorResponse(err);
+      console.error(`[Turn] ✖ FAILED at step "${step}" (${elapsed()}):`, getErrorMessage(err));
+      if (response) {
+        console.error(`[Turn]   upstream status :`, response.status);
+        console.error(`[Turn]   upstream body   :`, JSON.stringify(response.data ?? '').slice(0, 300));
       }
       throw err;
     }

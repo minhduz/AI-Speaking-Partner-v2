@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { X } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
@@ -52,6 +53,7 @@ export default function ChatPage() {
     isRecording,
     analyser,
     errorMessage,
+    billingLimitCode,
     currentSessionId,
     sessionTitleUpdate,
     reviewMode,
@@ -234,9 +236,7 @@ export default function ChatPage() {
 
             {errorMessage && (
               <div className="flex justify-center my-2">
-                <div className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-full text-sm font-medium shadow-sm border border-red-100">
-                  {errorMessage}
-                </div>
+                <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
               </div>
             )}
 
@@ -355,9 +355,7 @@ export default function ChatPage() {
           {/* Error banner (live mode only) */}
           {!reviewMode && errorMessage && (
             <div className="flex justify-center my-2">
-              <div className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-full text-sm font-medium shadow-sm border border-red-100">
-                {errorMessage}
-              </div>
+              <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
             </div>
           )}
 
@@ -408,6 +406,22 @@ export default function ChatPage() {
   );
 }
 
+function ErrorBanner({ message, showUpgrade }: { message: string; showUpgrade: boolean }) {
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-2xl text-sm font-medium shadow-sm border border-red-100">
+      <span>{message}</span>
+      {showUpgrade && (
+        <Link
+          href="/billing"
+          className="inline-flex h-8 shrink-0 items-center justify-center rounded-full bg-[#8447FF] px-3 text-xs font-semibold text-white hover:bg-violet-700 transition-colors"
+        >
+          Upgrade
+        </Link>
+      )}
+    </div>
+  );
+}
+
 function EndSessionButton({ onClick }: { onClick: () => void }) {
   return (
     <button
@@ -443,30 +457,39 @@ function MessageBubble({
     }
   }, [onWordDoubleClick]);
 
+  // AI bubbles always render as a sentence-per-line list. While streaming, the
+  // last item is the currently-revealing segment (filled in word-by-word). When
+  // pending flips to false, the layout is unchanged — same flex column, same
+  // gap — so there is no visual jump at end-of-turn.
+  const aiSentences = isAi
+    ? (message.sentences && message.sentences.length > 0
+        ? message.sentences
+        : message.text
+          ? [message.text]
+          : [])
+    : null;
+  const showThinkingDots = message.pending && isAi && (aiSentences?.length ?? 0) === 0;
+
   return (
     <div className={`flex w-full ${isAi ? 'justify-start' : 'justify-end'} px-2 py-1`}>
       <div
         onDoubleClick={handleDoubleClick}
         className={`max-w-[85%] md:max-w-[75%] flex flex-col select-text cursor-text ${isAi ? 'items-start' : 'items-end'}`}
       >
-        {message.pending && isAi && !message.text ? (
+        {showThinkingDots ? (
           <ThinkingDots />
-        ) : message.pending && isAi && message.text ? (
-          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-900">
-            {message.text}
-          </p>
-        ) : message.pending && !isAi ? (
-          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
-            {message.text || '…'}
-          </p>
-        ) : isAi && message.sentences && message.sentences.length > 0 ? (
+        ) : isAi && aiSentences ? (
           <div className="flex flex-col gap-1.5">
-            {message.sentences.map((s, i) => (
+            {aiSentences.map((s, i) => (
               <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight">
                 {s}
               </p>
             ))}
           </div>
+        ) : message.pending ? (
+          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
+            {message.text || '…'}
+          </p>
         ) : (
           <p className={`text-xl md:text-2xl font-medium leading-relaxed tracking-tight ${isAi ? 'text-gray-900' : 'text-gray-400'}`}>
             {message.text}

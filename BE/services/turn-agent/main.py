@@ -7,6 +7,13 @@ from fastapi.responses import StreamingResponse
 from db import database
 from agent import graph, graph_text
 
+
+# Orchestrator URL-encodes name / goal headers so Vietnamese diacritics survive
+# the ISO-8859-1 default of HTTP/1.1 headers. Decode here before they reach
+# downstream prompt-builders.
+def _h(headers, key: str, default: str = "") -> str:
+    return unquote(headers.get(key, default))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
@@ -47,15 +54,18 @@ async def turn_stream(request: Request):
         "user_id":          h.get("x-user-id", ""),
         "audio_bytes":      audio_bytes,
         "audio_mimetype":   audio.content_type or "audio/webm",
-        "user_name":        h.get("x-user-name", ""),
+        "user_name":        _h(h, "x-user-name"),
         "user_level":       h.get("x-user-level", "beginner"),
         "target_language":  h.get("x-target-language", "english"),
         "native_language":  h.get("x-native-language", ""),
-        "learning_goal":    h.get("x-learning-goal", ""),
+        "learning_goal":    _h(h, "x-learning-goal"),
         "current_datetime": h.get("x-current-datetime", ""),
         "turn_index":       int(h.get("x-turn-index", "1")),
         "is_onboarding":    h.get("x-is-onboarding", "false").lower() == "true",
         "active_mission":   _decode_header(h.get("x-active-mission")),
+        "voice_id":         h.get("x-voice-id", "Adrian"),
+        "speech_rate":      float(h.get("x-speech-rate", "1.0")),
+        "conversation_style": h.get("x-conversation-style", "friendly"),
         # Intermediates — empty until nodes populate them
         "transcript":            "",
         "confidence":            0.0,
@@ -95,15 +105,18 @@ async def turn_stream_text(request: Request):
         "user_id":              h.get("x-user-id", ""),
         "audio_bytes":          b"",
         "audio_mimetype":       "",
-        "user_name":            h.get("x-user-name", ""),
+        "user_name":            _h(h, "x-user-name"),
         "user_level":           h.get("x-user-level", "beginner"),
         "target_language":      h.get("x-target-language", "english"),
         "native_language":      h.get("x-native-language", ""),
-        "learning_goal":        h.get("x-learning-goal", ""),
+        "learning_goal":        _h(h, "x-learning-goal"),
         "current_datetime":     h.get("x-current-datetime", ""),
         "turn_index":           int(h.get("x-turn-index", "1")),
         "is_onboarding":        h.get("x-is-onboarding", "false").lower() == "true",
         "active_mission":       _decode_header(h.get("x-active-mission")),
+        "voice_id":             h.get("x-voice-id", "Adrian"),
+        "speech_rate":          float(h.get("x-speech-rate", "1.0")),
+        "conversation_style":   h.get("x-conversation-style", "friendly"),
         "transcript":           transcript,
         "confidence":           1.0,
         "pronunciation":        {"score": None, "per_word": []},
