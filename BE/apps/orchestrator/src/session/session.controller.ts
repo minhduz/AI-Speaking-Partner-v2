@@ -208,6 +208,13 @@ export class SessionController {
     return this.sessionService.advanceDeck(sessionId);
   }
 
+  // PUT /session/:id/deck/skip — mark current card as skipped + advance
+  @Put(':id/deck/skip')
+  @HttpCode(200)
+  skipDeckCard(@Param('id') sessionId: string) {
+    return this.sessionService.skipDeckCard(sessionId);
+  }
+
   // PUT /session/:id/deck/status — update deck status
   @Put(':id/deck/status')
   @HttpCode(200)
@@ -476,6 +483,16 @@ export class SessionController {
         const [segment] = splitTtsSegment(ttsBuffer, true);
         if (segment) flushSegment(segment);
         await segmentChain;
+
+        // Diagnostic: greeting truncations show up as endsClean=false or an
+        // abrupt tail (e.g. "...I want"). If the LLM is stopping early we'll
+        // see the cut here before the FE ever does.
+        const tail = fullText.slice(-80).replace(/\n/g, '\\n');
+        const endsClean = /[.!?]['"”]?\s*$/.test(fullText);
+        console.log(
+          `${logPrefix} ── greeting stream end  len=${fullText.length}  endsClean=${endsClean}  tail="${tail}"`,
+        );
+
         send({ type: 'done', greeting: fullText });
         res.end();
 

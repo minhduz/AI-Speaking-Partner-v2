@@ -14,6 +14,7 @@ class CardUpdateRequest(BaseModel):
     result: str | None = None
     feedback: str | None = None
     ui_hint: str | None = None
+    next_action: str | None = None
 
 
 class DeckStatusRequest(BaseModel):
@@ -66,6 +67,20 @@ async def move_to_next_card(session_id: str):
     if not deck:
         return {"status": "none", "session_id": session_id}
     return deck
+
+
+# PUT /exercise-deck/{session_id}/skip — mark current card as skipped + advance.
+# Phase 7 edge case: user explicitly opts out of the current card. Not a failure
+# state — `result` stays null so consolidation doesn't treat it as attempted.
+@router.put("/exercise-deck/{session_id}/skip")
+async def skip_current_card(session_id: str):
+    skip_update = {"status": "skipped"}
+    updated = await ExerciseDeckService.update_current_card(session_id, skip_update)
+    if not updated:
+        return {"status": "none", "session_id": session_id}
+    # After marking skipped, advance to the next card (or auto-complete the deck).
+    deck = await ExerciseDeckService.move_to_next_card(session_id)
+    return deck or {"status": "none", "session_id": session_id}
 
 
 # PUT /exercise-deck/{session_id}/advance — alias for /next (backward compat)

@@ -9,7 +9,40 @@ from layers.short_term import ShortTermMemory
 from layers.long_term import LongTermMemory
 from layers import onboarding_state as onboarding
 from layers import today_challenge
+from layers.exercise_deck import ExerciseDeckService
 from db import database, settings
+
+
+def _build_deck_context(deck: dict | None) -> dict | None:
+    """
+    Distil the deck blob into the fields the consolidation LLM actually needs.
+    Returning None means "no deck this session" — the prompt branch should skip
+    deck-aware reasoning entirely.
+    """
+    if not deck or not deck.get("cards"):
+        return None
+    cards = deck["cards"]
+    completed = sum(1 for c in cards if c.get("status") == "completed")
+    skipped   = sum(1 for c in cards if c.get("status") == "skipped")
+    card_results = [
+        {
+            "type":     c.get("type"),
+            "result":   c.get("result"),
+            "status":   c.get("status"),
+            "attempts": c.get("attempts", 0),
+        }
+        for c in cards
+    ]
+    return {
+        "session_type":    deck.get("session_type"),
+        "mission":         deck.get("mission"),
+        "deck_status":     deck.get("status"),
+        "end_reason":      deck.get("end_reason"),
+        "completed_cards": completed,
+        "skipped_cards":   skipped,
+        "total_cards":     len(cards),
+        "card_results":    card_results,
+    }
 
 
 # Maps onboarding motivation → a recommended challenge for the next session.
@@ -126,12 +159,34 @@ async def run_consolidation(user_id: str, session_id: str):
         conversation = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in messages_to_extract
         )
+
+        # Phase 6 — read deck blob from Redis. session.end() already marked
+        # end_reason before triggering consolidation, so the blob reflects how
+        # the session ended (completed / ended_early / abandoned).
+        try:
+            raw_deck = await ExerciseDeckService.get_deck(session_id)
+        except Exception as deck_err:
+            log.warning("step 3 — deck fetch failed: %s", deck_err)
+            raw_deck = None
+        deck_context = _build_deck_context(raw_deck)
+        if deck_context:
+            log.info(
+                "step 3 — deck_context  status=%s  end_reason=%s  cards=%d/%d  skipped=%d",
+                deck_context["deck_status"], deck_context["end_reason"],
+                deck_context["completed_cards"], deck_context["total_cards"],
+                deck_context["skipped_cards"],
+            )
+        else:
+            log.info("step 3 — no deck for this session (free-form turn flow)")
+
         log.info("step 3 — calling LLM (combined long-term + short-term) from %d messages",
                  len(messages_to_extract))
         extract_usage = None
         try:
             _all, extract_usage = await _extract_all_facts(
-                conversation, session_start_utc, user_turn_count=_count_user_turns(messages_to_extract)
+                conversation, session_start_utc,
+                user_turn_count=_count_user_turns(messages_to_extract),
+                deck_context=deck_context,
             )
             raw_facts: list[dict]    = _all.get("long_term", [])
             raw_st_facts: list[dict] = _all.get("short_term", [])
@@ -251,6 +306,11 @@ async def run_consolidation(user_id: str, session_id: str):
                 "next_challenge",
                 "speaking_duration_estimate",
                 "energy_level",
+                # Phase 6 — deck-aware trajectory fields
+                "code_switch_pattern",
+                "code_switch_trigger",
+                "deck_completion",
+                "recommended_next_mode",
                 # Onboarding-enriched fields (present on first-session insight only)
                 "is_first_session_insight",
                 "source",
@@ -488,6 +548,7 @@ async def _extract_all_facts(
     conversation: str,
     session_start_utc: datetime,
     user_turn_count: int = 0,
+    deck_context: dict | None = None,
 ) -> tuple[dict, object]:
     """
     Single LLM call that extracts long-term facts, short-term facts, AND
@@ -511,7 +572,11 @@ async def _extract_all_facts(
         '    "improved_vs_before":          string | null,\n'
         '    "next_challenge":              string | null,\n'
         '    "speaking_duration_estimate":  "short" | "medium" | "long" | null,\n'
-        '    "energy_level":                "low" | "medium" | "high" | null\n'
+        '    "energy_level":                "low" | "medium" | "high" | null,\n'
+        '    "code_switch_pattern":         "none" | "low" | "medium" | "high" | null,\n'
+        '    "code_switch_trigger":         "vocabulary_gap" | "grammar_uncertainty" | "both" | "unknown" | null,\n'
+        '    "deck_completion":             object | null,\n'
+        '    "recommended_next_mode":       "new_deck" | "resume_deck" | "lighter_deck" | "quick_practice" | null\n'
         "  }\n"
         "Rules:\n"
         "- `struggled_with` MUST be specific and behavioral, never vague.\n"
@@ -521,12 +586,43 @@ async def _extract_all_facts(
         "  GOOD: \"Ask the user to tell a 2-minute story without stopping\".\n"
         "- `speaking_duration_estimate`: rough estimate of how much the user spoke overall.\n"
         "- `energy_level`: based on engagement and response depth.\n"
+        "- `code_switch_pattern` / `code_switch_trigger`: did the user fall back to their native language?\n"
+        "  If yes, was it because they didn't know the word (vocabulary_gap), didn't know how to phrase it (grammar_uncertainty), or both?\n"
+        "  Use \"none\" + null trigger if the user stayed in the target language throughout.\n"
         "- Extract from USER turns only, never from the AI coach's turns.\n"
     )
     if insight_too_short:
         insight_instructions += (
             "- THIS SESSION HAD FEWER THAN 4 USER TURNS — set ALL fields to null.\n"
         )
+
+    # Phase 6 — deck-aware instructions. Only injected when a deck exists for
+    # this session; otherwise the prompt stays unchanged so consolidation of
+    # free-form turn sessions isn't affected.
+    deck_block = ""
+    if deck_context and not insight_too_short:
+        deck_json = json.dumps(deck_context, ensure_ascii=False)
+        deck_block = (
+            "\n── deck context for THIS session ──\n"
+            f"{deck_json}\n"
+            "Use this when populating `deck_completion` and `recommended_next_mode`:\n"
+            "- `deck_completion` MUST be an object: "
+            '{"status": "completed"|"ended_early"|"abandoned", '
+            '"completed_cards": int, "total_cards": int, '
+            '"end_reason": string}. Copy directly from the deck context above.\n'
+            "- This session may be PARTIALLY completed. Do NOT treat early ending as failure.\n"
+            "- Extract useful progress from completed/attempted cards only — ignore cards that were never attempted.\n"
+            "- If `end_reason == \"low_energy_detected\"` or the user signalled tiredness → set "
+            '`recommended_next_mode = "lighter_deck"`.\n'
+            "- If `deck_status == \"ended_early\"` and several cards remain → "
+            '`recommended_next_mode = "resume_deck"`.\n'
+            "- If `deck_status == \"completed\"` → `recommended_next_mode = \"new_deck\"` "
+            "and `next_challenge` should advance to the next skill.\n"
+            "- If `end_reason == \"idle_timeout\"` → do NOT assume motivation or emotion. "
+            "Set `energy_level = null` and `recommended_next_mode = \"quick_practice\"`.\n"
+            "- `next_challenge` MUST be coherent with the deck mission, not invent a new one.\n"
+        )
+    insight_instructions += deck_block
 
     res = await _openai.chat.completions.create(
         model="gpt-4o-mini",

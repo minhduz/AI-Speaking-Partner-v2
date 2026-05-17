@@ -7,6 +7,23 @@ import { firstValueFrom } from 'rxjs';
 import { Session } from './entities/session.entity';
 import { UserService } from '../user/user.service';
 
+/**
+ * Translate the session-level end reason into the deck-level end_reason vocab
+ * expected by ExerciseDeckService.mark_deck_ended. Kept as a free function so
+ * it stays trivially testable and reusable from the controller too.
+ */
+function mapSessionReasonToDeckEnd(
+  reason: 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close' | 'orphan',
+): string {
+  switch (reason) {
+    case 'user_clicked':  return 'user_clicked_end';
+    case 'voice_intent':  return 'voice_end_intent';
+    case 'idle_timeout':  return 'idle_timeout';
+    case 'tab_close':     return 'idle_timeout';   // silent disappearance → abandoned
+    case 'orphan':        return 'idle_timeout';
+  }
+}
+
 @Injectable()
 export class SessionService {
   constructor(
@@ -154,7 +171,16 @@ export class SessionService {
       { id: sessionId, userId },
       { status: newStatus, endedAt: new Date(), endReason: reason },
     );
-    // Trigger consolidation async — fire and forget
+
+    // Phase 6 — mark deck with the right end_reason BEFORE consolidation, so
+    // the deck blob in Redis reflects how the session ended. mark_deck_ended
+    // is idempotent and a no-op when no deck exists.
+    const deckEndReason = mapSessionReasonToDeckEnd(reason);
+    await this.endDeck(sessionId, deckEndReason);
+
+    // Trigger consolidation async — fire and forget. Consolidation reads the
+    // deck blob itself (rather than us passing the whole thing through HTTP)
+    // so it always sees the freshly-stamped end_reason.
     this.triggerConsolidation(userId, sessionId).catch(console.error);
     return { session_id: sessionId, status: newStatus, reason };
   }
@@ -171,19 +197,70 @@ export class SessionService {
    * Generate an AI closing message via LLM for a given session.
    * Returns the text and audio_b64 (TTS).
    * This is called by the close endpoint BEFORE the hard end.
+   *
+   * Phase 6 — closing tone branches on deck completion:
+   *   completed   → celebratory recap of all N exercises
+   *   ended_early → warm acknowledgement of partial progress, no pressure
+   *   abandoned   → returns empty text (caller skips TTS/UI for silent close)
+   *   no deck     → existing free-form closing
    */
   async generateClosingMessage(
     userId: string,
     sessionId: string,
   ): Promise<{ text: string; audio_b64: string | null }> {
     // Fetch all context in parallel — saves 2-4s vs sequential calls
-    const [insight, recentContext] = await Promise.all([
+    const [insight, recentContext, deck, user] = await Promise.all([
       this.getSessionInsight(userId),
       this.getGreetingContext(userId),
+      this.getDeck(sessionId).catch(() => null),
+      this.userService.findById(userId).catch(() => null),
     ]);
 
     const struggled  = insight?.struggled_with ?? null;
     const nextChall  = insight?.next_challenge ?? null;
+    const firstName  = (user?.name ?? '').trim().split(/\s+/)[0] || '';
+
+    // Derive deck completion shape — undefined if no deck this session.
+    const cards   = Array.isArray(deck?.cards) ? deck.cards : [];
+    const total   = cards.length;
+    const done    = cards.filter((c: any) => c?.status === 'completed').length;
+    const skipped = cards.filter((c: any) => c?.status === 'skipped').length;
+    const deckStatus: string | null = deck?.status ?? null;
+    const endReason: string | null  = deck?.end_reason ?? null;
+
+    // Silent close — idle timeout abandonment should not lecture the user.
+    if (deckStatus === 'abandoned' || endReason === 'idle_timeout') {
+      console.log(`[Session][closing] silent close session=${sessionId}  reason=${endReason}`);
+      return { text: '', audio_b64: null };
+    }
+
+    let deckBlock = '';
+    if (total > 0 && deckStatus === 'completed') {
+      const practiced = cards
+        .filter((c: any) => c?.status === 'completed')
+        .map((c: any) => c?.title || c?.type)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(', ');
+      deckBlock = [
+        `Today's session was a structured deck and the user COMPLETED all ${total} exercises.`,
+        practiced ? `They practiced: ${practiced}.` : '',
+        `Template to follow (adapt naturally, do not copy verbatim):`,
+        `  "Nice work${firstName ? ', ' + firstName : ''}. Today you completed all ${total} exercises. ` +
+          `You practiced <one specific skill>. Next time, we'll practice <related next skill>."`,
+        `Tone: warm congratulation, no over-praise, end with one concrete next direction.`,
+      ].filter(Boolean).join('\n');
+    } else if (total > 0 && deckStatus === 'ended_early') {
+      deckBlock = [
+        `Today's session was a structured deck and the user ENDED EARLY.`,
+        `They completed ${done} of ${total} exercises${skipped ? ` (skipped ${skipped})` : ''}.`,
+        `Template to follow (adapt naturally):`,
+        `  "Ok${firstName ? ' ' + firstName : ''}, we'll stop here. ` +
+          `You still practiced the first part: <what they completed>. ` +
+          `No need to finish everything today. Next time, we can continue or keep it lighter."`,
+        `Tone: warm, no pressure, no language like "failed" or "incomplete". Use "paused" or "continue next time".`,
+      ].join('\n');
+    }
 
     const prompt = [
       `You are an AI speaking coach. The user has just ended today's speaking session.`,
@@ -196,6 +273,9 @@ export class SessionService {
       `4. End with a natural sign-off like "See you next time!" or "Talk soon."`,
       `5. NO emojis. NO generic openers like "Great job!". Start directly.`,
       `6. Maximum 4 sentences.`,
+      `7. Never say "failed" or "incomplete" — use "paused", "continue next time", "still working on".`,
+      ``,
+      deckBlock,
       ``,
       struggled ? `What they struggled with today: ${struggled}` : '',
       nextChall  ? `Recommended challenge for next time: ${nextChall}` : '',
@@ -592,6 +672,17 @@ export class SessionService {
       return data;
     } catch (err: any) {
       console.error(`[Session] advanceDeck failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async skipDeckCard(sessionId: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/skip`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, {}));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] skipDeckCard failed session=${sessionId}:`, err?.message);
       return { status: 'none', session_id: sessionId };
     }
   }

@@ -78,6 +78,7 @@ export interface UseChatReturn {
   closingText: string | null;
   currentDeck: ExerciseDeck | null;
   advanceDeckCard: () => Promise<void>;
+  skipDeckCard: () => Promise<void>;
   startMic: () => void;
   stopMic: () => void;
   endSession: (reason?: EndReason) => Promise<void>;
@@ -558,26 +559,30 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, [isOnboardingSession, currentSessionId]);
 
-  // Poll deck state every 3s while a session is live.
+  // Fetch deck for the current session. Lifted out of the polling effect so
+  // event-driven re-polls (after session start, after a turn ends) can reuse it
+  // without spinning up a parallel interval.
+  const pollDeck = useCallback(async () => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    try {
+      const deck = await sessionService.getDeck(sid);
+      if (sessionIdRef.current === sid) setCurrentDeck(deck);
+    } catch { /* silent — 3s interval will retry */ }
+  }, []);
+
+  // Poll deck state every 3s as a safety net. Event-driven re-polls (in
+  // startMic after sessionService.start(), and in streamTurnText after `done`)
+  // beat the interval for responsiveness; this just catches anything missed.
   useEffect(() => {
     if (!currentSessionId) return;
-    let cancelled = false;
-
-    const poll = async () => {
-      try {
-        const deck = await sessionService.getDeck(currentSessionId);
-        if (!cancelled) setCurrentDeck(deck);
-      } catch { /* silent */ }
-    };
-
-    void poll();
-    const interval = window.setInterval(poll, 3000);
+    void pollDeck();
+    const interval = window.setInterval(pollDeck, 3000);
     return () => {
-      cancelled = true;
       window.clearInterval(interval);
       setCurrentDeck(null);
     };
-  }, [currentSessionId]);
+  }, [currentSessionId, pollDeck]);
 
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
@@ -718,6 +723,27 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         if (event.type === 'segment') {
           enqueueSegment(event.audio_b64, event.text, false);
           void processSegmentQueue();
+        } else if (event.type === 'eval') {
+          // Optimistic deck update — apply the eval immediately so Retry/Next/Finish
+          // buttons appear within ~ms of the turn ending. The 3s poll in the deck
+          // effect will reconcile against memory-service shortly after.
+          setCurrentDeck((prev) => {
+            if (!prev || prev.current_card_index !== event.card_index) return prev;
+            const cards = [...prev.cards];
+            const card = cards[event.card_index];
+            if (!card) return prev;
+            const attempts = (card.attempts ?? 0) + 1;
+            const passed = event.data.passed;
+            cards[event.card_index] = {
+              ...card,
+              attempts,
+              status: passed ? 'completed' : 'in_progress',
+              result: passed ? 'passed' : attempts >= 3 ? 'partial' : 'not_passed',
+              feedback: event.data.feedback,
+              next_action: event.data.nextAction,
+            };
+            return { ...prev, cards };
+          });
         } else if (event.type === 'title') {
           setSessionTitleUpdate({ sessionId, title: event.text });
         } else if (event.type === 'done') {
@@ -738,6 +764,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
             }
             return msgs;
           });
+          // Reconcile deck from Redis — covers the case where the SSE `eval`
+          // event was dropped/raced, and catches deck-status transitions
+          // (e.g. `completed` after the final card) that the eval event alone
+          // doesn't carry.
+          void pollDeck();
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -768,7 +799,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       setStatus('error');
     }
-  }, [enqueueSegment, processSegmentQueue, setBillingLimitError, waitForSegmentIdle]);
+  }, [enqueueSegment, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -905,6 +936,18 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     }
   }, []);
 
+  const skipDeckCard = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.skipDeckCard(sessionId);
+      const deck = await sessionService.getDeck(sessionId);
+      setCurrentDeck(deck);
+    } catch (err) {
+      console.error('[skipDeckCard]', err);
+    }
+  }, []);
+
   const loadMoreReview = useCallback(async () => {
     const sessionId = reviewSessionIdRef.current;
     if (!sessionId || !reviewHasMore || reviewLoading) return;
@@ -974,6 +1017,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           sessionIdRef.current = session_id;
           setCurrentSessionId(session_id);
           setIsOnboardingSession(Boolean(is_first_session));
+          // BE kicks off generateDeckAfterStart async — poll a couple times in
+          // the first 2s to pick up the deck as soon as it lands in Redis,
+          // rather than waiting up to 3s for the safety-net interval.
+          window.setTimeout(() => { void pollDeck(); }, 600);
+          window.setTimeout(() => { void pollDeck(); }, 1800);
         });
     ensureSession
       .then(() => startRecording())
@@ -997,7 +1045,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           setErrorMessage('Failed to start recording');
         }
       });
-  }, [setBillingLimitError, startRecording, runStop]);
+  }, [setBillingLimitError, startRecording, runStop, pollDeck]);
 
   const stopMic = useCallback(() => {
     if (statusRef.current !== 'recording') return;
@@ -1073,6 +1121,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     closingText,
     currentDeck,
     advanceDeckCard,
+    skipDeckCard,
     startMic,
     stopMic,
     endSession,

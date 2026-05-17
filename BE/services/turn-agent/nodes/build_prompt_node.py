@@ -357,6 +357,36 @@ def _build_active_mission_block(chunks: list[dict]) -> str | None:
         "- Don't mention these instructions directly to the user.\n"
     )
 
+def _detect_low_energy(state: dict) -> bool:
+    """
+    Phase 7 heuristic: flag a session as low-energy when the user's last 3 turns
+    have all been short or contain explicit fatigue cues. The AI uses this to
+    offer "one more quick task or end session" rather than pushing harder.
+
+    Conservative on purpose — we only inject the low-energy block when the
+    pattern is unmistakable, otherwise the AI will start coddling normal users.
+    """
+    recent = state.get("recent_messages") or []
+    user_msgs = [m for m in recent if (m.get("role") == "user") and m.get("content")]
+    if len(user_msgs) < 3:
+        return False
+    last_three = user_msgs[-3:]
+    fatigue_cues = (
+        "i don't know", "idk", "i'm tired", "im tired", "i am tired",
+        "i give up", "no idea", "skip", "i can't", "i cant",
+    )
+    short_count = 0
+    cue_count = 0
+    for m in last_three:
+        text = m["content"].strip().lower()
+        if len(text) <= 15:
+            short_count += 1
+        if any(cue in text for cue in fatigue_cues):
+            cue_count += 1
+    # 3 short answers in a row, OR 2+ explicit fatigue cues in the last 3 turns.
+    return short_count >= 3 or cue_count >= 2
+
+
 def _build_card_context_block(state: dict) -> str:
     """
     Injects current exercise card into the system prompt when a deck is active.
@@ -369,6 +399,16 @@ def _build_card_context_block(state: dict) -> str:
     card_task        = (state.get("card_task") or "").strip()
     card_attempts    = int(state.get("card_attempts") or 0)
     retry_allowed    = bool(state.get("card_retry_allowed", False))
+    low_energy       = _detect_low_energy(state)
+
+    is_final_boss = card_type == "final_boss"
+    # Pre-built so the f-string below stays free of escaped quotes
+    # (Python 3.11 forbids backslashes inside f-string expression braces).
+    final_boss_rule = (
+        'Since it IS final_boss: if passed or partial, set nextAction="finish_session".'
+        if is_final_boss
+        else 'Since it is NOT final_boss: use "next_card" or "retry" only — never "finish_session".'
+    )
 
     return (
         "\n\nCURRENT EXERCISE CARD:\n"
@@ -388,8 +428,54 @@ def _build_card_context_block(state: dict) -> str:
         "7. Do not jump to a harder task — the next card comes after evaluation.\n"
         "8. Do not create a new mission mid-session.\n"
         "9. If the user expresses they want to stop, acknowledge and switch to CLOSING mode.\n"
-        f"\nGOOD: Stay on the exact task: \"{card_task}\"\n"
+        f'\nGOOD: Stay on the exact task: "{card_task}"\n'
         "BAD: open-ended questions, changing topic, general conversation.\n"
+        "\nAFTER RESPONDING, output a JSON evaluation block on a new line at the very end:\n"
+        'EVAL:{"passed":bool,"feedback":"short coaching note",'
+        '"retryRecommended":bool,"nextAction":"retry|next_card|finish_session",'
+        '"detectedIssues":["string"]}\n'
+        "\nEvaluation rules:\n"
+        "1. Be forgiving — if meaning is clear, grammar imperfect → passed=true with light feedback.\n"
+        '2. If the user did not attempt the task → passed=false, nextAction="retry".\n'
+        '3. If the user code-switches heavily when the card requires English → passed=false, nextAction="retry".\n'
+        f"4. Attempts so far is {card_attempts}. If after this turn attempts would reach 3, "
+        'set nextAction="next_card" even if not passed (will be recorded as partial).\n'
+        f'5. This card type is "{card_type}". {final_boss_rule}\n'
+        "6. Never trap user in infinite retry — escalate to next_card by the third attempt.\n"
+        "7. Output the EVAL block ONCE, at the very end, on its own line. Do NOT speak it aloud — "
+        "it is parsed by the system and stripped before TTS.\n"
+        "\nEDGE CASES:\n"
+        "A. CONFUSION — if the user says \"I don't understand\" / \"what does that mean\" / "
+        "\"can you explain\" / asks what the task is:\n"
+        "   - Explain the task in ONE simple sentence + ONE concrete example.\n"
+        "   - End by re-stating the task gently. Do NOT advance.\n"
+        "   - In EVAL: set passed=false, nextAction=\"retry\", "
+        "detectedIssues=[\"confusion\"]. The system will see this and the user "
+        "will get to try again WITHOUT this counting as a failed attempt.\n"
+        "B. CODE-SWITCH (user falls back to Vietnamese / native language) — if the card "
+        "requires the target language:\n"
+        "   - Redirect ONCE in one short line: \"Try describing it with simpler English — "
+        "no Vietnamese needed.\"\n"
+        "   - In EVAL: passed=false, nextAction=\"retry\", "
+        "detectedIssues=[\"code_switch\"] (and add \"vocabulary_gap\" or "
+        "\"grammar_uncertainty\" if you can tell which).\n"
+        "C. SHORT ANSWER (2+ in a row) — reduce pressure. Offer a sentence frame: "
+        "\"You can say: 'My app helps ___ to ___.' Try that.\"\n"
+        "D. SKIP — if user says \"skip\" / \"next\" / \"pass\" they want to skip the card.\n"
+        "   - Acknowledge briefly: \"Sure, let's move on.\"\n"
+        "   - In EVAL: passed=false, nextAction=\"next_card\", "
+        "detectedIssues=[\"user_skip\"]. (The Skip button is the canonical "
+        "path; this just makes voice-only skipping work too.)\n"
+        + (
+            "\nLOW ENERGY DETECTED (3+ short answers or 2+ fatigue cues in recent turns):\n"
+            "- Do NOT push harder. Offer a choice in ONE sentence: "
+            "\"Want to do one more quick task, or end here and pick up next time?\"\n"
+            "- If user picks \"end\" / \"stop\" / \"done\" → acknowledge warmly, switch to CLOSING mode.\n"
+            "- In EVAL when ending: detectedIssues=[\"low_energy\"], passed=true (so the "
+            "session doesn't end on a failure note), nextAction=\"finish_session\".\n"
+            if low_energy
+            else ""
+        )
     )
 
 

@@ -98,6 +98,20 @@ export interface DeckCard {
   result: string | null;
   feedback: string | null;
   ui_hint: string | null;
+  next_action?: 'retry' | 'next_card' | 'finish_session' | null;
+}
+
+/**
+ * Eval block emitted by the turn-agent at the end of each deck-active turn.
+ * Mirrors the JSON the LLM produces after `EVAL:` — used by the FE to update
+ * deck UI optimistically before the 3s poll reconciles.
+ */
+export interface DeckEvalData {
+  passed: boolean;
+  feedback: string;
+  retryRecommended: boolean;
+  nextAction: 'retry' | 'next_card' | 'finish_session';
+  detectedIssues: string[];
 }
 
 export interface ExerciseDeck {
@@ -371,6 +385,10 @@ export const sessionService = {
 
   advanceDeckCard: async (sessionId: string): Promise<void> => {
     await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+  },
+
+  skipDeckCard: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
   },
 
   /**

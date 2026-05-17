@@ -14,7 +14,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
-import type { ExerciseDeck } from '@/services/session.service';
+import type { DeckCard, ExerciseDeck } from '@/services/session.service';
 
 const POPUP_W = 320;
 const POPUP_H = 440;
@@ -67,6 +67,7 @@ export default function ChatPage() {
     closingText,
     currentDeck,
     advanceDeckCard,
+    skipDeckCard,
     startMic,
     stopMic,
     endSession,
@@ -223,43 +224,50 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Scrolling content — deck card UI when active, message bubbles otherwise */}
-        {deckVisible ? (
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
-            <DeckCardView deck={currentDeck!} onNext={() => void advanceDeckCard()} />
-          </div>
-        ) : (
-          <div
-            ref={scrollContainerRef}
-            className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
-          >
-            <div className="w-full max-w-md flex flex-col gap-3">
-              {messages.length === 0 && greetingSentences.length > 0 && (
-                <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
-                  {greetingSentences.map((sentence, index) => (
-                    <p key={index}>{sentence}</p>
-                  ))}
-                </div>
-              )}
-
-              {messages.map((msg, i) => (
-                <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
-              ))}
-
-              {errorMessage && (
-                <div className="flex justify-center my-2">
-                  <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
-                </div>
-              )}
-
-              {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && (
-                <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
-              )}
-
-              <div ref={messagesEndRef} />
-            </div>
+        {/* Deck card — pinned above the conversation when a deck is active.
+            Replaces the previous "deck OR bubbles" toggle so the user can see
+            what they said and what the AI replied while the card stays in view. */}
+        {deckVisible && (
+          <div className="shrink-0 border-b border-gray-100 px-6 py-3">
+            <DeckCardView
+              deck={currentDeck!}
+              onNext={() => void advanceDeckCard()}
+              onSkip={() => void skipDeckCard()}
+            />
           </div>
         )}
+
+        {/* Conversation — greeting + message bubbles, always rendered. */}
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
+        >
+          <div className="w-full max-w-md flex flex-col gap-3">
+            {messages.length === 0 && greetingSentences.length > 0 && (
+              <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
+                {greetingSentences.map((sentence, index) => (
+                  <p key={index}>{sentence}</p>
+                ))}
+              </div>
+            )}
+
+            {messages.map((msg, i) => (
+              <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
+            ))}
+
+            {errorMessage && (
+              <div className="flex justify-center my-2">
+                <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
+              </div>
+            )}
+
+            {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && !deckVisible && (
+              <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+        </div>
 
         {isRecording && (
           <div className="flex justify-center py-2 shrink-0">
@@ -549,9 +557,11 @@ function ThinkingDots() {
 function DeckCardView({
   deck,
   onNext,
+  onSkip,
 }: {
   deck: ExerciseDeck;
   onNext: () => void;
+  onSkip: () => void;
 }) {
   const card = deck.cards[deck.current_card_index];
   if (!card) return null;
@@ -595,18 +605,66 @@ function DeckCardView({
             ))}
           </ul>
         )}
+
+        {card.result && card.feedback && (
+          <p
+            className={`text-sm italic mt-2 leading-snug ${
+              card.result === 'passed'
+                ? 'text-emerald-600'
+                : card.result === 'partial'
+                ? 'text-amber-600'
+                : 'text-rose-600'
+            }`}
+          >
+            {card.feedback}
+          </p>
+        )}
       </div>
 
-      {/* Actions */}
-      <div className="flex justify-end gap-2 pt-1">
-        {card.retry_allowed && (
-          <button
-            type="button"
-            className="h-9 px-4 rounded-full border border-gray-200 text-sm font-medium text-gray-500 hover:border-gray-300 hover:bg-gray-50 transition-colors"
-          >
-            Retry
-          </button>
-        )}
+      {/* Actions — visibility derived from the AI's eval (card.next_action + result). */}
+      <DeckCardActions card={card} onNext={onNext} onSkip={onSkip} />
+    </div>
+  );
+}
+
+function DeckCardActions({
+  card,
+  onNext,
+  onSkip,
+}: {
+  card: DeckCard;
+  onNext: () => void;
+  onSkip: () => void;
+}) {
+  const isFinalBoss = card.type === 'final_boss';
+  const hasEval = !!card.result;
+
+  // Skip button is always available (spec PART 5) — user can opt out of any card
+  // even before they've spoken. Other buttons only appear once the AI evaluates.
+  const showRetry =
+    hasEval && card.next_action === 'retry' && card.retry_allowed && (card.attempts ?? 0) < 3;
+  const showFinish =
+    hasEval && (card.next_action === 'finish_session' || (isFinalBoss && card.result === 'passed'));
+  const showNext = hasEval && !showFinish && card.next_action !== 'retry';
+
+  return (
+    <div className="flex justify-end gap-2 pt-1">
+      <button
+        type="button"
+        onClick={onSkip}
+        className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors"
+      >
+        Skip
+      </button>
+      {showRetry && (
+        <button
+          type="button"
+          className="h-9 px-4 rounded-full border border-gray-200 text-sm font-medium text-gray-500 hover:border-gray-300 hover:bg-gray-50 transition-colors"
+        >
+          Retry
+        </button>
+      )}
+      {showNext && (
         <button
           type="button"
           onClick={onNext}
@@ -614,7 +672,16 @@ function DeckCardView({
         >
           Next →
         </button>
-      </div>
+      )}
+      {showFinish && (
+        <button
+          type="button"
+          onClick={onNext}
+          className="h-9 px-5 rounded-full bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors"
+        >
+          Finish ✓
+        </button>
+      )}
     </div>
   );
 }

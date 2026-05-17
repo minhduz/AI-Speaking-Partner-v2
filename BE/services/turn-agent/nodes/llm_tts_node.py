@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import aiohttp
@@ -15,6 +16,11 @@ _GEMINI_OUT = 0.40
 _SENTENCE_RE = re.compile(r"([\s\S]*?[.!?]+(?:\s+|$))")
 _TTS_MIN_CHARS = 42
 _TTS_MAX_CHARS = 80
+
+# Sentinel marking the start of the deck-eval JSON block emitted by the LLM at the
+# end of its response when a deck is active. Held back from TTS so the user never
+# hears "EVAL passed true ...".
+_EVAL_MARKER = "EVAL:"
 
 
 def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, str]:
@@ -54,6 +60,8 @@ async def llm_tts_node(state: dict) -> dict:
     """
     writer = get_stream_writer()
     full_response = ""
+    eval_buffer = ""
+    eval_started = False
 
     system = state["system_prompt"]
     summary = state.get("conversation_summary", "")
@@ -99,8 +107,20 @@ async def llm_tts_node(state: dict) -> dict:
                 return ""
 
         async def produce() -> None:
-            nonlocal full_response
+            """
+            Streams the LLM response into two destinations:
+              - tts_buffer: spoken text that gets segmented + synthesized.
+              - eval_buffer: everything from the EVAL: marker onward, held back
+                from TTS and parsed after the stream completes.
+
+            Boundary safety: the marker "EVAL:" can land split across chunks
+            (e.g. "EV" + "AL:"). To avoid flushing a partial prefix into TTS,
+            we keep the last (len(marker) - 1) chars of tts_buffer pinned in a
+            holdback whenever no marker has been seen yet.
+            """
+            nonlocal full_response, eval_buffer, eval_started
             tts_buffer = ""
+            holdback = len(_EVAL_MARKER) - 1  # chars to retain in case marker spans chunks
             try:
                 async with sess.post(
                     f"{settings.llm_gateway_url}/stream",
@@ -112,15 +132,48 @@ async def llm_tts_node(state: dict) -> dict:
                         if not text:
                             continue
                         full_response += text
+
+                        if eval_started:
+                            # Stream is past the marker — everything goes to the eval buffer.
+                            eval_buffer += text
+                            continue
+
                         tts_buffer += text
+                        marker_idx = tts_buffer.find(_EVAL_MARKER)
+                        if marker_idx >= 0:
+                            # Split at the marker: prefix → TTS (flush all), rest → eval.
+                            eval_buffer = tts_buffer[marker_idx + len(_EVAL_MARKER):]
+                            tts_buffer = tts_buffer[:marker_idx].rstrip()
+                            eval_started = True
 
-                        while True:
-                            segment, tts_buffer = _split_tts_segment(tts_buffer)
-                            if not segment:
-                                break
-                            task = asyncio.create_task(synthesize(segment))
-                            await seg_queue.put((segment, task))
+                            # Flush remaining TTS-eligible text now that the boundary is known.
+                            while True:
+                                segment, tts_buffer = _split_tts_segment(tts_buffer)
+                                if not segment:
+                                    break
+                                task = asyncio.create_task(synthesize(segment))
+                                await seg_queue.put((segment, task))
+                            segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
+                            if segment:
+                                task = asyncio.create_task(synthesize(segment))
+                                await seg_queue.put((segment, task))
+                            continue
 
+                        # No marker yet — only segment from the safe portion, keeping a
+                        # holdback at the tail in case the marker spans the next chunk.
+                        if len(tts_buffer) > holdback:
+                            safe = tts_buffer[:-holdback] if holdback else tts_buffer
+                            pinned = tts_buffer[-holdback:] if holdback else ""
+                            while True:
+                                segment, safe = _split_tts_segment(safe)
+                                if not segment:
+                                    break
+                                task = asyncio.create_task(synthesize(segment))
+                                await seg_queue.put((segment, task))
+                            tts_buffer = safe + pinned
+
+                # Stream ended. Flush whatever is left in tts_buffer (no marker found,
+                # or the pinned holdback after the marker was already handled).
                 segment, _ = _split_tts_segment(tts_buffer, force=True)
                 if segment:
                     task = asyncio.create_task(synthesize(segment))
@@ -139,7 +192,97 @@ async def llm_tts_node(state: dict) -> dict:
 
         await asyncio.gather(produce(), consume())
 
+        # Diagnostic for the "AI sometimes cuts off mid-sentence" report.
+        # ends_clean false on the spoken portion (slice before EVAL:) means the
+        # LLM truncated or the holdback/flush dropped tail bytes — either way,
+        # this tells us where to look on the next reproduction.
+        marker_pos = full_response.find(_EVAL_MARKER)
+        spoken_portion = full_response if marker_pos < 0 else full_response[:marker_pos]
+        spoken_clean = spoken_portion.rstrip()
+        spoken_ends_clean = spoken_clean.endswith((".", "!", "?", '"', "'", "”", "’"))
+        tail_repr = full_response[-80:].replace("\n", "\\n")
+        log.info(
+            "[llm_tts] stream end  full_len=%d  spoken_len=%d  eval_started=%s  spoken_ends_clean=%s  tail=%r",
+            len(full_response), len(spoken_portion), eval_started, spoken_ends_clean, tail_repr,
+        )
+
+        # ── Phase 5 — Deck evaluation handling ────────────────────────────
+        # When a deck is active, the LLM appends `EVAL:{...json...}` at the very end
+        # of its response. produce() already split that block off from TTS so the
+        # user never hears it. Now: parse it, push an `eval` SSE event for instant
+        # FE button updates, and PUT the merged card_update to memory-service so the
+        # poll-based reconciliation (and Phase 6 consolidation) sees the result too.
+        if eval_started and state.get("deck_active") and state.get("session_id"):
+            parsed_eval = _parse_eval_block(eval_buffer)
+            if parsed_eval is not None:
+                card_index = int(state.get("card_index", 0))
+                prior_attempts = int(state.get("card_attempts", 0))
+                passed = bool(parsed_eval.get("passed"))
+
+                # Phase 7 — `confusion` retries don't count as attempts. The
+                # user asked for clarification, not failed the task. Without
+                # this, "what does that mean?" would burn 1 of 3 attempts and
+                # auto-advance prematurely.
+                detected = parsed_eval.get("detectedIssues") or []
+                detected_lower = [str(d).lower() for d in detected]
+                is_confusion_retry = (
+                    not passed and "confusion" in detected_lower
+                )
+                attempts = prior_attempts if is_confusion_retry else prior_attempts + 1
+
+                if passed:
+                    result = "passed"
+                elif attempts >= 3:
+                    result = "partial"
+                else:
+                    result = "not_passed"
+
+                card_update = {
+                    "status": "completed" if passed else "in_progress",
+                    "attempts": attempts,
+                    "result": result,
+                    "feedback": parsed_eval.get("feedback", ""),
+                    "next_action": parsed_eval.get("nextAction", "next_card"),
+                }
+
+                writer({
+                    "type": "eval",
+                    "data": parsed_eval,
+                    "card_index": card_index,
+                })
+
+                log.info(
+                    "[llm_tts] eval parsed  session=%s  card=%d  passed=%s  nextAction=%s  attempts=%d",
+                    state.get("session_id"), card_index, passed,
+                    parsed_eval.get("nextAction"), attempts,
+                )
+
+                try:
+                    async with sess.put(
+                        f"{settings.memory_service_url}/exercise-deck/{state['session_id']}/card",
+                        json=card_update,
+                    ) as r:
+                        if r.status != 200:
+                            log.warning(
+                                "[llm_tts] card update HTTP %s  session=%s",
+                                r.status, state.get("session_id"),
+                            )
+                        else:
+                            log.info(
+                                "[llm_tts] card updated via memory-service  session=%s  idx=%d",
+                                state.get("session_id"), card_index,
+                            )
+                except Exception as e:
+                    log.warning("[llm_tts] memory-service card update failed: %s", e)
+            else:
+                log.warning(
+                    "[llm_tts] EVAL block present but failed to parse  session=%s  raw=%r",
+                    state.get("session_id"), eval_buffer[:200],
+                )
+
     input_tokens  = len(state["transcript"]) // 4
+    # Count only the spoken portion against the user's quota — the EVAL block is
+    # a system artifact, not user-facing content.
     output_tokens = len(full_response) // 4
     tokens_used   = input_tokens + output_tokens
     est_cost_usd  = (input_tokens * _GEMINI_IN + output_tokens * _GEMINI_OUT) / 1_000_000
@@ -150,4 +293,50 @@ async def llm_tts_node(state: dict) -> dict:
     )
     writer({"type": "tokens_counted", "tokens_used": tokens_used, "est_cost_usd": est_cost_usd})
 
-    return {"full_response": full_response, "tokens_used": tokens_used}
+    # Strip the EVAL block from full_response before returning so downstream nodes
+    # (e.g. session-history persistence) don't store it in conversation logs.
+    spoken_response = full_response
+    marker_idx = spoken_response.find(_EVAL_MARKER)
+    if marker_idx >= 0:
+        spoken_response = spoken_response[:marker_idx].rstrip()
+
+    return {"full_response": spoken_response, "tokens_used": tokens_used}
+
+
+def _parse_eval_block(raw: str) -> dict | None:
+    """
+    Parse the JSON object the LLM emits after `EVAL:`. The LLM can be sloppy —
+    extra whitespace, trailing prose, or a stray ```json fence — so we extract
+    the first balanced {...} from the buffer and ignore anything else.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    # Strip a leading code fence if the model emitted one.
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        return None
+    try:
+        parsed = json.loads(text[start:end])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict) or "passed" not in parsed:
+        return None
+    return parsed
