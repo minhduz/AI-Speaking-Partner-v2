@@ -7,7 +7,10 @@ import { UserService } from '../user/user.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 
-class EndSessionDto { @IsString() session_id: string; }
+class EndSessionDto {
+  @IsString() session_id: string;
+  reason?: 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
+}
 class TodayChallengeDto { @IsString() challenge: string; }
 
 function formatDatetimeInTimezone(date: Date, timezone: string): string {
@@ -99,7 +102,21 @@ export class SessionController {
   // POST /session/end
   @Post('end') @HttpCode(200)
   end(@Body() dto: EndSessionDto, @Req() req) {
-    return this.sessionService.end(dto.session_id, req.user.id);
+    const reason = dto.reason ?? 'user_clicked';
+    return this.sessionService.end(dto.session_id, req.user.id, reason);
+  }
+
+  // POST /session/:id/close — generate AI closing message, then mark ENDING.
+  // FE plays the closing audio, then calls /session/end to finalize.
+  @Post(':id/close') @HttpCode(200)
+  async close(@Param('id') sessionId: string, @Req() req) {
+    // Immediately mark as 'ending' so other logic knows the user is leaving
+    await this.sessionService['repo'].update(
+      { id: sessionId, userId: req.user.id },
+      { status: 'ending' },
+    );
+    const closing = await this.sessionService.generateClosingMessage(req.user.id, sessionId);
+    return { session_id: sessionId, ...closing };
   }
 
   private async streamGreetingForUser(

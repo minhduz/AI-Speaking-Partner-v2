@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { sessionService, type OnboardingState } from '@/services/session.service';
+import { sessionService, type OnboardingState, type EndReason } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
@@ -65,9 +65,13 @@ export interface UseChatReturn {
   reviewLoading: boolean;
   isOnboardingSession: boolean;
   onboardingState: OnboardingState | null;
+  /** True while the AI closing message is playing (CLOSING_MODE). */
+  isEnding: boolean;
+  /** The AI closing farewell text, shown on screen while audio plays. */
+  closingText: string | null;
   startMic: () => void;
   stopMic: () => void;
-  endSession: () => Promise<void>;
+  endSession: (reason?: EndReason) => Promise<void>;
   startNewSession: () => void;
   enterReview: (sessionId: string) => Promise<void>;
   exitReview: () => void;
@@ -84,6 +88,7 @@ function isEndSessionIntent(transcript: string): boolean {
   if (!normalized) return false;
 
   return [
+    // English — explicit
     'end session',
     'finish session',
     'stop session',
@@ -95,20 +100,51 @@ function isEndSessionIntent(transcript: string): boolean {
     'stop the session',
     'close the session',
     'exit the session',
+    // English — natural
     "i'm done",
     'i am done',
-    'that is all',
     "that's all",
-    'kết thúc',
-    'ket thuc',
-    'thoát',
-    'thoat',
+    'that is all',
+    "that's enough",
+    'that is enough',
+    'bye',
+    'goodbye',
+    'good bye',
+    'see you',
+    'talk later',
+    'catch you later',
+    "i'm good",
+    'i am good',
+    // Vietnamese — natural (per spec)
+    'hôm nay thế thôi',
+    'hom nay the thoi',
+    'hôm nay dừng đây',
+    'hom nay dung day',
+    'ok thôi',
+    'ok thoi',
+    'thôi nhé',
+    'thoi nhe',
+    'tạm biệt',
+    'tam biet',
+    'bye nhé',
+    'bye nhe',
+    'nghỉ nhé',
+    'nghi nhe',
     'dừng lại',
     'dung lai',
     'dừng buổi',
     'dung buoi',
+    'kết thúc',
+    'ket thuc',
+    'thoát',
+    'thoat',
+    'đủ rồi',
+    'du roi',
+    'thế đủ rồi',
+    'the du roi',
   ].some((phrase) => normalized.includes(phrase));
 }
+
 
 function revealWordsOverTime(
   text: string,
@@ -180,6 +216,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [reviewLoading, setReviewLoading] = useState(false);
   const [isOnboardingSession, setIsOnboardingSession] = useState(false);
   const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
+  const [isEnding, setIsEnding] = useState(false);
+  const [closingText, setClosingText] = useState<string | null>(null);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -190,6 +228,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const initializedRef = useRef(false);
+  const isEndingRef = useRef(false);
+  const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const audioQueueRef = useRef<{ b64: string; text?: string; isGreeting?: boolean }[]>([]);
   const audioQueueIdleResolversRef = useRef<(() => void)[]>([]);
@@ -384,11 +424,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           audioQueueRef.current.push({ b64: event.audio_b64, text: event.text, isGreeting: true });
           processAudioQueue();
         } else if (event.type === 'done') {
-          // If TTS failed and no audio events carried text, fall back to the full LLM text
+          // Cache the full text immediately so navigation reuse works.
+          if (fullText.trim()) _greetingTextCache = fullText.trim();
+          // If TTS failed entirely, fall back to showing the raw LLM text.
           if (!hadAudioText && fullText.trim()) {
             setGreetingSentences([fullText.trim()]);
           }
-          if (fullText.trim()) _greetingTextCache = fullText.trim();
+          // Wait for the audio queue to fully drain before marking ready.
+          // Without this, the last sentence is pushed to the queue but its
+          // word-reveal timer hasn't finished, so the displayed text is cut off.
+          await waitForAudioQueueIdle();
           setStatus('ready');
           return;
         } else if (event.type === 'error') {
@@ -400,7 +445,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     } finally {
       setStatus('ready');
     }
-  }, [processAudioQueue]);
+  }, [processAudioQueue, waitForAudioQueueIdle]);
 
   const initSession = useCallback(async () => {
     setStatus('idle');
@@ -475,7 +520,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       if (!sid) return;
       sessionIdRef.current = null;
       setCurrentSessionId(null);
-      sessionService.endBeacon(sid);
+      sessionService.endBeacon(sid); // sends reason: 'tab_close'
     };
     window.addEventListener('beforeunload', endOnLeave);
     return () => {
@@ -812,7 +857,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setReviewHasMore(false);
   }, []);
 
-  const endSession = useCallback(async () => {
+  const endSession = useCallback(async (reason: EndReason = 'user_clicked') => {
+    // Guard: don't double-trigger
+    if (isEndingRef.current) return;
+    isEndingRef.current = true;
+
+    // Clear idle timer
+    if (idleTimerRef.current) {
+      clearTimeout(idleTimerRef.current);
+      idleTimerRef.current = null;
+    }
+
     setReviewMode(false);
     setReviewSessionId(null);
     reviewSessionIdRef.current = null;
@@ -844,16 +899,75 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
-    setMessages([]);
     setErrorMessage(null);
-    setStatus('ready');
 
-    if (prevSessionId) {
-      await sessionService.end(prevSessionId).catch(console.error);
+    // CLOSING_MODE: only when user deliberately ends (button or voice intent)
+    // For idle/tab_close we skip the closing message since user isn't there.
+    const shouldClose = prevSessionId && (reason === 'user_clicked' || reason === 'voice_intent');
+
+    if (shouldClose) {
+      // Show overlay IMMEDIATELY — don't wait for LLM to return
+      setIsEnding(true);
+      setClosingText(null);
+      setStatus('processing');
+
+      try {
+        const closing = await sessionService.close(prevSessionId!);
+
+        if (closing.text) {
+          // Update closingText state — this drives the overlay display.
+          // Do NOT push to messages here; closing text is shown via overlay only.
+          setClosingText(closing.text);
+        }
+
+        // Play TTS if available
+        if (closing.audio_b64) {
+          const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
+          if (ctx && ctx.state !== 'closed') {
+            try {
+              // Force-reset isPlayingRef — the previous turn's audio may still have
+              // it locked to true even though we cleared the queue above.
+              isPlayingRef.current = false;
+              audioQueueRef.current.push({ b64: closing.audio_b64 });
+              processAudioQueue();
+              // Wait until playback truly finishes (isPlayingRef → false).
+              // Queue-idle fires too early (as soon as item is dequeued, before onended).
+              await new Promise<void>((resolve) => {
+                const safety = setTimeout(resolve, 40000); // hard 40s cap
+                const poll = setInterval(() => {
+                  if (!isPlayingRef.current) {
+                    clearInterval(poll);
+                    clearTimeout(safety);
+                    resolve();
+                  }
+                }, 200);
+              });
+            } catch {
+              // ignore audio errors — proceed to end
+            }
+          }
+        } else if (closing.text) {
+          // No audio — show text for 3s
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      } catch (err) {
+        console.error('[endSession] closing failed:', err);
+      }
     }
 
+    // Hard-end: mark session in DB + trigger consolidation
+    if (prevSessionId) {
+      await sessionService.end(prevSessionId, reason).catch(console.error);
+    }
+
+    setIsEnding(false);
+    setClosingText(null);
+    setMessages([]);
+    setStatus('ready');
+    isEndingRef.current = false;
+
     await initSession();
-  }, [initSession]);
+  }, [initSession, processAudioQueue, waitForAudioQueueIdle]);
 
   const loadMoreReview = useCallback(async () => {
     const sessionId = reviewSessionIdRef.current;
@@ -880,9 +994,18 @@ export function useChat(initialSessionId?: string): UseChatReturn {
               ? [...withoutPending, { role: 'user' as const, text: transcript }]
               : withoutPending;
           });
-          void endSession();
+          void endSession('voice_intent');
           return;
         }
+        // Reset idle timer on every completed turn
+        if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = setTimeout(() => {
+          const sid = sessionIdRef.current;
+          if (sid && !isEndingRef.current) {
+            console.log('[idle] 15-min timeout — auto-ending session');
+            void endSession('idle_timeout');
+          }
+        }, 15 * 60 * 1000);
         return processTurn(transcript);
       })
       .catch((err) => {
@@ -896,6 +1019,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     statusRef.current = 'recording';
     isStoppingRef.current = false;
     pendingStopRef.current = false;
+
 
     // Create AudioContext HERE, synchronously inside the gesture handler (mousedown /
     // touchstart), so mobile browsers see it as user-initiated and start it in 'running'
@@ -964,7 +1088,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // End the previous session (fire-and-forget) so consolidation triggers
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
-      sessionService.end(prevSessionId).catch(console.error);
+      sessionService.end(prevSessionId, 'user_clicked').catch(console.error);
       sessionIdRef.current = null;
       setCurrentSessionId(null);
     }
@@ -995,6 +1119,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewLoading,
     isOnboardingSession,
     onboardingState,
+    isEnding,
+    closingText,
     startMic,
     stopMic,
     endSession,

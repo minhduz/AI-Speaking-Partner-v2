@@ -65,7 +65,12 @@ async def llm_tts_node(state: dict) -> dict:
         "unless the user explicitly asks for a detailed explanation. Avoid long preambles."
     )
 
-    recent = state.get("recent_messages", [])
+    # Strip Redis-specific metadata — LLM gateway only accepts {role, content}
+    recent = [
+        {"role": m["role"], "content": m["content"]}
+        for m in state.get("recent_messages", [])
+        if m.get("role") and m.get("content")
+    ]
     messages_for_llm = recent + [{"role": "user", "content": state["transcript"]}]
 
     async with aiohttp.ClientSession() as sess:

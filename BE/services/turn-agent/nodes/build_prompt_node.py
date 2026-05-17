@@ -387,7 +387,7 @@ async def build_prompt_node(state: dict) -> dict:
     is_onboarding = bool(state.get("is_onboarding", False))
     active_mission = (state.get("active_mission") or "").strip()
 
-    # CHANGE D — During the user's first speaking session ONLY, run intent extraction
+    # During the user's first speaking session ONLY, run intent extraction
     # in parallel with the main turn. asyncio.create_task() schedules it on the same
     # event loop without blocking; the coroutine guarantees failure isolation.
     if is_onboarding and transcript.strip():
@@ -404,7 +404,11 @@ async def build_prompt_node(state: dict) -> dict:
         "learning_goal": state.get("learning_goal", ""),
         "user_name": state.get("user_name", ""),
         "current_datetime": state.get("current_datetime", ""),
-        "layers": ["short_term", "long_term", "urgent"],
+        # Exclude short_term here: session_history_node already injects the last WINDOW raw
+        # messages directly into the LLM messages array. Including short_term would duplicate
+        # conversation context (once in system_prompt, once in messages) which wastes tokens
+        # and causes the LLM to see the same exchange from two conflicting perspectives.
+        "layers": ["long_term", "urgent"],
     }
 
     log.info("── build_prompt  user=%s  session=%s  turn=%d  query='%s'",
@@ -437,7 +441,7 @@ async def build_prompt_node(state: dict) -> dict:
             phase = get_onboarding_phase(turn_index, onboarding_state)
             system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
 
-            # COMMIT 1 — feed accumulated onboarding signals back into the LLM as
+            # Feed accumulated onboarding signals back into the LLM as
             # natural-language coaching context. Conditional rendering inside the
             # helper means we never inject sentences without backing data.
             learned_block = _render_learned_block(onboarding_state)
@@ -452,7 +456,6 @@ async def build_prompt_node(state: dict) -> dict:
                 len(learned_block), "yes" if active_mission or mission_block else "no",
             )
         else:
-            # CHANGE 3 — append session-mode block based on turn position in the arc.
             mode = get_session_mode(turn_index)
             system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
             log.info(

@@ -48,7 +48,9 @@ async def _get_session_messages(user_id: str, session_id: str) -> list[dict]:
         async with aiohttp.ClientSession() as sess:
             async with sess.get(
                 f"{settings.memory_service_url}/short-term/{user_id}",
-                params={"session_id": session_id, "limit": 200},
+                # Fetch only what we need: WINDOW recent + up to WINDOW older for summarisation.
+                # Avoids deserialising hundreds of Redis entries on every turn.
+                params={"session_id": session_id, "limit": WINDOW * 3},
             ) as r:
                 r.raise_for_status()
                 data = await r.json()

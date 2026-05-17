@@ -60,6 +60,8 @@ export default function ChatPage() {
     reviewLoading,
     isOnboardingSession,
     onboardingState,
+    isEnding,
+    closingText,
     startMic,
     stopMic,
     endSession,
@@ -67,6 +69,9 @@ export default function ChatPage() {
     enterReview,
     loadMoreReview,
   } = useChat(urlSessionId);
+
+  // Local UI state: confirm dialog before ending
+  const [confirmEnd, setConfirmEnd] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -113,6 +118,7 @@ export default function ChatPage() {
 
   // Mic is disabled while greeting plays, processing, or idle startup
   const micDisabled = status === 'idle' || status === 'greeting' || status === 'processing';
+
   // Scroll-up handler for review mode: load earlier messages when near top
   const handleReviewScroll = useCallback(() => {
     if (!reviewMode || !reviewHasMore || reviewLoading) return;
@@ -133,10 +139,66 @@ export default function ChatPage() {
 
   const isFocusedLiveSession = !reviewMode && hasSession;
 
-  // Live speaking session: render a focused, sidebar-less layout once the user
-  // starts talking. First onboarding sessions also show the onboarding panel.
-  // Uses the same flex-1 + overflow-y-auto scrolling pattern as normal mode so
-  // MessageInput stays pinned at the bottom no matter how long the chat gets.
+  // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
+  // Shown while the AI farewell message is playing. Blocks all interaction.
+  if (isEnding) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
+        <div className="h-14 w-14 rounded-full bg-violet-100 flex items-center justify-center">
+          {closingText ? (
+            <div className="h-7 w-7 rounded-full bg-[#8447FF] animate-pulse" />
+          ) : (
+            <div className="h-7 w-7 rounded-full border-[3px] border-[#8447FF] border-t-transparent animate-spin" />
+          )}
+        </div>
+        <div className="max-w-md">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-widest mb-3">
+            Session ending
+          </p>
+          {closingText ? (
+            <p className="text-xl font-medium text-gray-800 leading-relaxed">
+              {closingText}
+            </p>
+          ) : (
+            <p className="text-sm text-gray-400 animate-pulse">Preparing your recap…</p>
+          )}
+        </div>
+      </main>
+    );
+  }
+
+  // ── Confirm dialog ──────────────────────────────────────────────────────────
+  // Shown when user clicks the End button before the closing flow starts.
+  if (confirmEnd) {
+    return (
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
+        <p className="text-lg font-semibold text-gray-800">End this session?</p>
+        <p className="text-sm text-gray-400 max-w-xs">
+          The AI will give you a short recap before wrapping up.
+        </p>
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setConfirmEnd(false)}
+            className="h-10 px-5 rounded-full border border-gray-200 text-sm font-medium text-gray-600 hover:border-gray-300 transition-colors"
+          >
+            Keep talking
+          </button>
+          <button
+            type="button"
+            onClick={() => { setConfirmEnd(false); void endSession('user_clicked'); }}
+            className="h-10 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+          >
+            End session
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // ── Focused live-session layout ─────────────────────────────────────────────
+  // Sidebar-less view shown once the user starts talking.
+  // Also shown during the first onboarding session (with the onboarding panel).
   if (isFocusedLiveSession || isOnboardingSession) {
     return (
       <main className="flex flex-1 flex-col overflow-hidden bg-white">
@@ -147,7 +209,7 @@ export default function ChatPage() {
             <div className="h-6 w-6 rounded-full bg-[#8447FF]" />
           </div>
           <div className="flex justify-end">
-            <EndSessionButton onClick={() => { void endSession(); }} />
+            <EndSessionButton onClick={() => setConfirmEnd(true)} />
           </div>
         </div>
 
@@ -205,6 +267,7 @@ export default function ChatPage() {
     );
   }
 
+  // ── Normal layout (pre-session + review) ────────────────────────────────────
   return (
     <>
       <Sidebar
@@ -225,7 +288,7 @@ export default function ChatPage() {
           }
           <div className="w-20 flex justify-end">
             {!reviewMode && hasSession && (
-              <EndSessionButton onClick={() => { void endSession(); }} />
+              <EndSessionButton onClick={() => setConfirmEnd(true)} />
             )}
           </div>
         </header>

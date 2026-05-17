@@ -50,6 +50,8 @@ function log(label: string, data?: unknown) {
   }
 }
 
+// ─── Types ────────────────────────────────────────────────────────────────────
+
 export interface SessionInsight {
   has_insight: boolean;
   struggled_with?: string | null;
@@ -86,6 +88,26 @@ export interface TurnResult {
   audio_b64: string;
   tokens_used: number;
 }
+
+/**
+ * Why a session ended — passed to BE so consolidation / memory can treat
+ * deliberate ends differently from abandoned ones.
+ *   user_clicked  – End button in UI
+ *   voice_intent  – AI detected closing intent in speech
+ *   idle_timeout  – 15-min client-side idle timer
+ *   tab_close     – beforeunload / beacon
+ */
+export type EndReason = 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
+
+export interface CloseSessionResponse {
+  session_id: string;
+  /** AI-generated farewell text. Empty string on failure. */
+  text: string;
+  /** TTS audio base64. null on TTS failure. */
+  audio_b64: string | null;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
 
 export const sessionService = {
   start: async (): Promise<StartSessionResponse> => {
@@ -261,18 +283,41 @@ export const sessionService = {
     return res.json();
   },
 
-  end: async (sessionId: string): Promise<void> => {
-    log(`POST /session/end`, { session_id: sessionId });
+  /**
+   * Hard-end: marks session ended/abandoned + triggers consolidation.
+   * Always call AFTER close() (or if closing fails).
+   */
+  end: async (sessionId: string, reason: EndReason = 'user_clicked'): Promise<void> => {
+    log(`POST /session/end`, { session_id: sessionId, reason });
     await fetchWithAuth(`${API_BASE}/session/end`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId }),
+      body: JSON.stringify({ session_id: sessionId, reason }),
     });
     log(`POST /session/end → ok`);
   },
 
-  // Fire-and-forget version that survives tab close / page unload.
-  // Uses keepalive:true so the browser keeps the request alive after the page is gone.
+  /**
+   * Soft-close: asks BE to generate an AI farewell message (text + audio).
+   * FE plays the audio, then calls end() to finalize.
+   * BE marks session 'ending' immediately so turns are no longer accepted.
+   */
+  close: async (sessionId: string): Promise<CloseSessionResponse> => {
+    log(`POST /session/${sessionId}/close`);
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    if (!res.ok) return { session_id: sessionId, text: '', audio_b64: null };
+    const data: CloseSessionResponse = await res.json();
+    log(`POST /session/${sessionId}/close →`, { text: data.text?.slice(0, 80), hasAudio: !!data.audio_b64 });
+    return data;
+  },
+
+  /**
+   * Fire-and-forget beacon for tab close / page unload.
+   * keepalive:true keeps the request alive after page is gone.
+   */
   endBeacon: (sessionId: string): void => {
     const token = getAccessToken();
     fetch(`${API_BASE}/session/end`, {
@@ -281,7 +326,7 @@ export const sessionService = {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ session_id: sessionId }),
+      body: JSON.stringify({ session_id: sessionId, reason: 'tab_close' }),
       keepalive: true,
     }).catch(() => {});
   },

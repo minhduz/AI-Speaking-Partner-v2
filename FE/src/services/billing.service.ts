@@ -6,7 +6,7 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 export interface Plan {
   id: string;
   name: string;
-  interval: string;
+  interval: 'month' | 'year';
   priceVnd: number;
   tokenLimit: number;
   sessionLimit: number;

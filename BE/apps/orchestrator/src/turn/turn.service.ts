@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
@@ -8,6 +8,7 @@ import { Turn } from './entities/turn.entity';
 import { Session } from '../session/entities/session.entity';
 import { UserService } from '../user/user.service';
 import { User } from '../user/entities/user.entity';
+import { SessionService } from '../session/session.service';
 
 function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   try {
@@ -46,6 +47,8 @@ export class TurnService {
     private readonly http: HttpService,
     private readonly cfg: ConfigService,
     private readonly userService: UserService,
+    @Inject(forwardRef(() => SessionService))
+    private readonly sessionService: SessionService,
   ) {}
 
   async getBySession(sessionId: string, userId: string, page = 1, limit = 20) {
@@ -208,6 +211,7 @@ export class TurnService {
       this.updateSessionTotals(sessionId, tokens_used, pronunciation?.score ?? 0).catch(console.error);
       this.appendToShortTerm(sessionId, userId, transcript, response_text).catch(console.error);
       this.recordUsage(userId, tokens_used).catch(console.error);
+      this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
       if (turnIndex === 1) this.generateTitle(sessionId, transcript).catch(console.error);
 
       console.log(`[Turn] ── processTurn done (${elapsed()}) ────────────────`);
@@ -234,6 +238,7 @@ export class TurnService {
     this.updateSessionTotals(sessionId, data.tokens_used, data.pronunciation?.score ?? 0).catch(console.error);
     this.appendToShortTerm(sessionId, userId, data.transcript, data.response_text).catch(console.error);
     this.recordUsage(userId, data.tokens_used).catch(console.error);
+    this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
     if (turnIndex === 1) this.generateTitle(sessionId, data.transcript).catch(console.error);
     return turn;
   }
