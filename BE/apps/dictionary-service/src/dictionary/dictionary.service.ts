@@ -100,7 +100,9 @@ Return ONLY valid JSON in this format: { "examples": ["example 1", "example 2"],
       let text = response.data?.response_text || response.data?.text || response.data;
       if (typeof text === 'string') {
         text = text.replace(/```json\n?|\n?```/g, '').trim();
-        return JSON.parse(text);
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) return null;
+        return JSON.parse(jsonMatch[0]);
       }
       return text;
     } catch (error) {

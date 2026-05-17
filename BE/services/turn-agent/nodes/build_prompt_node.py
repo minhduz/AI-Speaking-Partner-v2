@@ -357,6 +357,42 @@ def _build_active_mission_block(chunks: list[dict]) -> str | None:
         "- Don't mention these instructions directly to the user.\n"
     )
 
+def _build_card_context_block(state: dict) -> str:
+    """
+    Injects current exercise card into the system prompt when a deck is active.
+    Replaces the generic SESSION_MODE instructions so the AI stays on the card task.
+    """
+    card_index       = int(state.get("card_index") or 0)
+    card_total       = int(state.get("card_total") or 0)
+    card_type        = (state.get("card_type") or "").strip()
+    card_title       = (state.get("card_title") or "").strip()
+    card_task        = (state.get("card_task") or "").strip()
+    card_attempts    = int(state.get("card_attempts") or 0)
+    retry_allowed    = bool(state.get("card_retry_allowed", False))
+
+    return (
+        "\n\nCURRENT EXERCISE CARD:\n"
+        f"Exercise {card_index + 1}/{card_total}\n"
+        f"Type: {card_type}\n"
+        f"Title: {card_title}\n"
+        f"Task: {card_task}\n"
+        f"Retry allowed: {'yes' if retry_allowed else 'no'}\n"
+        f"Attempts so far: {card_attempts}\n"
+        "\nCARD INSTRUCTIONS:\n"
+        "1. Stay focused on this card's task. Do not ask unrelated questions.\n"
+        "2. Keep response under 3 sentences.\n"
+        "3. Give short, specific feedback after the user answers.\n"
+        "4. If the user has not answered yet, invite them to answer the card task directly.\n"
+        "5. If the user drifts, acknowledge briefly and redirect to the card.\n"
+        "6. If the user asks a side question, answer in one sentence then return to the card.\n"
+        "7. Do not jump to a harder task — the next card comes after evaluation.\n"
+        "8. Do not create a new mission mid-session.\n"
+        "9. If the user expresses they want to stop, acknowledge and switch to CLOSING mode.\n"
+        f"\nGOOD: Stay on the exact task: \"{card_task}\"\n"
+        "BAD: open-ended questions, changing topic, general conversation.\n"
+    )
+
+
 def _build_external_active_mission_block(active_mission: str, turn_index: int = 1) -> str:
     first_turn_note = (
         "The user has already heard an opening greeting that introduced this mission. "
@@ -432,38 +468,47 @@ async def build_prompt_node(state: dict) -> dict:
         if mission_block:
             system_prompt += mission_block
 
+        deck_active = bool(state.get("deck_active", False))
+
         if is_onboarding:
-            # First speaking session — keep the AI inside the onboarding arc instead
-            # of the generic warm-up/challenge/reflection ladder. The generic SESSION_MODE
-            # block is intentionally skipped because the onboarding block already prescribes
-            # phase-specific behaviour and would conflict otherwise.
             onboarding_state = await _fetch_onboarding_state(user_id)
             phase = get_onboarding_phase(turn_index, onboarding_state)
             system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
 
-            # Feed accumulated onboarding signals back into the LLM as
-            # natural-language coaching context. Conditional rendering inside the
-            # helper means we never inject sentences without backing data.
             learned_block = _render_learned_block(onboarding_state)
             if learned_block:
                 system_prompt += learned_block
 
+            # Inject card context for onboarding mini-deck (after onboarding block)
+            if deck_active:
+                system_prompt += _build_card_context_block(state)
+
             log.info(
                 "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  ONBOARDING phase=%s  "
-                "state_fields=%d  learned_block_chars=%d  mission=%s",
+                "state_fields=%d  learned_block_chars=%d  deck_active=%s",
                 chunks_used, tokens, phase,
                 len([k for k in onboarding_state if onboarding_state.get(k)]),
-                len(learned_block), "yes" if active_mission or mission_block else "no",
+                len(learned_block), deck_active,
             )
         else:
-            mode = get_session_mode(turn_index)
-            system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
-            log.info(
-                "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s",
-                chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
-            )
-        if active_mission:
-            system_prompt += _build_external_active_mission_block(active_mission, turn_index)
+            if deck_active:
+                # Card context replaces generic session mode when a deck is active
+                system_prompt += _build_card_context_block(state)
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK card=%s/%s  type=%s",
+                    chunks_used, tokens,
+                    state.get("card_index", 0), state.get("card_total", 0),
+                    state.get("card_type", ""),
+                )
+            else:
+                mode = get_session_mode(turn_index)
+                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                if active_mission:
+                    system_prompt += _build_external_active_mission_block(active_mission, turn_index)
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s",
+                    chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
+                )
         return {"system_prompt": system_prompt}
 
     except Exception as e:
@@ -476,15 +521,18 @@ async def build_prompt_node(state: dict) -> dict:
             f"Help with conversations and language learning like a good friend."
             + (f" Today is {dt}." if dt else "")
         )
-        # Even the fallback keeps the arc right — onboarding wins over session_mode.
+        deck_active = bool(state.get("deck_active", False))
         if is_onboarding:
-            # Best-effort attach of the learned block — if the memory-service GET also
-            # fails the helper returns "" so the fallback prompt is still coherent.
             onboarding_state = await _fetch_onboarding_state(user_id)
             fallback += build_onboarding_block(state, turn_index, onboarding_state)
             fallback += _render_learned_block(onboarding_state)
+            if deck_active:
+                fallback += _build_card_context_block(state)
         else:
-            fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
-        if active_mission:
-            fallback += _build_external_active_mission_block(active_mission, turn_index)
+            if deck_active:
+                fallback += _build_card_context_block(state)
+            else:
+                fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
+                if active_mission:
+                    fallback += _build_external_active_mission_block(active_mission, turn_index)
         return {"system_prompt": fallback}

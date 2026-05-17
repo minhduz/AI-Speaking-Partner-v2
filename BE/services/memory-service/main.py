@@ -6,6 +6,7 @@ from db import database, redis_client
 from routers.retrieve import router as retrieve_router
 from routers.prompt_builder import router as prompt_router
 from routers.memory_ops import router as ops_router
+from routers.exercise_deck_ops import router as deck_router
 from workers.consolidation import run_consolidation
 
 log = logging.getLogger("main")
@@ -51,6 +52,7 @@ app = FastAPI(title="Memory Service", lifespan=lifespan)
 app.include_router(retrieve_router,  prefix="/retrieve")
 app.include_router(prompt_router,    prefix="/build-prompt")
 app.include_router(ops_router)       # /consolidate, /short-term, /facts
+app.include_router(deck_router)      # /exercise-deck
 
 @app.get("/health")
 async def health():

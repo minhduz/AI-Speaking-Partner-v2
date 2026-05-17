@@ -175,6 +175,53 @@ export class SessionController {
     return { session_id: sessionId, ...closing };
   }
 
+  // GET /session/:id/deck — get exercise deck state for a session
+  @Get(':id/deck')
+  getDeck(@Param('id') sessionId: string) {
+    return this.sessionService.getDeck(sessionId);
+  }
+
+  // POST /session/:id/deck — create or replace exercise deck for a session
+  @Post(':id/deck')
+  createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {
+    return this.sessionService.createDeck(sessionId, body);
+  }
+
+  // PUT /session/:id/deck/card — update current card (after evaluation)
+  @Put(':id/deck/card')
+  @HttpCode(200)
+  updateDeckCard(@Param('id') sessionId: string, @Body() body: any) {
+    return this.sessionService.updateDeckCard(sessionId, body);
+  }
+
+  // PUT /session/:id/deck/next — advance to next card
+  @Put(':id/deck/next')
+  @HttpCode(200)
+  nextDeckCard(@Param('id') sessionId: string) {
+    return this.sessionService.advanceDeck(sessionId);
+  }
+
+  // PUT /session/:id/deck/advance — alias for /next (backward compat)
+  @Put(':id/deck/advance')
+  @HttpCode(200)
+  advanceDeck(@Param('id') sessionId: string) {
+    return this.sessionService.advanceDeck(sessionId);
+  }
+
+  // PUT /session/:id/deck/status — update deck status
+  @Put(':id/deck/status')
+  @HttpCode(200)
+  updateDeckStatus(@Param('id') sessionId: string, @Body() body: { status: string }) {
+    return this.sessionService.updateDeckStatus(sessionId, body.status);
+  }
+
+  // PUT /session/:id/deck/end — mark deck ended with reason
+  @Put(':id/deck/end')
+  @HttpCode(200)
+  endDeck(@Param('id') sessionId: string, @Body() body: { end_reason?: string }) {
+    return this.sessionService.endDeck(sessionId, body?.end_reason ?? 'user_clicked_end');
+  }
+
   private async streamGreetingForUser(
     userId: string,
     res: Response,
@@ -431,6 +478,13 @@ export class SessionController {
         await segmentChain;
         send({ type: 'done', greeting: fullText });
         res.end();
+
+        // Fire-and-forget: generate deck after greeting completes (session-tied route only)
+        if (sessionId) {
+          this.sessionService
+            .generateDeck(userId, sessionId, user, insight, activeMission, isOnboarding)
+            .catch((err) => console.error(`[Deck] generateDeck failed session=${sessionId}:`, err?.message));
+        }
       });
 
     } catch {

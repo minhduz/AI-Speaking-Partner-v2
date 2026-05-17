@@ -206,6 +206,9 @@ ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS native_language  VARCHAR
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal    VARCHAR;
 ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR;
+
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
 ALTER TABLE billing.payment_orders ALTER COLUMN plan_id DROP NOT NULL;
@@ -264,6 +267,11 @@ CREATE TABLE IF NOT EXISTS dictionary.user_history (
 
 CREATE INDEX IF NOT EXISTS idx_dictionary_cache_word ON dictionary.cache(word);
 CREATE INDEX IF NOT EXISTS idx_dictionary_history_user ON dictionary.user_history(user_id);
+
+-- Transfer ownership so orchestrator_user can run ALTER TABLE migrations
+ALTER TABLE speaking_app.users    OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.sessions OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.turns    OWNER TO orchestrator_user;
 
 -- Grant table-level permissions
 GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;

@@ -90,7 +90,7 @@ export class TurnController {
     }
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -99,6 +99,7 @@ export class TurnController {
         this.turnService.getSessionTokens(sessionId),
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
+        this.turnService.getDeckInfo(sessionId),
       ]);
 
       const limits = limitsRes.data;
@@ -126,21 +127,29 @@ export class TurnController {
         {
           responseType: 'stream',
           headers: {
-            'X-User-Id':          req.user.id,
-            'X-Session-Id':       sessionId,
-            'X-Turn-Index':       String(turnIndex),
-            'X-User-Name':        encodeHeader(firstName(user?.name)),
-            'X-User-Level':       user?.level ?? 'beginner',
-            'X-Target-Language':  user?.targetLanguage ?? 'english',
-            'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
-            'X-Learning-Goal':    encodeHeader(user?.learningGoal),
-            'X-User-Timezone':    user?.timezone ?? 'UTC',
-            'X-Current-Datetime': currentDatetime,
-            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
-            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
-            'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
-            'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
+            'X-User-Id':            req.user.id,
+            'X-Session-Id':         sessionId,
+            'X-Turn-Index':         String(turnIndex),
+            'X-User-Name':          encodeHeader(firstName(user?.name)),
+            'X-User-Level':         user?.level ?? 'beginner',
+            'X-Target-Language':    user?.targetLanguage ?? 'english',
+            'X-Native-Language':    user?.nativeLanguage ?? 'vietnamese',
+            'X-Learning-Goal':      encodeHeader(user?.learningGoal),
+            'X-User-Timezone':      user?.timezone ?? 'UTC',
+            'X-Current-Datetime':   currentDatetime,
+            'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
+            'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
+            'X-Deck-Active':        deck.active ? 'true' : 'false',
+            'X-Card-Index':         String(deck.current_card_index),
+            'X-Card-Total':         String(deck.total_cards),
+            'X-Card-Type':          deck.current_card?.type ?? '',
+            'X-Card-Title':         encodeHeader(deck.current_card?.title),
+            'X-Card-Task':          encodeHeader(deck.current_card?.task),
+            'X-Card-Attempts':      String(deck.current_card?.attempts ?? 0),
+            'X-Card-Retry-Allowed': deck.current_card?.retry_allowed ? 'true' : 'false',
           },
         },
       );
@@ -201,7 +210,7 @@ export class TurnController {
 
     try {
       // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -210,6 +219,7 @@ export class TurnController {
         this.turnService.getSessionTokens(sessionId),
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
+        this.turnService.getDeckInfo(sessionId),
       ]);
 
       const limits = limitsRes.data;
@@ -248,21 +258,29 @@ export class TurnController {
         {
           responseType: 'stream',
           headers: {
-            'X-User-Id':          req.user.id,
-            'X-Session-Id':       sessionId,
-            'X-Turn-Index':       String(turnIndex),
-            'X-User-Name':        encodeHeader(firstName(user?.name)),
-            'X-User-Level':       user?.level ?? 'beginner',
-            'X-Target-Language':  user?.targetLanguage ?? 'english',
-            'X-Native-Language':  user?.nativeLanguage ?? 'vietnamese',
-            'X-Learning-Goal':    encodeHeader(user?.learningGoal),
-            'X-User-Timezone':    user?.timezone ?? 'UTC',
-            'X-Current-Datetime': currentDatetime,
-            'X-Is-Onboarding':    isOnboarding ? 'true' : 'false',
-            'X-Active-Mission':    activeMission ? encodeURIComponent(activeMission) : '',
-            'X-Voice-Id':         normalizeVoiceId(user?.voiceId),
-            'X-Speech-Rate':      String(user?.speechRate ?? 1.0),
+            'X-User-Id':            req.user.id,
+            'X-Session-Id':         sessionId,
+            'X-Turn-Index':         String(turnIndex),
+            'X-User-Name':          encodeHeader(firstName(user?.name)),
+            'X-User-Level':         user?.level ?? 'beginner',
+            'X-Target-Language':    user?.targetLanguage ?? 'english',
+            'X-Native-Language':    user?.nativeLanguage ?? 'vietnamese',
+            'X-Learning-Goal':      encodeHeader(user?.learningGoal),
+            'X-User-Timezone':      user?.timezone ?? 'UTC',
+            'X-Current-Datetime':   currentDatetime,
+            'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
+            'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
+            'X-Deck-Active':        deck.active ? 'true' : 'false',
+            'X-Card-Index':         String(deck.current_card_index),
+            'X-Card-Total':         String(deck.total_cards),
+            'X-Card-Type':          deck.current_card?.type ?? '',
+            'X-Card-Title':         encodeHeader(deck.current_card?.title),
+            'X-Card-Task':          encodeHeader(deck.current_card?.task),
+            'X-Card-Attempts':      String(deck.current_card?.attempts ?? 0),
+            'X-Card-Retry-Allowed': deck.current_card?.retry_allowed ? 'true' : 'false',
           },
         },
       );

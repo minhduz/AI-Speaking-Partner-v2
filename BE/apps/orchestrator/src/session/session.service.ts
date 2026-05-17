@@ -5,6 +5,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Session } from './entities/session.entity';
+import { UserService } from '../user/user.service';
 
 @Injectable()
 export class SessionService {
@@ -12,6 +13,7 @@ export class SessionService {
     @InjectRepository(Session) private repo: Repository<Session>,
     private http: HttpService,
     private cfg: ConfigService,
+    private userService: UserService,
   ) {}
 
   async countTodaySessions(userId: string): Promise<number> {
@@ -122,6 +124,9 @@ export class SessionService {
     firstValueFrom(
       this.http.post(`${billingUrl}/internal/usage/increment-session`, { user_id: userId }),
     ).catch((err) => console.error('[Session] failed to increment session count in billing:', err?.message));
+
+    // Fire-and-forget deck generation after session is created
+    this.generateDeckAfterStart(userId, session.id, isFirstSession).catch(console.error);
 
     return { session_id: session.id, is_first_session: isFirstSession };
   }
@@ -292,6 +297,335 @@ export class SessionService {
     } catch (err: any) {
       console.error(`[Session] onboarding-state fetch failed:`, err?.message);
       return {};
+    }
+  }
+
+  private async generateDeckAfterStart(userId: string, sessionId: string, isFirstSession: boolean): Promise<void> {
+    const [user, insight, todayChallenge] = await Promise.all([
+      this.userService.findById(userId).catch(() => null),
+      this.getSessionInsight(userId),
+      this.getTodayChallenge(userId),
+    ]);
+    const activeMission = [
+      todayChallenge,
+      typeof insight?.active_mission === 'string' ? insight.active_mission.trim() : '',
+      typeof insight?.next_challenge === 'string' ? insight.next_challenge.trim() : '',
+    ].find(Boolean) ?? null;
+    await this.generateDeck(userId, sessionId, user, insight, activeMission, isFirstSession);
+  }
+
+  async getSessionType(
+    userId: string,
+    isOnboarding: boolean,
+  ): Promise<'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training'> {
+    if (isOnboarding) return 'onboarding_diagnostic';
+    const completedOrAbandoned = await this.repo.count({
+      where: [{ userId, status: 'ended' }, { userId, status: 'abandoned' }],
+    });
+    return completedOrAbandoned <= 1 ? 'personalized_training' : 'adaptive_training';
+  }
+
+  async generateDeck(
+    userId: string,
+    sessionId: string,
+    user: any,
+    insight: any,
+    activeMission: string | null,
+    isOnboarding: boolean,
+  ): Promise<void> {
+    const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+    const llmUrl    = this.cfg.get('LLM_GATEWAY_URL');
+
+    const sessionType = await this.getSessionType(userId, isOnboarding);
+
+    // Mission priority: active_mission > session_insight > fallback
+    let mission: string;
+    let missionSource: string;
+    let reason: string;
+    if (activeMission) {
+      mission       = activeMission;
+      missionSource = 'active_mission';
+      reason        = "Set as today's active mission";
+    } else if (insight?.next_challenge) {
+      mission       = insight.next_challenge;
+      missionSource = 'session_insight';
+      reason        = insight.struggled_with
+        ? `Last session you struggled with: ${insight.struggled_with}`
+        : 'Recommended from your previous session';
+    } else {
+      mission       = `Practice speaking ${user?.targetLanguage ?? 'English'} clearly and confidently`;
+      missionSource = 'fallback';
+      reason        = 'General speaking practice to build confidence';
+    }
+
+    console.log(`[Deck] ── generateDeck ─────────────────────────────`);
+    console.log(`[Deck]   session     : ${sessionId}`);
+    console.log(`[Deck]   sessionType : ${sessionType}`);
+    console.log(`[Deck]   mission     : ${mission}`);
+    console.log(`[Deck]   missionSrc  : ${missionSource}`);
+
+    let cards: any[];
+
+    if (sessionType === 'onboarding_diagnostic') {
+      cards = this.buildOnboardingCards(user);
+    } else {
+      // Lighter deck for low energy or if memory recommends it
+      const isLightDeck =
+        insight?.energy_signal === 'low' ||
+        insight?.recommended_next_mode === 'lighter_deck';
+      const cardTypes = isLightDeck
+        ? ['simple_explanation', 'weakness_drill', 'real_situation']
+        : ['simple_explanation', 'weakness_drill', 'real_situation', 'final_boss'];
+
+      cards = await this.generateCardsWithLLM(sessionType, mission, insight, user, cardTypes, llmUrl);
+    }
+
+    const deck = {
+      id:                  `deck-${sessionId}`,
+      session_id:          sessionId,
+      session_type:        sessionType,
+      mission,
+      mission_source:      missionSource,
+      reason,
+      status:              'not_started',
+      current_card_index:  0,
+      cards,
+      end_reason:          null,
+    };
+
+    try {
+      await firstValueFrom(this.http.post(`${memoryUrl}/exercise-deck/${sessionId}`, deck));
+      console.log(`[Deck] ✓ saved  session=${sessionId}  type=${sessionType}  cards=${cards.length}`);
+    } catch (err: any) {
+      console.error(`[Deck] ✖ save failed  session=${sessionId}:`, err?.message);
+    }
+  }
+
+  private buildOnboardingCards(user: any): any[] {
+    const goal = user?.learningGoal
+      ? `improve your ${user.targetLanguage ?? 'English'} — specifically: ${user.learningGoal}`
+      : `improve your ${user?.targetLanguage ?? 'English'} speaking`;
+    return [
+      {
+        id: 'card-1',
+        type: 'baseline_answer',
+        title: 'Say it simply',
+        task: `Tell me why you want to ${goal} in 1-2 sentences.`,
+        success_criteria: ['user gives understandable answer', 'user speaks in target language'],
+        expected_duration_seconds: 45,
+        retry_allowed: true,
+        status: 'not_started',
+        attempts: 0,
+        result: null,
+        feedback: null,
+        ui_hint: null,
+      },
+      {
+        id: 'card-2',
+        type: 'mini_challenge',
+        title: 'Tiny speaking test',
+        task: 'Describe one simple idea or recent plan in 2 sentences.',
+        success_criteria: ['meaning is clear', 'user attempts simple English'],
+        expected_duration_seconds: 60,
+        retry_allowed: true,
+        status: 'not_started',
+        attempts: 0,
+        result: null,
+        feedback: null,
+        ui_hint: null,
+      },
+    ];
+  }
+
+  private async generateCardsWithLLM(
+    sessionType: string,
+    mission: string,
+    insight: any,
+    user: any,
+    cardTypes: string[],
+    llmUrl: string,
+  ): Promise<any[]> {
+    const typeDescriptions: Record<string, string> = {
+      simple_explanation: 'warm-up, simple and achievable, builds momentum (30-45 sec)',
+      weakness_drill:     'targets specific weakness from last session (45-60 sec)',
+      real_situation:     'applies the skill in a real, natural context (60 sec)',
+      final_boss:         'extended 60-second synthesizing response (60-90 sec)',
+    };
+
+    const contextLines = [
+      insight?.struggled_with    ? `Struggled with last session: ${insight.struggled_with}`    : '',
+      insight?.improved_vs_before ? `Improved on: ${insight.improved_vs_before}`               : '',
+      insight?.energy_signal     ? `Energy level: ${insight.energy_signal}`                    : '',
+    ].filter(Boolean).join('\n');
+
+    const typesList = cardTypes
+      .map((t, i) => `${i + 1}. ${t} — ${typeDescriptions[t] ?? t}`)
+      .join('\n');
+
+    const systemPrompt = [
+      `You are an exercise deck planner for a language coaching app.`,
+      `Generate exactly ${cardTypes.length} speaking exercise cards.`,
+      ``,
+      `Session type: ${sessionType}`,
+      `Mission: "${mission}"`,
+      `User level: ${user?.level ?? 'beginner'}`,
+      `Target language: ${user?.targetLanguage ?? 'English'}`,
+      `Native language: ${user?.nativeLanguage ?? 'Vietnamese'}`,
+      contextLines ? `Context:\n${contextLines}` : '',
+      ``,
+      `Generate cards in this exact order:`,
+      typesList,
+      ``,
+      `Rules:`,
+      `- Each task: 1-2 clear sentences, specific to the mission — not generic.`,
+      `- Final boss task must explicitly ask user to speak for 60 seconds.`,
+      `- Success criteria: 2-3 short measurable statements. Be forgiving — clear meaning counts.`,
+      `- Title: 4 words max.`,
+      ``,
+      `Return ONLY a valid JSON array, no markdown:`,
+      `[{"id":"card-1","type":"<type>","title":"<title>","task":"<task>","success_criteria":["<c1>","<c2>"],"expected_duration_seconds":<n>,"retry_allowed":true,"status":"not_started","attempts":0,"result":null,"feedback":null,"ui_hint":null}]`,
+    ].filter((s) => s !== '').join('\n');
+
+    try {
+      const res = await firstValueFrom(
+        this.http.post(`${llmUrl}/complete`, {
+          system: systemPrompt,
+          messages: [{ role: 'user', content: `Generate ${cardTypes.length} exercise cards for mission: "${mission}"` }],
+        }),
+      );
+      let text: string = res.data?.response_text ?? res.data?.text ?? '';
+      if (text) {
+        text = text.replace(/```json\n?|\n?```/g, '').trim();
+        const match = text.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            console.log(`[Deck] LLM generated ${parsed.length} cards for session type=${sessionType}`);
+            return parsed.map((card: any, i: number) => ({
+              id:                       card.id ?? `card-${i + 1}`,
+              type:                     card.type ?? cardTypes[i],
+              title:                    card.title ?? 'Exercise',
+              task:                     card.task ?? 'Practice speaking clearly.',
+              success_criteria:         Array.isArray(card.success_criteria) ? card.success_criteria
+                                      : Array.isArray(card.successCriteria)  ? card.successCriteria
+                                      : ['meaning is clear'],
+              expected_duration_seconds: card.expected_duration_seconds ?? card.expectedDurationSeconds ?? 60,
+              retry_allowed:            card.retry_allowed ?? card.retryAllowed ?? true,
+              status:                   'not_started',
+              attempts:                 0,
+              result:                   null,
+              feedback:                 null,
+              ui_hint:                  card.ui_hint ?? card.uiHint ?? null,
+            }));
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Deck] LLM card generation failed:`, err?.message);
+    }
+
+    console.log(`[Deck] using fallback cards for mission="${mission.slice(0, 50)}"`);
+    return this.buildFallbackCards(mission, cardTypes);
+  }
+
+  private buildFallbackCards(mission: string, cardTypes: string[]): any[] {
+    const shortMission = mission.slice(0, 60);
+    const templates: Record<string, any> = {
+      simple_explanation: {
+        title: 'Start simple',
+        task: `Describe your idea about "${shortMission}" in 2 sentences.`,
+        success_criteria: ['meaning is clear', 'uses simple English', 'no long pause'],
+        expected_duration_seconds: 45,
+      },
+      weakness_drill: {
+        title: 'Drill it',
+        task: 'Explain the same idea using different words and simpler English.',
+        success_criteria: ['uses different vocabulary', 'explanation is clear'],
+        expected_duration_seconds: 60,
+      },
+      real_situation: {
+        title: 'Real situation',
+        task: 'How would you explain this to someone who knows nothing about it?',
+        success_criteria: ['explains clearly for a new listener', 'uses relatable language'],
+        expected_duration_seconds: 60,
+      },
+      final_boss: {
+        title: 'Final boss',
+        task: `Speak for 60 seconds about everything you practiced related to: "${shortMission}".`,
+        success_criteria: ['speaks for at least 45 seconds', 'covers the main idea', 'mostly target language'],
+        expected_duration_seconds: 90,
+      },
+    };
+
+    return cardTypes.map((type, i) => {
+      const t = templates[type] ?? templates['simple_explanation'];
+      return { id: `card-${i + 1}`, type, ...t, retry_allowed: true, status: 'not_started', attempts: 0, result: null, feedback: null, ui_hint: null };
+    });
+  }
+
+  async getDeck(sessionId: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] getDeck failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async createDeck(sessionId: string, body: { mission_source?: string; cards?: any[] }): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.post<any>(url, body));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] createDeck failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async advanceDeck(sessionId: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/next`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, {}));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] advanceDeck failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async updateDeckCard(sessionId: string, body: any): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/card`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, body));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] updateDeckCard failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async updateDeckStatus(sessionId: string, status: string): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/status`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, { status }));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] updateDeckStatus failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  async endDeck(sessionId: string, endReason = 'user_clicked_end'): Promise<any> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/end`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.put<any>(url, { end_reason: endReason }));
+      return data;
+    } catch (err: any) {
+      console.error(`[Session] endDeck failed session=${sessionId}:`, err?.message);
+      return { status: 'none', session_id: sessionId };
     }
   }
 

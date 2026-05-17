@@ -129,6 +129,36 @@ export class TurnService {
     }
   }
 
+  async getDeckInfo(sessionId: string): Promise<{
+    active: boolean;
+    status: string;
+    current_card_index: number;
+    total_cards: number;
+    current_card: any | null;
+  }> {
+    const empty = { active: false, status: 'none', current_card_index: 0, total_cards: 0, current_card: null };
+    const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+    try {
+      const { data } = await firstValueFrom<any>(
+        this.http.get<any>(`${memoryUrl}/exercise-deck/${sessionId}`),
+      );
+      if (!data || data.status === 'none') return empty;
+      const cards = Array.isArray(data.cards) ? data.cards : [];
+      const idx = data.current_card_index ?? 0;
+      const isActive = data.status === 'in_progress' || data.status === 'not_started';
+      return {
+        active:              isActive,
+        status:              data.status ?? 'none',
+        current_card_index:  idx,
+        total_cards:         cards.length,
+        current_card:        cards[idx] ?? null,
+      };
+    } catch (err: any) {
+      console.error(`[Turn] getDeckInfo failed session=${sessionId}:`, err?.message);
+      return empty;
+    }
+  }
+
   async processTurn(sessionId: string, userId: string, audioBuffer: Buffer, mimetype: string) {
     const started = Date.now();
     const elapsed = () => `${Date.now() - started}ms`;

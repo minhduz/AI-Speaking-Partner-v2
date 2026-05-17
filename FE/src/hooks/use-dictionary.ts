@@ -8,10 +8,12 @@ export function useDictionary(sessionTopic?: string) {
   const [data, setData] = useState<DictionaryData | null>(null);
   const [error, setError] = useState<string | undefined>();
   const [targetLang, setTargetLang] = useState('vi');
+  const [lookupKey, setLookupKey] = useState(0);
   const currentWordRef = useRef('');
 
   const fetchWord = useCallback(async (word: string, lang: string) => {
     if (!word.trim()) return;
+    setLookupKey(k => k + 1);
     setIsOpen(true);
     setIsLoading(true);
     setError(undefined);
@@ -64,6 +66,7 @@ export function useDictionary(sessionTopic?: string) {
     data,
     error,
     targetLang,
+    lookupKey,
     translate,
     changeLanguage,
     close,

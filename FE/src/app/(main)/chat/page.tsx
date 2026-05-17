@@ -14,6 +14,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
+import type { ExerciseDeck } from '@/services/session.service';
 
 const POPUP_W = 320;
 const POPUP_H = 440;
@@ -64,6 +65,8 @@ export default function ChatPage() {
     onboardingState,
     isEnding,
     closingText,
+    currentDeck,
+    advanceDeckCard,
     startMic,
     stopMic,
     endSession,
@@ -141,6 +144,11 @@ export default function ChatPage() {
 
   const isFocusedLiveSession = !reviewMode && hasSession;
 
+  const deckVisible =
+    currentDeck !== null &&
+    (currentDeck.status === 'not_started' || currentDeck.status === 'in_progress') &&
+    currentDeck.cards.length > 0;
+
   // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
   // Shown while the AI farewell message is playing. Blocks all interaction.
   if (isEnding) {
@@ -215,38 +223,43 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* Scrolling conversation area — same pattern as normal mode */}
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
-        >
-          <div className="w-full max-w-md flex flex-col gap-3">
-            {/* Greeting shown large until the user replies */}
-            {messages.length === 0 && greetingSentences.length > 0 && (
-              <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
-                {greetingSentences.map((sentence, index) => (
-                  <p key={index}>{sentence}</p>
-                ))}
-              </div>
-            )}
-
-            {messages.map((msg, i) => (
-              <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
-            ))}
-
-            {errorMessage && (
-              <div className="flex justify-center my-2">
-                <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
-              </div>
-            )}
-
-            {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && (
-              <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
-            )}
-
-            <div ref={messagesEndRef} />
+        {/* Scrolling content — deck card UI when active, message bubbles otherwise */}
+        {deckVisible ? (
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-6 py-4">
+            <DeckCardView deck={currentDeck!} onNext={() => void advanceDeckCard()} />
           </div>
-        </div>
+        ) : (
+          <div
+            ref={scrollContainerRef}
+            className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
+          >
+            <div className="w-full max-w-md flex flex-col gap-3">
+              {messages.length === 0 && greetingSentences.length > 0 && (
+                <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
+                  {greetingSentences.map((sentence, index) => (
+                    <p key={index}>{sentence}</p>
+                  ))}
+                </div>
+              )}
+
+              {messages.map((msg, i) => (
+                <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
+              ))}
+
+              {errorMessage && (
+                <div className="flex justify-center my-2">
+                  <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
+                </div>
+              )}
+
+              {messages.length === 0 && status === 'ready' && greetingSentences.length > 0 && (
+                <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
+              )}
+
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+        )}
 
         {isRecording && (
           <div className="flex justify-center py-2 shrink-0">
@@ -263,6 +276,24 @@ export default function ChatPage() {
         />
 
         <OnboardingPanel isVisible={isOnboardingSession} state={onboardingState} />
+
+        {wordDictionary.isOpen && CORNER_STYLES.map((cs, i) => (
+          <div key={i} style={{ position: 'fixed', ...cs, width: 14, height: 14, borderRadius: 4, border: '2px solid rgba(132,71,255,0.35)', background: 'rgba(132,71,255,0.08)', zIndex: 99, pointerEvents: 'none' }} />
+        ))}
+        {wordDictionary.isOpen && dictAnchor && (
+          <DictionaryPopup
+            key={wordDictionary.lookupKey}
+            isOpen={wordDictionary.isOpen}
+            onClose={handleDictClose}
+            isLoading={wordDictionary.isLoading}
+            data={wordDictionary.data}
+            error={wordDictionary.error}
+            style={{ position: 'fixed', top: dictAnchor.top, left: dictAnchor.left, zIndex: 100 }}
+            targetLang={wordDictionary.targetLang}
+            onLanguageChange={wordDictionary.changeLanguage}
+            onAddFlashcard={wordDictionary.addFlashcard}
+          />
+        )}
       </main>
     );
   }
@@ -390,7 +421,7 @@ export default function ChatPage() {
       {/* Dictionary popup — snaps to one of 4 corners, draggable between them */}
       {wordDictionary.isOpen && dictAnchor && (
         <DictionaryPopup
-          key={`${dictAnchor.top}-${dictAnchor.left}`}
+          key={wordDictionary.lookupKey}
           isOpen={wordDictionary.isOpen}
           onClose={handleDictClose}
           isLoading={wordDictionary.isLoading}
@@ -511,6 +542,79 @@ function ThinkingDots() {
       <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
       <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
       <div className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+    </div>
+  );
+}
+
+function DeckCardView({
+  deck,
+  onNext,
+}: {
+  deck: ExerciseDeck;
+  onNext: () => void;
+}) {
+  const card = deck.cards[deck.current_card_index];
+  if (!card) return null;
+
+  const isOnboarding = deck.session_type === 'onboarding_diagnostic';
+  const cardLabel = isOnboarding
+    ? `Mini check ${deck.current_card_index + 1} / ${deck.cards.length}`
+    : `Exercise ${deck.current_card_index + 1} / ${deck.cards.length}`;
+
+  return (
+    <div className="w-full max-w-md mx-auto flex flex-col gap-5 pt-2 pb-4">
+      {/* Mission */}
+      <div className="bg-violet-50 rounded-2xl px-4 py-3.5">
+        <p className="text-[10px] font-semibold text-violet-500 uppercase tracking-widest mb-1">Mission</p>
+        <p className="text-sm font-medium text-gray-800 leading-snug">{deck.mission}</p>
+        {deck.reason && (
+          <p className="text-xs text-gray-500 mt-1.5 leading-snug">{deck.reason}</p>
+        )}
+      </div>
+
+      {/* Card */}
+      <div className="flex flex-col gap-3">
+        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
+          {cardLabel}
+          {card.attempts > 0 && (
+            <span className="ml-2 normal-case font-normal text-gray-400">
+              · Attempt {card.attempts + 1}
+            </span>
+          )}
+        </span>
+        <h2 className="text-2xl font-semibold text-gray-900 leading-snug">{card.title}</h2>
+        <p className="text-base text-gray-600 leading-relaxed">{card.task}</p>
+
+        {Array.isArray(card.success_criteria) && card.success_criteria.length > 0 && (
+          <ul className="flex flex-col gap-1.5 mt-1">
+            {card.success_criteria.map((criterion, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-gray-500">
+                <span className="text-violet-400 mt-0.5 shrink-0">✓</span>
+                {criterion}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Actions */}
+      <div className="flex justify-end gap-2 pt-1">
+        {card.retry_allowed && (
+          <button
+            type="button"
+            className="h-9 px-4 rounded-full border border-gray-200 text-sm font-medium text-gray-500 hover:border-gray-300 hover:bg-gray-50 transition-colors"
+          >
+            Retry
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onNext}
+          className="h-9 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+        >
+          Next →
+        </button>
+      </div>
     </div>
   );
 }

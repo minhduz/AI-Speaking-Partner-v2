@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 settings = Settings()
 soniox_client = SonioxClient(api_key=settings.soniox_api_key)
 app = FastAPI(title="Speech Service")
+_tts_semaphore = asyncio.Semaphore(2)  # max 2 concurrent Soniox TTS connections
 log = logging.getLogger("speech-service")
 
 SONIOX_TTS_VOICES = {
@@ -576,19 +577,20 @@ async def _run_soniox_tts_batch(
     voice: str | None = None,
     speech_rate: float | None = None,
 ) -> bytes:
-    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-    fut: asyncio.Future = loop.create_future()
+    async with _tts_semaphore:
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
 
-    def run():
-        config = _build_tts_config(voice, speech_rate, audio_format="mp3")
-        try:
-            with soniox_client.realtime.tts.connect(config=config) as session:
-                session.send_text_chunk(text, text_end=False)
-                session.finish()
-                chunks = list(session.receive_audio_chunks())
-                loop.call_soon_threadsafe(fut.set_result, b"".join(chunks))
-        except Exception as e:
-            loop.call_soon_threadsafe(fut.set_exception, e)
+        def run():
+            config = _build_tts_config(voice, speech_rate, audio_format="mp3")
+            try:
+                with soniox_client.realtime.tts.connect(config=config) as session:
+                    session.send_text_chunk(text, text_end=False)
+                    session.finish()
+                    chunks = list(session.receive_audio_chunks())
+                    loop.call_soon_threadsafe(fut.set_result, b"".join(chunks))
+            except Exception as e:
+                loop.call_soon_threadsafe(fut.set_exception, e)
 
-    threading.Thread(target=run, daemon=True).start()
-    return await fut
+        threading.Thread(target=run, daemon=True).start()
+        return await fut

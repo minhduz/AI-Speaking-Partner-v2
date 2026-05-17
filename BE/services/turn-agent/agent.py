@@ -25,6 +25,15 @@ class TurnState(TypedDict):
     voice_id: str
     speech_rate: float
     conversation_style: str
+    # Exercise deck card context (populated from X-Deck-* headers)
+    deck_active: bool
+    card_index: int
+    card_total: int
+    card_type: str
+    card_title: str
+    card_task: str
+    card_attempts: int
+    card_retry_allowed: bool
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

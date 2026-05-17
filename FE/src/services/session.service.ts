@@ -85,6 +85,36 @@ export class BillingLimitError extends Error {
   }
 }
 
+export interface DeckCard {
+  id: string;
+  type: string;
+  title: string;
+  task: string;
+  success_criteria: string[];
+  expected_duration_seconds: number;
+  retry_allowed: boolean;
+  status: string;
+  attempts: number;
+  result: string | null;
+  feedback: string | null;
+  ui_hint: string | null;
+}
+
+export interface ExerciseDeck {
+  id: string;
+  session_id: string;
+  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training';
+  mission: string;
+  mission_source: string;
+  reason: string;
+  status: 'not_started' | 'in_progress' | 'completed' | 'ended_early' | 'abandoned' | 'none';
+  current_card_index: number;
+  cards: DeckCard[];
+  end_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface OnboardingState {
   motivation?: string | null;
   confidence_signal?: string | null;
@@ -329,6 +359,18 @@ export const sessionService = {
     const data: CloseSessionResponse = await res.json();
     log(`POST /session/${sessionId}/close →`, { text: data.text?.slice(0, 80), hasAudio: !!data.audio_b64 });
     return data;
+  },
+
+  getDeck: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck`);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
+  },
+
+  advanceDeckCard: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
   },
 
   /**

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { HttpModule } from "@nestjs/axios";
+import { join } from "path";
 import { AuthModule } from "./auth/auth.module";
 import { UserModule } from "./user/user.module";
 import { SessionModule } from "./session/session.module";
@@ -28,6 +29,8 @@ import { DictionaryModule } from "./dictionary/dictionary.module";
         schema: cfg.get("DB_SCHEMA"),
         autoLoadEntities: true,
         synchronize: false,
+        migrationsRun: true,
+        migrations: [join(__dirname, "migrations", "*.js")],
         logging: cfg.get("NODE_ENV") === "development",
       }),
     }),

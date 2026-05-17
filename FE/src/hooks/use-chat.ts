@@ -7,6 +7,7 @@ import {
   type BillingLimitCode,
   type OnboardingState,
   type EndReason,
+  type ExerciseDeck,
 } from '@/services/session.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
@@ -75,6 +76,8 @@ export interface UseChatReturn {
   isEnding: boolean;
   /** The AI closing farewell text, shown on screen while audio plays. */
   closingText: string | null;
+  currentDeck: ExerciseDeck | null;
+  advanceDeckCard: () => Promise<void>;
   startMic: () => void;
   stopMic: () => void;
   endSession: (reason?: EndReason) => Promise<void>;
@@ -204,6 +207,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
   const [isEnding, setIsEnding] = useState(false);
   const [closingText, setClosingText] = useState<string | null>(null);
+  const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -554,6 +558,27 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, [isOnboardingSession, currentSessionId]);
 
+  // Poll deck state every 3s while a session is live.
+  useEffect(() => {
+    if (!currentSessionId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const deck = await sessionService.getDeck(currentSessionId);
+        if (!cancelled) setCurrentDeck(deck);
+      } catch { /* silent */ }
+    };
+
+    void poll();
+    const interval = window.setInterval(poll, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      setCurrentDeck(null);
+    };
+  }, [currentSessionId]);
+
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
 
@@ -868,6 +893,18 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     await initSession();
   }, [decodeMp3, initSession]);
 
+  const advanceDeckCard = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.advanceDeckCard(sessionId);
+      const deck = await sessionService.getDeck(sessionId);
+      setCurrentDeck(deck);
+    } catch (err) {
+      console.error('[advanceDeckCard]', err);
+    }
+  }, []);
+
   const loadMoreReview = useCallback(async () => {
     const sessionId = reviewSessionIdRef.current;
     if (!sessionId || !reviewHasMore || reviewLoading) return;
@@ -1034,6 +1071,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     onboardingState,
     isEnding,
     closingText,
+    currentDeck,
+    advanceDeckCard,
     startMic,
     stopMic,
     endSession,
