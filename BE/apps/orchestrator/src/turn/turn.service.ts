@@ -145,7 +145,7 @@ export class TurnService {
       if (!data || data.status === 'none') return empty;
       const cards = Array.isArray(data.cards) ? data.cards : [];
       const idx = data.current_card_index ?? 0;
-      const isActive = data.status === 'in_progress' || data.status === 'not_started';
+      const isActive = data.status === 'in_progress';
       return {
         active:              isActive,
         status:              data.status ?? 'none',

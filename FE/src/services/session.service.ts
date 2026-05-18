@@ -127,6 +127,8 @@ export interface ExerciseDeck {
   end_reason: string | null;
   created_at: string;
   updated_at: string;
+  /** True when this deck continues an incomplete deck from a previous session. */
+  is_continuation?: boolean;
 }
 
 export interface OnboardingState {
@@ -389,6 +391,31 @@ export const sessionService = {
 
   skipDeckCard: async (sessionId: string): Promise<void> => {
     await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+  },
+
+  acceptDeckChallenge: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/card`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+  },
+
+  /** Force-complete the deck without advancing — used after a lighter-mode card. */
+  completeLighterDeck: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed' }),
+    });
+  },
+
+  rejectDeckChallenge: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ end_reason: 'user_clicked_end' }),
+    });
   },
 
   /**

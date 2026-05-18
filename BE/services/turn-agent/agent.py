@@ -27,6 +27,7 @@ class TurnState(TypedDict):
     conversation_style: str
     # Exercise deck card context (populated from X-Deck-* headers)
     deck_active: bool
+    deck_status: str          # not_started | in_progress | completed | ended_early | abandoned | none
     card_index: int
     card_total: int
     card_type: str
@@ -34,6 +35,7 @@ class TurnState(TypedDict):
     card_task: str
     card_attempts: int
     card_retry_allowed: bool
+    card_success_criteria: list
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

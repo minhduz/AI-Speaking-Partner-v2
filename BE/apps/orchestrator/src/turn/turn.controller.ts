@@ -83,12 +83,6 @@ export class TurnController {
     res.setHeader('Connection', 'keep-alive');
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
-    if (!body?.transcript?.trim()) {
-      send({ type: 'error', message: 'No transcript provided' });
-      res.end();
-      return;
-    }
-
     try {
       const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
@@ -142,14 +136,16 @@ export class TurnController {
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
-            'X-Deck-Active':        deck.active ? 'true' : 'false',
-            'X-Card-Index':         String(deck.current_card_index),
-            'X-Card-Total':         String(deck.total_cards),
-            'X-Card-Type':          deck.current_card?.type ?? '',
-            'X-Card-Title':         encodeHeader(deck.current_card?.title),
-            'X-Card-Task':          encodeHeader(deck.current_card?.task),
-            'X-Card-Attempts':      String(deck.current_card?.attempts ?? 0),
-            'X-Card-Retry-Allowed': deck.current_card?.retry_allowed ? 'true' : 'false',
+            'X-Deck-Active':             deck.active ? 'true' : 'false',
+            'X-Deck-Status':             deck.status || 'none',
+            'X-Card-Index':              String(deck.current_card_index),
+            'X-Card-Total':              String(deck.total_cards),
+            'X-Card-Type':               deck.current_card?.type ?? '',
+            'X-Card-Title':              encodeHeader(deck.current_card?.title),
+            'X-Card-Task':               encodeHeader(deck.current_card?.task),
+            'X-Card-Attempts':           String(deck.current_card?.attempts ?? 0),
+            'X-Card-Retry-Allowed':      deck.current_card?.retry_allowed ? 'true' : 'false',
+            'X-Card-Success-Criteria':   encodeHeader(JSON.stringify(deck.current_card?.success_criteria ?? [])),
           },
         },
       );
@@ -273,14 +269,16 @@ export class TurnController {
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
-            'X-Deck-Active':        deck.active ? 'true' : 'false',
-            'X-Card-Index':         String(deck.current_card_index),
-            'X-Card-Total':         String(deck.total_cards),
-            'X-Card-Type':          deck.current_card?.type ?? '',
-            'X-Card-Title':         encodeHeader(deck.current_card?.title),
-            'X-Card-Task':          encodeHeader(deck.current_card?.task),
-            'X-Card-Attempts':      String(deck.current_card?.attempts ?? 0),
-            'X-Card-Retry-Allowed': deck.current_card?.retry_allowed ? 'true' : 'false',
+            'X-Deck-Active':             deck.active ? 'true' : 'false',
+            'X-Deck-Status':             deck.status || 'none',
+            'X-Card-Index':              String(deck.current_card_index),
+            'X-Card-Total':              String(deck.total_cards),
+            'X-Card-Type':               deck.current_card?.type ?? '',
+            'X-Card-Title':              encodeHeader(deck.current_card?.title),
+            'X-Card-Task':               encodeHeader(deck.current_card?.task),
+            'X-Card-Attempts':           String(deck.current_card?.attempts ?? 0),
+            'X-Card-Retry-Allowed':      deck.current_card?.retry_allowed ? 'true' : 'false',
+            'X-Card-Success-Criteria':   encodeHeader(JSON.stringify(deck.current_card?.success_criteria ?? [])),
           },
         },
       );

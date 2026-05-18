@@ -76,9 +76,16 @@ export interface UseChatReturn {
   isEnding: boolean;
   /** The AI closing farewell text, shown on screen while audio plays. */
   closingText: string | null;
+  /** True from the first mic tap until session ends. Drives layout switch in the UI. */
+  sessionStarted: boolean;
   currentDeck: ExerciseDeck | null;
+  lighterMode: boolean;
   advanceDeckCard: () => Promise<void>;
   skipDeckCard: () => Promise<void>;
+  acceptDeckChallenge: () => Promise<void>;
+  rejectDeckChallenge: () => Promise<void>;
+  enterLighterMode: () => Promise<void>;
+  completeLighterDeck: () => Promise<void>;
   startMic: () => void;
   stopMic: () => void;
   endSession: (reason?: EndReason) => Promise<void>;
@@ -209,6 +216,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [isEnding, setIsEnding] = useState(false);
   const [closingText, setClosingText] = useState<string | null>(null);
   const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
+  const [lighterMode, setLighterMode] = useState(false);
+  const [sessionStarted, setSessionStarted] = useState(false);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -225,6 +234,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const segmentQueueRef = useRef<SegmentQueueItem[]>([]);
   const segmentIdleResolversRef = useRef<(() => void)[]>([]);
   const isPlayingRef = useRef(false);
+  // Tracks an in-flight eager session.start() so startMic can await the same
+  // promise instead of firing a second concurrent session creation.
+  const sessionStartPromiseRef = useRef<Promise<void> | null>(null);
+  const isFirstSessionRef = useRef<boolean>(false);
+  const pendingAutoEndRef = useRef<boolean>(false);
+  // Stable ref so processTurn can call endSession without adding it to deps.
+  const endSessionRef = useRef<(reason?: EndReason) => Promise<void>>(async () => {});
   // Chains segment scheduling so audio is pushed onto the timeline in arrival order
   // even when MP3 decode of an earlier segment happens to finish later.
   const lastScheduleRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -466,11 +482,28 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (_greetingTextCache && _greetingTextCache.length > 0) {
       setGreetingSentences(_greetingTextCache);
       setStatus('ready');
-      return;
+    } else {
+      setGreetingSentences([]);
+      await runGreeting();
     }
-    setGreetingSentences([]);
-    await runGreeting();
-  }, [runGreeting]);
+    // Eagerly create session right after greeting so the BE can start generating
+    // the deck while the user decides to tap mic. Typical gap: 3-10s. Without this,
+    // deck generation only begins on mic tap → user waits 3-5s for card to appear.
+    if (isAuthenticated && !sessionIdRef.current && !sessionStartPromiseRef.current) {
+      sessionStartPromiseRef.current = sessionService
+        .start()
+        .then(({ session_id, is_first_session }) => {
+          if (sessionIdRef.current) return; // mic tapped first, that one wins
+          sessionIdRef.current = session_id;
+          setCurrentSessionId(session_id);
+          isFirstSessionRef.current = Boolean(is_first_session);
+        })
+        .catch((err) => {
+          if (err instanceof BillingLimitError) setBillingLimitError(err);
+        })
+        .finally(() => { sessionStartPromiseRef.current = null; });
+    }
+  }, [runGreeting, isAuthenticated, setBillingLimitError]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
@@ -770,6 +803,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // doesn't carry.
           void pollDeck();
           setStatus('ready');
+          if (pendingAutoEndRef.current) {
+            pendingAutoEndRef.current = false;
+            await new Promise((r) => setTimeout(r, 1500));
+            if (sessionIdRef.current === sessionId) {
+              void endSessionRef.current('idle_timeout');
+            }
+          }
           return;
         } else if (event.type === 'error') {
           if (event.message === 'SESSION_TOKEN_LIMIT_REACHED') {
@@ -814,6 +854,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Guard: don't double-trigger
     if (isEndingRef.current) return;
     isEndingRef.current = true;
+    pendingAutoEndRef.current = false;
 
     // Clear idle timer
     if (idleTimerRef.current) {
@@ -848,6 +889,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     pendingStopRef.current = false;
     isStoppingRef.current = false;
 
+    sessionStartPromiseRef.current = null;
+    setSessionStarted(false);
     const prevSessionId = sessionIdRef.current;
     sessionIdRef.current = null;
     setCurrentSessionId(null);
@@ -924,6 +967,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     await initSession();
   }, [decodeMp3, initSession]);
 
+  // Keep the ref pointing at the latest endSession so processTurn can call it
+  // without adding endSession to processTurn's dependency array.
+  useEffect(() => { endSessionRef.current = endSession; }, [endSession]);
+
   const advanceDeckCard = useCallback(async () => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
@@ -931,10 +978,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       await sessionService.advanceDeckCard(sessionId);
       const deck = await sessionService.getDeck(sessionId);
       setCurrentDeck(deck);
+      if (deck) {
+        if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
+          // More cards remain — AI introduces the next one.
+          void processTurn('');
+        } else if (deck.status === 'completed' || deck.status === 'ended_early') {
+          // Last card done — AI transitions back to free conversation.
+          void processTurn('');
+        }
+      }
     } catch (err) {
       console.error('[advanceDeckCard]', err);
     }
-  }, []);
+  }, [processTurn]);
 
   const skipDeckCard = useCallback(async () => {
     const sessionId = sessionIdRef.current;
@@ -943,10 +999,71 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       await sessionService.skipDeckCard(sessionId);
       const deck = await sessionService.getDeck(sessionId);
       setCurrentDeck(deck);
+      if (deck) {
+        if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
+          void processTurn('');
+        } else if (deck.status === 'completed' || deck.status === 'ended_early') {
+          // Last card skipped — AI says goodbye, then session auto-ends after audio.
+          pendingAutoEndRef.current = true;
+          void processTurn('');
+        }
+      }
     } catch (err) {
       console.error('[skipDeckCard]', err);
     }
+  }, [processTurn]);
+
+  const acceptDeckChallenge = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.acceptDeckChallenge(sessionId);
+      const deck = await sessionService.getDeck(sessionId);
+      setCurrentDeck(deck);
+    } catch (err) {
+      console.error('[acceptDeckChallenge]', err);
+    }
   }, []);
+
+  const rejectDeckChallenge = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.rejectDeckChallenge(sessionId);
+      setCurrentDeck(null);
+    } catch (err) {
+      console.error('[rejectDeckChallenge]', err);
+    }
+  }, []);
+
+  /** Accept the deck and switch to lighter UI mode (1 card, no criteria, no retry). */
+  const enterLighterMode = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.acceptDeckChallenge(sessionId);
+      const deck = await sessionService.getDeck(sessionId);
+      setCurrentDeck(deck);
+      setLighterMode(true);
+    } catch (err) {
+      console.error('[enterLighterMode]', err);
+    }
+  }, []);
+
+  /** Force-complete the deck after the quick-task card finishes, then pivot to free chat. */
+  const completeLighterDeck = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    setLighterMode(false);
+    try {
+      await sessionService.completeLighterDeck(sessionId);
+      const deck = await sessionService.getDeck(sessionId);
+      setCurrentDeck(deck);
+      void processTurn('');
+    } catch (err) {
+      console.error('[completeLighterDeck]', err);
+    }
+  }, [processTurn]);
 
   const loadMoreReview = useCallback(async () => {
     const sessionId = reviewSessionIdRef.current;
@@ -1010,21 +1127,24 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     audioCtxRef.current = new AudioContext();
 
     setStatus('recording');
+    setSessionStarted(true);
 
     const ensureSession = sessionIdRef.current
       ? Promise.resolve()
-      : sessionService.start().then(({ session_id, is_first_session }) => {
+      : (sessionStartPromiseRef.current ?? sessionService.start().then(({ session_id, is_first_session }) => {
           sessionIdRef.current = session_id;
           setCurrentSessionId(session_id);
-          setIsOnboardingSession(Boolean(is_first_session));
-          // BE kicks off generateDeckAfterStart async — poll a couple times in
-          // the first 2s to pick up the deck as soon as it lands in Redis,
-          // rather than waiting up to 3s for the safety-net interval.
+          isFirstSessionRef.current = Boolean(is_first_session);
+          // Eager start didn't run (e.g. billing error cleared it) — fall back to
+          // aggressive early polls so deck still appears within ~2s.
           window.setTimeout(() => { void pollDeck(); }, 600);
           window.setTimeout(() => { void pollDeck(); }, 1800);
-        });
+        }));
     ensureSession
-      .then(() => startRecording())
+      .then(() => {
+        setIsOnboardingSession(isFirstSessionRef.current);
+        return startRecording();
+      })
       .then(() => {
         if (pendingStopRef.current) {
           pendingStopRef.current = false;
@@ -1070,6 +1190,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     }
     sttDoneResolverRef.current = null;
 
+    sessionStartPromiseRef.current = null;
+    setSessionStarted(false);
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
       sessionService.end(prevSessionId, 'user_clicked').catch(console.error);
@@ -1119,9 +1241,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     onboardingState,
     isEnding,
     closingText,
+    sessionStarted,
     currentDeck,
+    lighterMode,
     advanceDeckCard,
     skipDeckCard,
+    acceptDeckChallenge,
+    rejectDeckChallenge,
+    enterLighterMode,
+    completeLighterDeck,
     startMic,
     stopMic,
     endSession,

@@ -39,6 +39,16 @@ def _decode_header(value: str | None) -> str:
         return value.strip()
 
 
+def _parse_json_header(value: str | None) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(unquote(value).strip())
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
 @app.post("/turn/stream")
 async def turn_stream(request: Request):
     form = await request.form()
@@ -66,14 +76,16 @@ async def turn_stream(request: Request):
         "voice_id":         h.get("x-voice-id", "Adrian"),
         "speech_rate":      float(h.get("x-speech-rate", "1.0")),
         "conversation_style": h.get("x-conversation-style", "friendly"),
-        "deck_active":      h.get("x-deck-active", "false").lower() == "true",
-        "card_index":       int(h.get("x-card-index", "0")),
-        "card_total":       int(h.get("x-card-total", "0")),
-        "card_type":        h.get("x-card-type", ""),
-        "card_title":       _decode_header(h.get("x-card-title")),
-        "card_task":        _decode_header(h.get("x-card-task")),
-        "card_attempts":    int(h.get("x-card-attempts", "0")),
+        "deck_active":        h.get("x-deck-active", "false").lower() == "true",
+        "deck_status":        h.get("x-deck-status", "none"),
+        "card_index":         int(h.get("x-card-index", "0")),
+        "card_total":         int(h.get("x-card-total", "0")),
+        "card_type":          h.get("x-card-type", ""),
+        "card_title":         _decode_header(h.get("x-card-title")),
+        "card_task":          _decode_header(h.get("x-card-task")),
+        "card_attempts":      int(h.get("x-card-attempts", "0")),
         "card_retry_allowed": h.get("x-card-retry-allowed", "false").lower() == "true",
+        "card_success_criteria": _parse_json_header(h.get("x-card-success-criteria")),
         # Intermediates — empty until nodes populate them
         "transcript":            "",
         "confidence":            0.0,
@@ -125,15 +137,17 @@ async def turn_stream_text(request: Request):
         "voice_id":             h.get("x-voice-id", "Adrian"),
         "speech_rate":          float(h.get("x-speech-rate", "1.0")),
         "conversation_style":   h.get("x-conversation-style", "friendly"),
-        "deck_active":          h.get("x-deck-active", "false").lower() == "true",
-        "card_index":           int(h.get("x-card-index", "0")),
-        "card_total":           int(h.get("x-card-total", "0")),
-        "card_type":            h.get("x-card-type", ""),
-        "card_title":           _decode_header(h.get("x-card-title")),
-        "card_task":            _decode_header(h.get("x-card-task")),
-        "card_attempts":        int(h.get("x-card-attempts", "0")),
-        "card_retry_allowed":   h.get("x-card-retry-allowed", "false").lower() == "true",
-        "transcript":           transcript,
+        "deck_active":           h.get("x-deck-active", "false").lower() == "true",
+        "deck_status":           h.get("x-deck-status", "none"),
+        "card_index":            int(h.get("x-card-index", "0")),
+        "card_total":            int(h.get("x-card-total", "0")),
+        "card_type":             h.get("x-card-type", ""),
+        "card_title":            _decode_header(h.get("x-card-title")),
+        "card_task":             _decode_header(h.get("x-card-task")),
+        "card_attempts":         int(h.get("x-card-attempts", "0")),
+        "card_retry_allowed":    h.get("x-card-retry-allowed", "false").lower() == "true",
+        "card_success_criteria": _parse_json_header(h.get("x-card-success-criteria")),
+        "transcript":            transcript,
         "confidence":           1.0,
         "pronunciation":        {"score": None, "per_word": []},
         "system_prompt":        "",

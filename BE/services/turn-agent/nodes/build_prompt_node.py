@@ -410,6 +410,15 @@ def _build_card_context_block(state: dict) -> str:
         else 'Since it is NOT final_boss: use "next_card" or "retry" only — never "finish_session".'
     )
 
+    transcript = (state.get("transcript") or "").strip()
+    card_intro_note = (
+        # Empty transcript = user just clicked Next — AI should announce the card.
+        "\nACTION REQUIRED: The user just advanced to this card (no speech yet). "
+        "In 1-2 sentences, naturally introduce the task and invite them to try. "
+        "Do NOT wait for them to ask — read the task aloud now.\n"
+        if not transcript else ""
+    )
+
     return (
         "\n\nCURRENT EXERCISE CARD:\n"
         f"Exercise {card_index + 1}/{card_total}\n"
@@ -418,6 +427,7 @@ def _build_card_context_block(state: dict) -> str:
         f"Task: {card_task}\n"
         f"Retry allowed: {'yes' if retry_allowed else 'no'}\n"
         f"Attempts so far: {card_attempts}\n"
+        f"{card_intro_note}"
         "\nCARD INSTRUCTIONS:\n"
         "1. Stay focused on this card's task. Do not ask unrelated questions.\n"
         "2. Keep response under 3 sentences.\n"
@@ -430,11 +440,15 @@ def _build_card_context_block(state: dict) -> str:
         "9. If the user expresses they want to stop, acknowledge and switch to CLOSING mode.\n"
         f'\nGOOD: Stay on the exact task: "{card_task}"\n'
         "BAD: open-ended questions, changing topic, general conversation.\n"
-        "\nAFTER RESPONDING, output a JSON evaluation block on a new line at the very end:\n"
-        'EVAL:{"passed":bool,"feedback":"short coaching note",'
-        '"retryRecommended":bool,"nextAction":"retry|next_card|finish_session",'
-        '"detectedIssues":["string"]}\n'
-        "\nEvaluation rules:\n"
+        + (
+            "\nDo NOT output an EVAL block this turn — the user has not attempted the task yet.\n"
+            if not transcript else
+            "\nAFTER RESPONDING, output a JSON evaluation block on a new line at the very end:\n"
+            'EVAL:{"passed":bool,"feedback":"short coaching note",'
+            '"retryRecommended":bool,"nextAction":"retry|next_card|finish_session",'
+            '"detectedIssues":["string"]}\n'
+        )
+        + "\nEvaluation rules:\n"
         "1. Be forgiving — if meaning is clear, grammar imperfect → passed=true with light feedback.\n"
         '2. If the user did not attempt the task → passed=false, nextAction="retry".\n'
         '3. If the user code-switches heavily when the card requires English → passed=false, nextAction="retry".\n'
@@ -476,6 +490,36 @@ def _build_card_context_block(state: dict) -> str:
             if low_energy
             else ""
         )
+    )
+
+
+def _build_card_soft_offer_block(state: dict) -> str:
+    """
+    Soft challenge block — injected when deck is not_started and turn >= 3.
+    The AI may offer the challenge naturally; the user can accept or decline freely.
+    Critically: no forced redirect, no strict 'stay on task' rules.
+    """
+    card_title = (state.get("card_title") or "").strip()
+    card_task  = (state.get("card_task") or "").strip()
+    card_type  = (state.get("card_type") or "").strip()
+
+    return (
+        "\n\nOPTIONAL CHALLENGE AVAILABLE (not yet started):\n"
+        f"Type: {card_type}\n"
+        f"Title: {card_title}\n"
+        f"Task: {card_task}\n"
+        "\nCHALLENGE OFFER RULES — read carefully:\n"
+        "1. This challenge is 100% OPTIONAL. Never force or repeat it.\n"
+        "2. First respond naturally to what the user just said.\n"
+        "3. If the moment feels right, offer it in ONE casual sentence — e.g.:\n"
+        '   "I have a quick practice ready if you feel like it — want to try?"\n'
+        "4. If the user says YES or engages with the task → guide them and evaluate.\n"
+        "5. If the user says NO, ignores it, changes topic, or seems uninterested → DROP IT.\n"
+        "   Do NOT redirect, do NOT mention it again. Continue on whatever topic they prefer.\n"
+        "6. If user seems tired, low-energy, or mentions being busy → skip the offer entirely.\n"
+        "7. NEVER open your response by pitching the challenge. Warm up first.\n"
+        "\nEVAL: Only output EVAL:{...} if the user actually attempted the card task.\n"
+        "Do NOT output EVAL if the user is warming up, chatting, or declined.\n"
     )
 
 
@@ -555,6 +599,7 @@ async def build_prompt_node(state: dict) -> dict:
             system_prompt += mission_block
 
         deck_active = bool(state.get("deck_active", False))
+        deck_status = (state.get("deck_status") or "none").strip()
 
         if is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
@@ -565,35 +610,74 @@ async def build_prompt_node(state: dict) -> dict:
             if learned_block:
                 system_prompt += learned_block
 
-            # Inject card context for onboarding mini-deck (after onboarding block)
-            if deck_active:
+            # Onboarding mini-deck: strict mode only when in_progress (user accepted)
+            if deck_active:  # in_progress
                 system_prompt += _build_card_context_block(state)
+            elif deck_status == "not_started" and turn_index >= 3:
+                system_prompt += _build_card_soft_offer_block(state)
 
             log.info(
                 "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  ONBOARDING phase=%s  "
-                "state_fields=%d  learned_block_chars=%d  deck_active=%s",
+                "state_fields=%d  learned_block_chars=%d  deck_status=%s",
                 chunks_used, tokens, phase,
                 len([k for k in onboarding_state if onboarding_state.get(k)]),
-                len(learned_block), deck_active,
+                len(learned_block), deck_status,
             )
         else:
             if deck_active:
-                # Card context replaces generic session mode when a deck is active
+                # User accepted and started the deck — strict card mode
                 system_prompt += _build_card_context_block(state)
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK card=%s/%s  type=%s",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(in_progress) card=%s/%s  type=%s",
                     chunks_used, tokens,
                     state.get("card_index", 0), state.get("card_total", 0),
                     state.get("card_type", ""),
                 )
+            elif deck_status == "completed" and not transcript:
+                # All cards done — AI pivots to free chat.
+                mode = get_session_mode(turn_index)
+                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                system_prompt += (
+                    "\n\nDECK FINISHED: The exercise session is now complete. "
+                    "In 1-2 warm sentences, acknowledge the effort and naturally open up free conversation. "
+                    "Do NOT mention or ask about the exercise topics anymore. "
+                    "Do NOT output an EVAL block."
+                )
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(completed→free_chat)",
+                    chunks_used, tokens,
+                )
+            elif deck_status == "ended_early" and not transcript:
+                # User skipped the last card — session is ending, AI says goodbye.
+                system_prompt += (
+                    "\n\nSESSION ENDING: The user just skipped the final exercise and the session is now ending. "
+                    "Say a short, warm goodbye in 1-2 sentences. "
+                    "Acknowledge any effort from today. "
+                    "Do NOT output an EVAL block. Do NOT ask any questions or invite further conversation."
+                )
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→goodbye)",
+                    chunks_used, tokens,
+                )
+            elif deck_status == "not_started" and turn_index >= 3:
+                # Deck ready but user hasn't accepted yet — soft optional offer
+                mode = get_session_mode(turn_index)
+                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                system_prompt += _build_card_soft_offer_block(state)
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(soft_offer)  mode=%s  card=%s",
+                    chunks_used, tokens, mode, state.get("card_title", ""),
+                )
             else:
+                # Pure warm-up (not_started turn<=2) or no deck — standard session mode
                 mode = get_session_mode(turn_index)
                 system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
                 if active_mission:
                     system_prompt += _build_external_active_mission_block(active_mission, turn_index)
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s  deck=%s",
                     chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
+                    deck_status,
                 )
         return {"system_prompt": system_prompt}
 
@@ -608,15 +692,21 @@ async def build_prompt_node(state: dict) -> dict:
             + (f" Today is {dt}." if dt else "")
         )
         deck_active = bool(state.get("deck_active", False))
+        deck_status = (state.get("deck_status") or "none").strip()
         if is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             fallback += build_onboarding_block(state, turn_index, onboarding_state)
             fallback += _render_learned_block(onboarding_state)
             if deck_active:
                 fallback += _build_card_context_block(state)
+            elif deck_status == "not_started" and turn_index >= 3:
+                fallback += _build_card_soft_offer_block(state)
         else:
             if deck_active:
                 fallback += _build_card_context_block(state)
+            elif deck_status == "not_started" and turn_index >= 3:
+                fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
+                fallback += _build_card_soft_offer_block(state)
             else:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
                 if active_mission:

@@ -65,9 +65,15 @@ export default function ChatPage() {
     onboardingState,
     isEnding,
     closingText,
+    sessionStarted,
     currentDeck,
+    lighterMode,
     advanceDeckCard,
     skipDeckCard,
+    acceptDeckChallenge,
+    rejectDeckChallenge,
+    enterLighterMode,
+    completeLighterDeck,
     startMic,
     stopMic,
     endSession,
@@ -138,15 +144,16 @@ export default function ChatPage() {
     enterReview(session.id);
   }, [enterReview]);
 
-  const hasSession = currentSessionId !== null;
-
   // Sidebar highlights: reviewed session takes priority over live session
   const activeSidebarSessionId = reviewSessionId ?? currentSessionId;
 
-  const isFocusedLiveSession = !reviewMode && hasSession;
+  // Layout switches to focused (no sidebar) only when the user has tapped mic at
+  // least once — not when the session is eagerly created in the background.
+  const isFocusedLiveSession = !reviewMode && sessionStarted;
 
   const deckVisible =
     currentDeck !== null &&
+    !isOnboardingSession &&
     (currentDeck.status === 'not_started' || currentDeck.status === 'in_progress') &&
     currentDeck.cards.length > 0;
 
@@ -210,7 +217,7 @@ export default function ChatPage() {
   // ── Focused live-session layout ─────────────────────────────────────────────
   // Sidebar-less view shown once the user starts talking.
   // Also shown during the first onboarding session (with the onboarding panel).
-  if (isFocusedLiveSession || isOnboardingSession) {
+  if (isFocusedLiveSession) {
     return (
       <main className="flex flex-1 flex-col overflow-hidden bg-white">
         {/* AI presence indicator — replaces the normal header */}
@@ -230,8 +237,14 @@ export default function ChatPage() {
         {deckVisible && (
           <div className="shrink-0 border-b border-gray-100 px-6 py-3">
             <DeckCardView
+              key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
               deck={currentDeck!}
-              onNext={() => void advanceDeckCard()}
+              isLighter={lighterMode}
+              onAccept={() => void acceptDeckChallenge()}
+              onReject={() => void rejectDeckChallenge()}
+              onLighterMode={() => void enterLighterMode()}
+              onEndSession={() => void endSession('user_clicked')}
+              onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
               onSkip={() => void skipDeckCard()}
             />
           </div>
@@ -326,7 +339,7 @@ export default function ChatPage() {
             : <StatusBadge status={status} />
           }
           <div className="w-20 flex justify-end">
-            {!reviewMode && hasSession && (
+            {!reviewMode && sessionStarted && (
               <EndSessionButton onClick={() => setConfirmEnd(true)} />
             )}
           </div>
@@ -353,14 +366,14 @@ export default function ChatPage() {
 
           {/* Mission card — pre-session anchor showing last-session continuity.
               Hidden once a live session starts or while reviewing history. */}
-          {!reviewMode && !hasSession && (
+          {!reviewMode && !sessionStarted && (
             <div className="px-4 pt-2">
               <MissionCard />
             </div>
           )}
 
           {/* Live mode: greeting */}
-          {!reviewMode && !hasSession && greetingSentences.length > 0 && (
+          {!reviewMode && !sessionStarted && greetingSentences.length > 0 && (
             <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-3">
               <p className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
                 {greetingSentences.join(' ')}
@@ -372,7 +385,7 @@ export default function ChatPage() {
           )}
 
           {/* Live mode: greeting fallback */}
-          {!reviewMode && !hasSession && greetingSentences.length === 0 && status === 'ready' && messages.length === 0 && (
+          {!reviewMode && !sessionStarted && greetingSentences.length === 0 && status === 'ready' && messages.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
               <p className="text-xl font-semibold text-gray-700">Ready when you are</p>
               <p className="text-sm text-gray-400">Press the mic button and start speaking.</p>
@@ -380,7 +393,7 @@ export default function ChatPage() {
           )}
 
           {/* Live mode: greeting loading spinner */}
-          {!reviewMode && !hasSession && status === 'greeting' && greetingSentences.length === 0 && (
+          {!reviewMode && !sessionStarted && status === 'greeting' && greetingSentences.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-3">
               <div className="w-8 h-8 rounded-full border-2 border-[#8447FF] border-t-transparent animate-spin" />
             </div>
@@ -556,37 +569,71 @@ function ThinkingDots() {
 
 function DeckCardView({
   deck,
+  isLighter,
+  onAccept,
+  onReject,
+  onLighterMode,
+  onEndSession,
   onNext,
   onSkip,
 }: {
   deck: ExerciseDeck;
+  isLighter: boolean;
+  onAccept: () => void;
+  onReject: () => void;
+  onLighterMode: () => void;
+  onEndSession: () => void;
   onNext: () => void;
   onSkip: () => void;
 }) {
+  const [showRejectOptions, setShowRejectOptions] = useState(false);
+
+  // In lighter mode: auto-advance as soon as any result arrives (no retry).
+  // Normal mode: auto-advance only when AI sets next_action = 'next_card'.
   const card = deck.cards[deck.current_card_index];
+  useEffect(() => {
+    if (!card?.result) return;
+    if (!isLighter && card.next_action !== 'next_card') return;
+    const t = setTimeout(() => onNext(), 2000);
+    return () => clearTimeout(t);
+  }, [card, card?.result, card?.next_action, isLighter, onNext]);
+
   if (!card) return null;
 
   const isOnboarding = deck.session_type === 'onboarding_diagnostic';
-  const cardLabel = isOnboarding
-    ? `Mini check ${deck.current_card_index + 1} / ${deck.cards.length}`
-    : `Exercise ${deck.current_card_index + 1} / ${deck.cards.length}`;
+  let cardLabel: string;
+  if (isLighter)        cardLabel = 'Quick task';
+  else if (isOnboarding) cardLabel = `Mini check ${deck.current_card_index + 1} / ${deck.cards.length}`;
+  else                   cardLabel = `Exercise ${deck.current_card_index + 1} / ${deck.cards.length}`;
+
+  const isContinuation = deck.is_continuation === true;
+  const acceptLabel = isContinuation ? 'Continue' : "Let’s go";
 
   return (
     <div className="w-full max-w-md mx-auto flex flex-col gap-5 pt-2 pb-4">
-      {/* Mission */}
-      <div className="bg-violet-50 rounded-2xl px-4 py-3.5">
-        <p className="text-[10px] font-semibold text-violet-500 uppercase tracking-widest mb-1">Mission</p>
-        <p className="text-sm font-medium text-gray-800 leading-snug">{deck.mission}</p>
-        {deck.reason && (
-          <p className="text-xs text-gray-500 mt-1.5 leading-snug">{deck.reason}</p>
-        )}
-      </div>
+      {/* Continuation banner */}
+      {isContinuation && deck.status === 'not_started' && (
+        <p className="text-xs font-medium text-violet-500 flex items-center gap-1">
+          ↩ Picking up from last session
+        </p>
+      )}
+
+      {/* Mission — hidden in lighter mode to keep it low-pressure */}
+      {!isLighter && (
+        <div className="bg-violet-50 rounded-2xl px-4 py-3.5">
+          <p className="text-[10px] font-semibold text-violet-500 uppercase tracking-widest mb-1">Mission</p>
+          <p className="text-sm font-medium text-gray-800 leading-snug">{deck.mission}</p>
+          {deck.reason && (
+            <p className="text-xs text-gray-500 mt-1.5 leading-snug">{deck.reason}</p>
+          )}
+        </div>
+      )}
 
       {/* Card */}
       <div className="flex flex-col gap-3">
         <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
           {cardLabel}
-          {card.attempts > 0 && (
+          {!isLighter && card.attempts > 0 && (
             <span className="ml-2 normal-case font-normal text-gray-400">
               · Attempt {card.attempts + 1}
             </span>
@@ -595,7 +642,8 @@ function DeckCardView({
         <h2 className="text-2xl font-semibold text-gray-900 leading-snug">{card.title}</h2>
         <p className="text-base text-gray-600 leading-relaxed">{card.task}</p>
 
-        {Array.isArray(card.success_criteria) && card.success_criteria.length > 0 && (
+        {/* Success criteria — hidden in lighter mode */}
+        {!isLighter && Array.isArray(card.success_criteria) && card.success_criteria.length > 0 && (
           <ul className="flex flex-col gap-1.5 mt-1">
             {card.success_criteria.map((criterion, i) => (
               <li key={i} className="flex items-start gap-2 text-sm text-gray-500">
@@ -621,41 +669,89 @@ function DeckCardView({
         )}
       </div>
 
-      {/* Actions — visibility derived from the AI's eval (card.next_action + result). */}
-      <DeckCardActions card={card} onNext={onNext} onSkip={onSkip} />
+      {/* Actions */}
+      {deck.status === 'not_started' && !showRejectOptions && (
+        <div className="flex gap-3">
+          <button
+            onClick={onAccept}
+            className="flex-1 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 active:scale-95 transition-all"
+          >
+            {acceptLabel}
+          </button>
+          <button
+            onClick={() => setShowRejectOptions(true)}
+            className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+          >
+            Not today
+          </button>
+        </div>
+      )}
+
+      {deck.status === 'not_started' && showRejectOptions && (
+        <div className="flex flex-col gap-3">
+          <p className="text-xs text-gray-400 text-center tracking-wide">What would you prefer?</p>
+          <div className="flex gap-2">
+            <button
+              onClick={onReject}
+              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+            >
+              Free talk
+            </button>
+            <button
+              onClick={onLighterMode}
+              className="flex-1 py-2.5 rounded-xl bg-violet-50 text-violet-700 text-sm font-semibold hover:bg-violet-100 active:scale-95 transition-all"
+            >
+              Quick task
+            </button>
+            <button
+              onClick={onEndSession}
+              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-500 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+            >
+              That&apos;s all
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deck.status === 'in_progress' && (
+        <DeckCardActions card={card} isLighter={isLighter} onNext={onNext} onSkip={onSkip} />
+      )}
     </div>
   );
 }
 
 function DeckCardActions({
   card,
+  isLighter,
   onNext,
   onSkip,
 }: {
   card: DeckCard;
+  isLighter: boolean;
   onNext: () => void;
   onSkip: () => void;
 }) {
   const isFinalBoss = card.type === 'final_boss';
   const hasEval = !!card.result;
 
-  // Skip button is always available (spec PART 5) — user can opt out of any card
-  // even before they've spoken. Other buttons only appear once the AI evaluates.
+  // Lighter mode: never show Retry; auto-advance handles progression.
   const showRetry =
-    hasEval && card.next_action === 'retry' && card.retry_allowed && (card.attempts ?? 0) < 3;
+    !isLighter && hasEval && card.next_action === 'retry' && card.retry_allowed && (card.attempts ?? 0) < 3;
   const showFinish =
     hasEval && (card.next_action === 'finish_session' || (isFinalBoss && card.result === 'passed'));
   const showNext = hasEval && !showFinish && card.next_action !== 'retry';
 
   return (
     <div className="flex justify-end gap-2 pt-1">
-      <button
-        type="button"
-        onClick={onSkip}
-        className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors"
-      >
-        Skip
-      </button>
+      {!isLighter && (
+        <button
+          type="button"
+          onClick={onSkip}
+          className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors"
+        >
+          Skip
+        </button>
+      )}
       {showRetry && (
         <button
           type="button"
@@ -670,7 +766,7 @@ function DeckCardActions({
           onClick={onNext}
           className="h-9 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
         >
-          Next →
+          {isLighter ? 'Done ✓' : 'Next →'}
         </button>
       )}
       {showFinish && (
