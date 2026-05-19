@@ -115,29 +115,37 @@ type Step = typeof STEPS[number];
 function StepBar({ step, onClose }: { step: Step; onClose: () => void }) {
   const idx = STEPS.indexOf(step);
   return (
-    <div className="flex items-center px-6 py-4 border-b border-gray-100">
+    <div className="flex items-center px-6 py-4" style={{ borderBottom: '2px solid #f3f3f3' }}>
       {STEPS.map((s, i) => (
         <div key={s} className="flex items-center">
-          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold transition-all ${
-            idx === i ? 'bg-[#8447FF] text-white'
-            : idx > i  ? 'bg-emerald-100 text-emerald-700'
-            : 'bg-gray-100 text-gray-400'
-          }`}>
+          <div
+            className="w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-extrabold transition-all"
+            style={{
+              fontFamily: 'Lexend, sans-serif',
+              background: idx === i ? '#4338ca' : idx > i ? '#dff5c5' : '#f3f3f3',
+              color:      idx === i ? '#fff'     : idx > i ? '#1e5000' : '#6f7b64',
+            }}
+          >
             {idx > i ? '✓' : i + 1}
           </div>
-          {i < 2 && <div className={`w-8 h-px mx-1 transition-all ${idx > i ? 'bg-[#8447FF]/40' : 'bg-gray-100'}`} />}
+          {i < 2 && (
+            <div
+              className="w-8 h-0.5 mx-1 transition-all"
+              style={{ background: idx > i ? 'rgba(67,56,202,0.3)' : '#e2e2e2' }}
+            />
+          )}
         </div>
       ))}
-      <span className="ml-auto text-xs text-gray-400">
+      <span className="ml-auto text-xs font-medium" style={{ color: '#6f7b64', fontFamily: 'Lexend, sans-serif' }}>
         {step === 'review' ? 'Review' : step === 'qr' ? 'Payment' : 'Done'}
       </span>
-      {/* X always visible */}
       <button
         onClick={onClose}
-        className="ml-3 w-7 h-7 rounded-full hover:bg-gray-100 flex items-center justify-center transition"
+        className="ml-3 w-7 h-7 rounded-full flex items-center justify-center transition-all hover:scale-110"
+        style={{ background: '#f3f3f3' }}
         title="Close"
       >
-        <X className="w-3.5 h-3.5 text-gray-400" />
+        <X className="w-3.5 h-3.5" style={{ color: '#6f7b64' }} />
       </button>
     </div>
   );
@@ -150,22 +158,46 @@ export function CancelModal({ sub, onConfirm, onClose, confirming }: {
   const label = sub.plan.interval === 'month' ? 'Pro Monthly' : 'Pro Yearly';
   return (
     <Overlay onClose={onClose}>
-      <div className="p-7">
-        <div className="w-14 h-14 rounded-2xl bg-rose-50 flex items-center justify-center mx-auto mb-4">
-          <AlertCircle className="w-7 h-7 text-rose-400" />
+      <div className="p-7" style={{ fontFamily: 'Lexend, sans-serif' }}>
+        <div
+          className="w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4"
+          style={{ background: '#ffeaea' }}
+        >
+          <AlertCircle className="w-7 h-7" style={{ color: '#ba1a1a' }} />
         </div>
-        <h3 className="text-xl font-bold text-gray-900 text-center mb-2">Cancel Subscription?</h3>
-        <p className="text-sm text-gray-500 text-center leading-relaxed mb-1">
-          You keep <span className="font-semibold text-gray-800">{label}</span> access until{' '}
-          <span className="font-semibold text-gray-800">{fmtDate(sub.current_period_end)}</span>.
+        <h3 className="text-xl font-extrabold text-center mb-2" style={{ color: '#1a1c1c' }}>Cancel Subscription?</h3>
+        <p className="text-sm text-center leading-relaxed mb-1" style={{ color: '#3c3c3c' }}>
+          You keep <span className="font-bold" style={{ color: '#1a1c1c' }}>{label}</span> access until{' '}
+          <span className="font-bold" style={{ color: '#1a1c1c' }}>{fmtDate(sub.current_period_end)}</span>.
         </p>
-        <p className="text-xs text-gray-400 text-center mb-7">
+        <p className="text-xs text-center mb-7" style={{ color: '#6f7b64' }}>
           After that you revert to Free — 50k tokens · 10 sessions/mo.
         </p>
-        <button onClick={onClose} className="w-full py-3.5 rounded-2xl bg-[#8447FF] text-white font-bold text-sm hover:bg-[#7C3AED] transition mb-2">
+        <button
+          onClick={onClose}
+          className="w-full py-3.5 rounded-2xl font-extrabold text-sm select-none mb-2"
+          style={{
+            background: '#58cc02',
+            color: '#1e5000',
+            boxShadow: '0 4px 0 #1f5100',
+            border: 'none',
+            cursor: 'pointer',
+            transition: 'transform 80ms ease, box-shadow 80ms ease',
+          }}
+          onMouseDown={e => { (e.currentTarget as HTMLButtonElement).style.transform = 'translateY(4px)'; (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 0px 0 #1f5100'; }}
+          onMouseUp={e => { (e.currentTarget as HTMLButtonElement).style.transform = ''; (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 4px 0 #1f5100'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.transform = ''; (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 4px 0 #1f5100'; }}
+        >
           Keep My Plan
         </button>
-        <button onClick={onConfirm} disabled={confirming} className="w-full py-3 rounded-2xl text-rose-400 font-medium text-sm hover:bg-rose-50 transition disabled:opacity-50">
+        <button
+          onClick={onConfirm}
+          disabled={confirming}
+          className="w-full py-3 rounded-2xl font-semibold text-sm transition-colors disabled:opacity-50"
+          style={{ color: '#ba1a1a', background: 'transparent' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = '#fff0f0'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+        >
           {confirming ? 'Cancelling…' : 'Yes, Cancel'}
         </button>
       </div>
@@ -248,18 +280,40 @@ function SuccessView({ isPlanUpgrade, onClose }: { isPlanUpgrade: boolean; onClo
         <div className={`space-y-2 transition-all duration-500 ${phase >= 4 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-3'}`}>
           <button
             onClick={onClose}
-            className="w-full py-3.5 rounded-2xl bg-[#8447FF] text-white font-bold text-sm hover:bg-[#7C3AED] transition"
+            className="w-full py-3.5 rounded-2xl font-extrabold text-sm select-none"
+            style={{
+              fontFamily: 'Lexend, sans-serif',
+              background: '#58cc02',
+              color: '#1e5000',
+              boxShadow: '0 4px 0 #1f5100',
+              border: 'none',
+              cursor: 'pointer',
+              transition: 'transform 80ms, box-shadow 80ms',
+            }}
+            onMouseDown={e => { (e.currentTarget as HTMLButtonElement).style.transform='translateY(4px)'; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 0px 0 #1f5100'; }}
+            onMouseUp={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 4px 0 #1f5100'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 4px 0 #1f5100'; }}
           >
             {isPlanUpgrade ? 'Start Learning →' : 'Great, thanks!'}
           </button>
           {isPlanUpgrade && (
             <button
               onClick={() => doShare(() => { setCopied(true); setTimeout(() => setCopied(false), 2200); })}
-              className="w-full py-3 rounded-2xl border border-violet-200 text-sm font-semibold transition flex items-center justify-center gap-2 hover:bg-violet-50 active:scale-[0.98]"
-              style={{ color: copied ? '#059669' : '#8447FF' }}
+              className="w-full py-3 rounded-2xl text-sm font-extrabold transition-all flex items-center justify-center gap-2 select-none"
+              style={{
+                fontFamily: 'Lexend, sans-serif',
+                border: '2px solid #c4b5fd',
+                background: copied ? '#ecfdf5' : '#fff',
+                color: copied ? '#059669' : '#4338ca',
+                boxShadow: '0 3px 0 #c4b5fd',
+                transition: 'transform 80ms, background 120ms',
+              }}
+              onMouseDown={e => { (e.currentTarget as HTMLButtonElement).style.transform='translateY(2px)'; }}
+              onMouseUp={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; }}
             >
               {copied
-                ? <><CheckCircle2 className="w-4 h-4 text-emerald-500" /> Link copied!</>
+                ? <><CheckCircle2 className="w-4 h-4" /> Link copied!</>
                 : <><Share2 className="w-4 h-4" /> Share with friends</>
               }
             </button>
@@ -386,7 +440,19 @@ export function CheckoutModal({ order, onClose, onConfirm }: {
           <button
             onClick={handlePay}
             disabled={loading}
-            className="w-full py-4 rounded-2xl bg-[#8447FF] text-white font-bold text-sm hover:bg-[#7C3AED] active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+            className="w-full py-4 rounded-2xl font-extrabold text-sm select-none flex items-center justify-center gap-2 disabled:opacity-60"
+            style={{
+              fontFamily: 'Lexend, sans-serif',
+              background: '#58cc02',
+              color: '#1e5000',
+              boxShadow: '0 5px 0 #1f5100',
+              border: 'none',
+              cursor: loading ? 'not-allowed' : 'pointer',
+              transition: 'transform 80ms, box-shadow 80ms',
+            }}
+            onMouseDown={e => { if (!loading) { (e.currentTarget as HTMLButtonElement).style.transform='translateY(4px)'; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 1px 0 #1f5100'; } }}
+            onMouseUp={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 5px 0 #1f5100'; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.transform=''; (e.currentTarget as HTMLButtonElement).style.boxShadow='0 5px 0 #1f5100'; }}
           >
             {loading
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Generating QR…</>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { X } from 'lucide-react';
+import { X, Mic2, Sparkles, Waves } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
 import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
@@ -129,7 +129,8 @@ export default function ChatPage() {
   }, [wordDictionary]);
 
   // Mic is disabled while greeting plays, processing, or idle startup
-  const micDisabled = status === 'idle' || status === 'greeting' || status === 'processing';
+  const isLimitReached = billingLimitCode !== null;
+  const micDisabled = isLimitReached || status === 'idle' || status === 'greeting' || status === 'processing';
 
   // Scroll-up handler for review mode: load earlier messages when near top
   const handleReviewScroll = useCallback(() => {
@@ -174,23 +175,26 @@ export default function ChatPage() {
   if (isEnding) {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
-        <div className="h-14 w-14 rounded-full bg-violet-100 flex items-center justify-center">
+        <div
+          className="h-16 w-16 rounded-2xl flex items-center justify-center"
+          style={{ background: '#f0e8ff' }}
+        >
           {closingText ? (
-            <div className="h-7 w-7 rounded-full bg-[#8447FF] animate-pulse" />
+            <div className="h-8 w-8 rounded-full animate-pulse" style={{ background: '#8447FF' }} />
           ) : (
-            <div className="h-7 w-7 rounded-full border-[3px] border-[#8447FF] border-t-transparent animate-spin" />
+            <div className="h-8 w-8 rounded-full border-[3px] border-[#8447FF] border-t-transparent animate-spin" />
           )}
         </div>
         <div className="max-w-md">
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-widest mb-3">
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-3" style={{ color: '#afafaf' }}>
             Session ending
           </p>
           {closingText ? (
-            <p className="text-xl font-medium text-gray-800 leading-relaxed">
+            <p className="text-xl font-bold leading-relaxed" style={{ color: '#3c3c3c' }}>
               {closingText}
             </p>
           ) : (
-            <p className="text-sm text-gray-400 animate-pulse">Preparing your recap…</p>
+            <p className="text-sm font-medium animate-pulse" style={{ color: '#c0c0c0' }}>Preparing your recap…</p>
           )}
         </div>
       </main>
@@ -202,22 +206,36 @@ export default function ChatPage() {
   if (confirmEnd) {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
-        <p className="text-lg font-semibold text-gray-800">End this session?</p>
-        <p className="text-sm text-gray-400 max-w-xs">
-          The AI will give you a short recap before wrapping up.
-        </p>
+        <div
+          className="h-16 w-16 rounded-2xl flex items-center justify-center text-3xl"
+          style={{ background: '#fff1f0', boxShadow: '0 4px 0 #ffd7d5' }}
+        >
+          🛑
+        </div>
+        <div className="max-w-xs">
+          <p className="text-xl font-extrabold mb-2" style={{ color: '#3c3c3c' }}>End this session?</p>
+          <p className="text-sm font-medium" style={{ color: '#afafaf' }}>
+            The AI will give you a short recap before wrapping up.
+          </p>
+        </div>
         <div className="flex gap-3">
           <button
             type="button"
             onClick={() => setConfirmEnd(false)}
-            className="h-10 px-5 rounded-full border border-gray-200 text-sm font-medium text-gray-600 hover:border-gray-300 transition-colors"
+            className="lip-btn lip-btn-ghost h-11 px-6 text-sm"
+            style={{ '--btn-radius': '14px' } as React.CSSProperties}
           >
             Keep talking
           </button>
           <button
             type="button"
             onClick={() => { setConfirmEnd(false); void endSession('user_clicked'); }}
-            className="h-10 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+            className="lip-btn h-11 px-6 text-sm"
+            style={{
+              '--btn-radius': '14px',
+              background: '#e53e3e',
+              color: '#fff',
+            } as React.CSSProperties}
           >
             End session
           </button>
@@ -343,90 +361,93 @@ export default function ChatPage() {
         titleUpdate={sessionTitleUpdate}
       />
 
-      <main className="flex flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between px-6 pt-6 pb-2 z-10 shrink-0">
-          <div className="w-20" />
-          {reviewMode
-            ? <span className="text-xs font-medium text-gray-400">History</span>
-            : <StatusBadge status={status} />
-          }
-          <div className="w-20 flex justify-end">
+      <main
+        className="flex flex-1 flex-col overflow-hidden"
+        style={{ background: '#f9f9f9' }}
+      >
+        {/* ── Top bar ── */}
+        <header
+          className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40"
+          style={{ background: '#f9f9f9' }}
+        >
+          {reviewMode ? (
+            <h2
+              className="text-2xl font-black"
+              style={{ fontFamily: 'Lexend, sans-serif', color: '#1a1c1c', letterSpacing: '-0.01em' }}
+            >
+              History
+            </h2>
+          ) : (
+            <h2
+              className="text-2xl font-black"
+              style={{ fontFamily: 'Lexend, sans-serif', color: '#2b6c00', letterSpacing: '-0.01em' }}
+            >
+              Focus Dashboard
+            </h2>
+          )}
+
+          <div className="flex items-center gap-6">
+            {/* Status badge */}
+            <StatusBadge status={status} reviewMode={reviewMode} isLimitReached={isLimitReached} />
+            {/* End session */}
             {!reviewMode && sessionStarted && (
               <EndSessionButton onClick={() => setConfirmEnd(true)} />
             )}
           </div>
         </header>
 
+        {/* ── Scrollable content ── */}
         <div
           ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-3"
+          className="flex-1 overflow-y-auto"
           onScroll={reviewMode ? handleReviewScroll : undefined}
         >
-          {/* Review mode: full-screen spinner on initial session load */}
+          {/* Review spinners */}
           {reviewMode && reviewLoading && messages.length === 0 && (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="w-10 h-10 rounded-full border-4 border-[#4A6741]/30 border-t-[#4A6741] animate-spin" />
+            <div className="flex items-center justify-center h-64">
+              <div className="w-10 h-10 rounded-full border-4 border-[#58cc02]/30 border-t-[#58cc02] animate-spin" />
             </div>
           )}
-
-          {/* Review mode: small top spinner when loading earlier messages (not initial load) */}
           {reviewMode && reviewLoading && messages.length > 0 && (
             <div className="flex justify-center py-3">
-              <div className="w-4 h-4 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
+              <div className="w-4 h-4 rounded-full border-2 border-[#58cc02] border-t-transparent animate-spin" />
             </div>
           )}
 
-          {/* Mission card — pre-session anchor showing last-session continuity.
-              Hidden once a live session starts or while reviewing history. */}
+          {/* ── HOME SCREEN ── */}
           {!reviewMode && !sessionStarted && (
-            <div className="px-4 pt-2">
-              <MissionCard />
-            </div>
+            <HomeDashboard
+              status={status}
+              greetingSentences={greetingSentences}
+              onStartSession={startMic}
+              insight={null /* MissionCard handles its own fetch */}
+            />
           )}
 
-          {/* Live mode: greeting */}
-          {!reviewMode && !sessionStarted && greetingSentences.length > 0 && (
-            <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-3">
-              <p className="text-2xl font-medium text-gray-700 leading-relaxed max-w-xl">
-                {greetingSentences.join(' ')}
-              </p>
-              {status === 'ready' && (
-                <p className="text-sm text-gray-400 animate-reveal">Press the mic button and start speaking.</p>
+          {/* ── Message bubbles (live + review) ── */}
+          {(reviewMode || sessionStarted) && (
+            <div className="flex flex-col gap-3 px-10 py-6">
+              {messages.map((msg, i) => (
+                <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
+              ))}
+              {!reviewMode && errorMessage && (
+                <div className="flex justify-center my-2">
+                  <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
+                </div>
               )}
+              <div ref={messagesEndRef} />
             </div>
           )}
 
-          {/* Live mode: greeting fallback */}
-          {!reviewMode && !sessionStarted && greetingSentences.length === 0 && status === 'ready' && messages.length === 0 && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-center">
-              <p className="text-xl font-semibold text-gray-700">Ready when you are</p>
-              <p className="text-sm text-gray-400">Press the mic button and start speaking.</p>
-            </div>
-          )}
-
-          {/* Live mode: greeting loading spinner */}
-          {!reviewMode && !sessionStarted && status === 'greeting' && greetingSentences.length === 0 && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-3">
-              <div className="w-8 h-8 rounded-full border-2 border-[#8447FF] border-t-transparent animate-spin" />
-            </div>
-          )}
-
-          {/* Message bubbles (live and review) */}
-          {messages.map((msg, i) => (
-            <MessageBubble key={i} message={msg} onWordDoubleClick={handleWordDoubleClick} />
-          ))}
-
-          {/* Error banner (live mode only) */}
-          {!reviewMode && errorMessage && (
-            <div className="flex justify-center my-2">
+          {/* Error banner pre-session */}
+          {!reviewMode && !sessionStarted && errorMessage && (
+            <div className="flex justify-center px-10 my-2">
               <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
             </div>
           )}
-
-          <div ref={messagesEndRef} />
         </div>
 
-        {/* Waveform — live mode only */}
+        {/* Waveform */}
         {!reviewMode && isRecording && (
           <div className="flex justify-center py-2">
             <Waveform isRecording={isRecording} analyser={analyser} />
@@ -439,19 +460,18 @@ export default function ChatPage() {
           onStopMic={stopMic}
           isRecording={isRecording}
           disabled={micDisabled}
+          disabledReason={isLimitReached ? 'Limit reached' : undefined}
           hideMic={reviewMode}
         />
       </main>
 
-      {/* 4 corner snap indicators — visible while popup is open */}
+      {/* Corner snap indicators */}
       {wordDictionary.isOpen && CORNER_STYLES.map((cs, i) => (
         <div
           key={i}
-          style={{ position: 'fixed', ...cs, width: 14, height: 14, borderRadius: 4, border: '2px solid rgba(132,71,255,0.35)', background: 'rgba(132,71,255,0.08)', zIndex: 99, pointerEvents: 'none' }}
+          style={{ position: 'fixed', ...cs, width: 14, height: 14, borderRadius: 4, border: '2px solid rgba(88,204,2,0.35)', background: 'rgba(88,204,2,0.08)', zIndex: 99, pointerEvents: 'none' }}
         />
       ))}
-
-      {/* Dictionary popup — snaps to one of 4 corners, draggable between them */}
       {wordDictionary.isOpen && dictAnchor && (
         <DictionaryPopup
           key={wordDictionary.lookupKey}
@@ -470,16 +490,38 @@ export default function ChatPage() {
   );
 }
 
+function TipCard({ emoji, title, desc, color, textColor }: { emoji: string; title: string; desc: string; color: string; textColor: string }) {
+  return (
+    <div
+      className="rounded-2xl px-4 py-3.5 flex flex-col gap-1"
+      style={{ background: color, border: `2px solid ${color}` }}
+    >
+      <span className="text-xl" role="img">{emoji}</span>
+      <p className="text-sm font-extrabold" style={{ color: textColor }}>{title}</p>
+      <p className="text-xs font-medium" style={{ color: textColor, opacity: 0.75 }}>{desc}</p>
+    </div>
+  );
+}
+
 function ErrorBanner({ message, showUpgrade }: { message: string; showUpgrade: boolean }) {
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-red-50 text-red-600 px-4 py-2.5 rounded-2xl text-sm font-medium shadow-sm border border-red-100">
+    <div
+      className="flex flex-col sm:flex-row sm:items-center gap-3 px-5 py-3 rounded-2xl text-sm font-bold"
+      style={{
+        background: '#ffdad6',
+        color: '#93000a',
+        border: '2px solid #f2b8b5',
+      }}
+    >
       <span>{message}</span>
       {showUpgrade && (
-        <Link
-          href="/billing"
-          className="inline-flex h-8 shrink-0 items-center justify-center rounded-full bg-[#8447FF] px-3 text-xs font-semibold text-white hover:bg-violet-700 transition-colors"
-        >
-          Upgrade
+        <Link href="/billing">
+          <button
+            className="vp-btn-secondary shrink-0 text-xs"
+            style={{ padding: '6px 14px', borderRadius: '12px' }}
+          >
+            Upgrade
+          </button>
         </Link>
       )}
     </div>
@@ -487,16 +529,33 @@ function ErrorBanner({ message, showUpgrade }: { message: string; showUpgrade: b
 }
 
 function EndSessionButton({ onClick }: { onClick: () => void }) {
+  const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-9 items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 text-xs font-medium text-gray-500 shadow-sm transition-colors hover:border-rose-200 hover:bg-rose-50 hover:text-rose-500"
+      onMouseDown={() => setPressed(true)}
+      onMouseUp={() => setPressed(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => { setHovered(false); setPressed(false); }}
       aria-label="End session"
-      title="End session"
+      className="inline-flex items-center gap-1.5 text-xs font-bold select-none"
+      style={{
+        fontFamily: 'Lexend, sans-serif',
+        padding: '8px 16px',
+        borderRadius: '12px',
+        background: hovered ? '#ffe0de' : '#fff0f0',
+        color: '#ba1a1a',
+        boxShadow: pressed ? '0 1px 0 #f2b8b5' : hovered ? '0 4px 0 #f2b8b5' : '0 3px 0 #f2b8b5',
+        transform: pressed ? 'translateY(2px)' : hovered ? 'translateY(-1px)' : 'translateY(0)',
+        transition: 'transform 100ms ease, box-shadow 100ms ease, background 100ms ease',
+        border: 'none',
+        cursor: 'pointer',
+      }}
     >
-      <X className="h-4 w-4" aria-hidden="true" />
-      <span>End</span>
+      <X size={14} strokeWidth={2.5} />
+      End session
     </button>
   );
 }
@@ -697,23 +756,24 @@ function DeckCardView({
         <div className="flex gap-3">
           <button
             onClick={onAccept}
-            className="flex-1 py-2.5 rounded-xl bg-violet-600 text-white text-sm font-semibold hover:bg-violet-700 active:scale-95 transition-all"
+            className="lip-btn lip-btn-green flex-1 py-3 text-sm"
+            style={{ '--btn-radius': '14px' } as React.CSSProperties}
           >
             {acceptLabel}
           </button>
           {isOnboarding ? (
-            // Onboarding: simple "Maybe later" that rejects immediately
             <button
               onClick={onReject}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+              className="lip-btn lip-btn-ghost flex-1 py-3 text-sm"
+              style={{ '--btn-radius': '14px' } as React.CSSProperties}
             >
               Maybe later
             </button>
           ) : (
-            // Non-onboarding: show sub-option menu
             <button
               onClick={() => setShowRejectOptions(true)}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+              className="lip-btn lip-btn-ghost flex-1 py-3 text-sm"
+              style={{ '--btn-radius': '14px' } as React.CSSProperties}
             >
               Not today
             </button>
@@ -806,13 +866,17 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          className="h-9 px-5 rounded-full bg-[#8447FF] text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+          className="vp-btn-primary text-sm"
+          style={{ padding: '8px 20px', borderRadius: '12px' }}
         >
           {isLighter ? 'Done ✓' : 'Next →'}
         </button>
       )}
       {showFinish && isOnboarding && (
-        <span className="inline-flex items-center gap-1.5 h-9 px-5 rounded-full bg-emerald-50 text-emerald-600 text-sm font-semibold animate-pulse">
+        <span
+          className="inline-flex items-center gap-1.5 h-9 px-5 rounded-full text-sm font-semibold animate-pulse"
+          style={{ background: '#e8f9d3', color: '#2b6c00' }}
+        >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
           </svg>
@@ -823,7 +887,8 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          className="h-9 px-5 rounded-full bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors"
+          className="vp-btn-primary text-sm"
+          style={{ padding: '8px 20px', borderRadius: '12px', background: '#58cc02', boxShadow: '0 4px 0 #1f5100' }}
         >
           Finish ✓
         </button>
@@ -832,26 +897,196 @@ function DeckCardActions({
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const labels: Record<string, string> = {
-    idle: 'Starting…',
-    greeting: 'Speaking…',
-    ready: 'Ready',
-    recording: 'Listening…',
-    processing: 'Thinking…',
-    error: 'Error — tap mic to retry',
-  };
-  const colors: Record<string, string> = {
-    idle: 'text-gray-400',
-    greeting: 'text-violet-500',
-    ready: 'text-[#8447FF]',
-    recording: 'text-rose-500',
-    processing: 'text-amber-500',
-    error: 'text-rose-400',
-  };
+// ── HomeDashboard ─────────────────────────────────────────────────────────────────────
+function HomeDashboard({
+  status,
+  greetingSentences,
+  onStartSession,
+}: {
+  status: string;
+  greetingSentences: string[];
+  onStartSession: () => void;
+  insight: null;
+}) {
+  const [startPressed, setStartPressed] = useState(false);
+  const [startHovered, setStartHovered] = useState(false);
+
   return (
-    <span className={`text-xs font-medium ${colors[status] ?? 'text-gray-400'}`}>
-      {labels[status] ?? status}
+    <div
+      className="flex-1 flex flex-col items-center justify-center p-8 w-full"
+      style={{ fontFamily: 'Lexend, sans-serif' }}
+    >
+      <div className="w-full max-w-[700px]">
+        <div
+          className="rounded-3xl flex flex-col relative overflow-hidden p-8 sm:p-10"
+          style={{
+            background: 'linear-gradient(145deg, #312e81 0%, #4338ca 55%, #6366f1 100%)',
+            boxShadow: '0 6px 0 #1e1b4b',
+          }}
+        >
+          {/* Decorative blobs */}
+          <div aria-hidden="true" className="pointer-events-none absolute top-0 right-0 overflow-hidden w-56 h-56 opacity-[0.18]">
+            <div className="absolute -top-8 -right-8 w-48 h-48 rounded-full border-[16px] border-white" />
+            <div className="absolute top-12 right-2 w-24 h-24 rounded-full border-[10px] border-white" />
+          </div>
+          <div aria-hidden="true" className="pointer-events-none absolute -bottom-8 -left-8 w-36 h-36 rounded-full opacity-[0.1]"
+            style={{ background: 'white' }} />
+
+          <div className="relative z-10">
+            {greetingSentences.length > 0 ? (
+              <>
+                {/* AI Coach label */}
+                <div className="flex items-center gap-2 mb-5">
+                  <span
+                    className="inline-flex items-center justify-center rounded-xl"
+                    style={{ width: 30, height: 30, background: 'rgba(255,255,255,0.2)', color: '#fff' }}
+                  >
+                    <Sparkles size={15} strokeWidth={2.5} />
+                  </span>
+                  <p className="text-xs font-extrabold uppercase tracking-[0.14em]" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                    AI Coach says…
+                  </p>
+                </div>
+
+                <h2
+                  className="text-3xl sm:text-4xl font-extrabold mb-6 leading-tight"
+                  style={{ color: '#ffffff', letterSpacing: '-0.01em' }}
+                >
+                  {greetingSentences.join(' ')}
+                </h2>
+
+                {status === 'ready' && (
+                  <div className="flex items-center gap-2" style={{ color: 'rgba(255,255,255,0.75)' }}>
+                    <Waves size={17} strokeWidth={2.5} className="shrink-0" />
+                    <p className="text-base font-bold">Hold the mic below to reply.</p>
+                  </div>
+                )}
+              </>
+            ) : status === 'greeting' ? (
+              <>
+                {/* Loading state */}
+                <div className="flex items-center gap-3 mb-5">
+                  <span
+                    className="inline-flex items-center justify-center rounded-xl"
+                    style={{ width: 36, height: 36, background: 'rgba(255,255,255,0.2)', color: '#fff' }}
+                  >
+                    <Mic2 size={18} strokeWidth={2.5} />
+                  </span>
+                  <div className="flex gap-1.5 items-center">
+                    <div className="w-2 h-2 rounded-full bg-white animate-bounce" style={{ animationDelay: '0ms', opacity: 0.8 }} />
+                    <div className="w-2 h-2 rounded-full bg-white animate-bounce" style={{ animationDelay: '150ms', opacity: 0.8 }} />
+                    <div className="w-2 h-2 rounded-full bg-white animate-bounce" style={{ animationDelay: '300ms', opacity: 0.8 }} />
+                  </div>
+                </div>
+                <h2 className="text-3xl sm:text-4xl font-extrabold mb-3" style={{ color: '#fff', letterSpacing: '-0.01em' }}>
+                  Hold on…
+                </h2>
+                <p className="text-lg font-medium" style={{ color: 'rgba(255,255,255,0.7)' }}>
+                  Your AI coach is getting ready.
+                </p>
+              </>
+            ) : (
+              <>
+                {/* Default idle state */}
+                <div className="flex items-center gap-2 mb-5">
+                  <span
+                    className="inline-flex items-center justify-center rounded-xl"
+                    style={{ width: 36, height: 36, background: 'rgba(255,255,255,0.2)', color: '#fff' }}
+                  >
+                    <Sparkles size={18} strokeWidth={2.5} />
+                  </span>
+                  <span
+                    className="text-xs font-extrabold uppercase tracking-widest px-3 py-1 rounded-full"
+                    style={{ background: 'rgba(255,255,255,0.18)', color: 'rgba(255,255,255,0.9)' }}
+                  >
+                    Let&apos;s go!
+                  </span>
+                </div>
+
+                <h2
+                  className="text-3xl sm:text-4xl font-extrabold mb-3 leading-tight"
+                  style={{ color: '#ffffff', letterSpacing: '-0.01em' }}
+                >
+                  Ready to practice?
+                </h2>
+                <p className="text-lg font-medium mb-8" style={{ color: 'rgba(255,255,255,0.72)' }}>
+                  Start a conversation with your AI coach.
+                </p>
+
+                {/* Lip-press Start Session button */}
+                <button
+                  onClick={onStartSession}
+                  onMouseEnter={() => setStartHovered(true)}
+                  onMouseDown={() => { setStartHovered(false); setStartPressed(true); }}
+                  onMouseUp={() => setStartPressed(false)}
+                  onMouseLeave={() => { setStartHovered(false); setStartPressed(false); }}
+                  onTouchStart={() => setStartPressed(true)}
+                  onTouchEnd={() => { setStartPressed(false); onStartSession(); }}
+                  className="inline-flex items-center gap-3 text-lg font-extrabold select-none"
+                  style={{
+                    fontFamily: 'Lexend, sans-serif',
+                    padding: '14px 32px',
+                    borderRadius: '16px',
+                    background: startHovered ? '#67dd0d' : '#58cc02',
+                    color: '#1e5000',
+                    border: 'none',
+                    cursor: 'pointer',
+                    boxShadow: startPressed
+                      ? '0 1px 0 #1f5100'
+                      : startHovered
+                      ? '0 7px 0 #1f5100'
+                      : '0 5px 0 #1f5100',
+                    transform: startPressed
+                      ? 'translateY(4px)'
+                      : startHovered
+                      ? 'translateY(-2px)'
+                      : 'translateY(0)',
+                    transition: 'transform 100ms ease, box-shadow 100ms ease, background 120ms ease',
+                  }}
+                >
+                  <Mic2 size={22} strokeWidth={2.5} />
+                  Start Session
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MicButtonIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
+function StatusBadge({ status, reviewMode, isLimitReached }: { status: string; reviewMode?: boolean; isLimitReached?: boolean }) {
+  if (reviewMode) return null;
+  const configs: Record<string, { label: string; bg: string; color: string; dot?: string }> = {
+    idle:       { label: 'Starting…',        bg: '#eeeeee', color: '#6f7b64' },
+    greeting:   { label: 'AI Speaking',      bg: '#c8e6ff', color: '#004666', dot: '#006590' },
+    ready:      { label: 'Ready',            bg: '#58cc02', color: '#1e5000', dot: '#1f5100' },
+    recording:  { label: 'Listening…',      bg: '#ffdad6', color: '#93000a', dot: '#ba1a1a' },
+    processing: { label: 'Thinking…',       bg: '#ffdcbf', color: '#683a00', dot: '#8c5000' },
+    error:      { label: 'Error — try again', bg: '#ffdad6', color: '#93000a' },
+    limit:      { label: 'Limit reached',    bg: '#ffdad6', color: '#93000a' },
+  };
+  const activeStatus = isLimitReached ? 'limit' : status;
+  const cfg = configs[activeStatus] ?? { label: activeStatus, bg: '#eeeeee', color: '#6f7b64' };
+  return (
+    <span
+      className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-sm font-bold"
+      style={{ background: cfg.bg, color: cfg.color, fontFamily: 'Lexend, sans-serif' }}
+    >
+      {cfg.dot && <span className="w-2 h-2 rounded-full animate-pulse" style={{ background: cfg.dot }} />}
+      {cfg.label}
     </span>
   );
 }

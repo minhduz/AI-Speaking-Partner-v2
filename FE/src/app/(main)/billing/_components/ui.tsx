@@ -1,18 +1,18 @@
-// Shared UI primitives — billing
-// Design: Soft Minimalism — neutral base + selective pastel tints + single violet accent
-// Cards defined by shadow, not border. Pastel tints add personality per-section.
+// Shared UI primitives — billing · Vibrant Play design system
+// Color philosophy: flat solid colors from palette, NOT gradients
+// Green #58cc02 = primary-container | Blue #2fb8ff = secondary-container | Orange #ff9c27 = tertiary-container
 import { AlertCircle } from 'lucide-react';
 
 export function UsageBar({ pct, warn }: { pct: number; warn?: boolean }) {
-  const fill =
-    warn && pct >= 90 ? 'bg-rose-500'
-    : warn && pct >= 70 ? 'bg-amber-400'
-    : 'bg-[#8447FF]';
+  const bg =
+    warn && pct >= 90 ? '#ba1a1a'
+    : warn && pct >= 70 ? '#ff9c27'
+    : '#58cc02';
   return (
-    <div className="h-2.5 w-full rounded-full overflow-hidden bg-gray-200">
+    <div className="h-3 w-full rounded-full overflow-hidden" style={{ background: '#eeeeee' }}>
       <div
-        className={`h-full rounded-full transition-all duration-700 ${fill}`}
-        style={{ width: `${Math.min(100, pct)}%` }}
+        className="h-full rounded-full transition-all duration-700"
+        style={{ width: `${Math.min(100, pct)}%`, background: bg }}
       />
     </div>
   );
@@ -23,23 +23,30 @@ export function Badge({
   variant = 'primary',
 }: {
   children: React.ReactNode;
-  variant?: 'primary' | 'soft' | 'green';
+  variant?: 'primary' | 'pro' | 'soft' | 'green';
 }) {
-  const cls =
-    variant === 'primary' ? 'bg-[#8447FF] text-white' :
-    variant === 'green'   ? 'bg-emerald-100 text-emerald-700' :
-                            'bg-violet-100 text-[#7C3AED]';
+  const style =
+    variant === 'pro'     ? { background: '#1e5000', color: '#ffffff' } :
+    variant === 'primary' ? { background: '#58cc02', color: '#1e5000' } :
+    variant === 'green'   ? { background: '#dff5c5', color: '#1e5000' } :
+                            { background: '#eeeeee', color: '#3f4a36' };
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-3 py-1 rounded-full ${cls}`}>
+    <span
+      className="inline-flex items-center gap-1 text-[11px] font-extrabold px-3 py-1 rounded-full"
+      style={{ fontFamily: 'Lexend, sans-serif', ...style }}
+    >
       {children}
     </span>
   );
 }
 
-// Default card: white + shadow, no border
+// White card — 2px border + bottom lip shadow (Vibrant Play standard)
 export function Card({ children, className = '' }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className={`bg-white rounded-3xl shadow-sm p-6 ${className}`}>
+    <div
+      className={`rounded-3xl p-6 ${className}`}
+      style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}
+    >
       {children}
     </div>
   );
@@ -54,7 +61,7 @@ export function CardHeader({
     <div className="flex items-center justify-between mb-5">
       <div className="flex items-center gap-2.5">
         {icon}
-        <span className="text-sm font-bold text-gray-800">{title}</span>
+        <span className="text-sm font-extrabold" style={{ color: '#1a1c1c', fontFamily: 'Lexend, sans-serif' }}>{title}</span>
       </div>
       {right}
     </div>
@@ -63,27 +70,36 @@ export function CardHeader({
 
 export function ErrorBanner({ message }: { message: string }) {
   return (
-    <div className="flex items-center gap-3 bg-rose-50 border border-rose-200 rounded-2xl px-4 py-3 text-sm text-rose-600">
+    <div
+      className="flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-semibold"
+      style={{ background: '#ffdad6', color: '#93000a', border: '2px solid #f2b8b5', fontFamily: 'Lexend, sans-serif' }}
+    >
       <AlertCircle className="w-4 h-4 flex-shrink-0" />
       {message}
     </div>
   );
 }
 
+// Icon badge — flat solid color, matches sidebar NavLink icon badge style
 export function IconBox({
   children,
-  color = 'purple',
+  color = 'green',
 }: {
   children: React.ReactNode;
-  color?: 'purple' | 'green' | 'gray' | 'amber';
+  color?: 'green' | 'blue' | 'orange' | 'gray' | 'red';
 }) {
-  const bg =
-    color === 'purple' ? 'bg-violet-100' :
-    color === 'green'  ? 'bg-emerald-100' :
-    color === 'amber'  ? 'bg-amber-100' :
-                         'bg-gray-100';
+  const style: Record<string, React.CSSProperties> = {
+    green:  { background: '#dff5c5', color: '#2b6c00' },
+    blue:   { background: '#dceeff', color: '#004666' },
+    orange: { background: '#ffe9cc', color: '#8c5000' },
+    red:    { background: '#ffdad6', color: '#93000a' },
+    gray:   { background: '#eeeeee', color: '#6f7b64' },
+  };
   return (
-    <div className={`w-9 h-9 rounded-2xl ${bg} flex items-center justify-center flex-shrink-0`}>
+    <div
+      className="w-9 h-9 rounded-2xl flex items-center justify-center flex-shrink-0"
+      style={style[color]}
+    >
       {children}
     </div>
   );

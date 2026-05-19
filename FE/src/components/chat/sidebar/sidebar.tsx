@@ -2,9 +2,16 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
-import { Logo } from '@/components/shared/logo/logo';
+import { usePathname } from 'next/navigation';
+import {
+  Mic,
+  LayoutGrid,
+  CreditCard,
+  Settings2,
+  LogOut,
+  Zap,
+} from 'lucide-react';
 import { sessionService } from '@/services/session.service';
-import { SettingsModal } from '@/components/chat/settings-modal/settings-modal';
 import type { SidebarProps } from './sidebar.types';
 import type { SessionSummary } from '@/types/session.types';
 
@@ -13,11 +20,11 @@ const PAGE_LIMIT = 25;
 export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId, refreshKey = 0, titleUpdate }: SidebarProps) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef(1);
   const hasMoreRef = useRef(true);
   const loadingRef = useRef(false);
+  const pathname = usePathname();
 
   const fetchSessions = useCallback(async (reset = false) => {
     if (loadingRef.current) return;
@@ -38,18 +45,12 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
     }
   }, []);
 
-  // Fetch on mount and whenever refreshKey changes (new session created)
-  useEffect(() => {
-    fetchSessions(true);
-  }, [refreshKey, fetchSessions]);
+  useEffect(() => { fetchSessions(true); }, [refreshKey, fetchSessions]);
 
-  // Lazy load more when sentinel scrolls into view
   useEffect(() => {
     if (!sentinelRef.current) return;
     const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) fetchSessions();
-      },
+      (entries) => { if (entries[0].isIntersecting) fetchSessions(); },
       { threshold: 0.1 },
     );
     observer.observe(sentinelRef.current);
@@ -65,100 +66,237 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
 
   const groups = groupByDate(displayedSessions);
 
+  const isChat       = pathname === '/chat' || (pathname?.startsWith('/chat') ?? false);
+  const isFlashcards = pathname?.startsWith('/flashcards') ?? false;
+  const isBilling    = pathname?.startsWith('/billing') ?? false;
+  const isSettings   = pathname?.startsWith('/settings') ?? false;
+
   return (
-    <aside className="flex flex-col w-60 shrink-0 bg-white border-r border-gray-100 h-full">
-      <div className="px-5 pt-6 pb-4">
-        <Logo size="md" />
-        <p className="text-xs text-gray-400 mt-0.5 ml-8">AI Speaking Mentor</p>
-      </div>
-
-      <div className="px-4 mb-4">
-        <button
-          onClick={onNewChat}
-          className="flex items-center justify-center gap-2 w-full px-4 py-3 rounded-2xl bg-violet-50 text-[#8447FF] text-sm font-bold hover:bg-violet-100 active:scale-[0.98] transition-all"
+    <aside
+      className="flex flex-col w-64 shrink-0 h-full py-6"
+      style={{ background: '#ffffff', borderRight: '2px solid #e2e2e2' }}
+    >
+      {/* ── Logo ── */}
+      <div className="px-6 mb-8">
+        <h1
+          className="text-2xl font-black"
+          style={{ fontFamily: 'Lexend, sans-serif', color: '#2b6c00', letterSpacing: '-0.01em' }}
         >
-          <span className="text-lg leading-none">+</span>
-          New Topic
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4">
-        <p className="text-[10px] font-semibold tracking-[0.12em] text-gray-400 uppercase mb-2 px-1">
-          History
+          SpeakUp
+        </h1>
+        <p className="text-sm mt-0.5" style={{ color: '#6f7b64', fontWeight: 500 }}>
+          AI Speaking Mentor
         </p>
-
-        {sessions.length === 0 && !loading && (
-          <p className="text-xs text-gray-400 px-1 py-2">Your sessions will appear here.</p>
-        )}
-
-        <nav className="flex flex-col">
-          {groups.map((group) => (
-            <div key={group.label} className="mb-1">
-              <p className="text-[10px] font-medium text-gray-400 uppercase px-1 py-1.5 tracking-wide">
-                {group.label}
-              </p>
-              {group.items.map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  active={session.id === currentSessionId}
-                  onClick={onSessionClick ? () => onSessionClick(session) : undefined}
-                />
-              ))}
-            </div>
-          ))}
-        </nav>
-
-        {loading && (
-          <div className="flex justify-center py-3">
-            <div className="w-4 h-4 rounded-full border-2 border-[#8447FF] border-t-transparent animate-spin" />
-          </div>
-        )}
-
-        <div ref={sentinelRef} className="h-1" />
       </div>
 
-      <div className="px-4 pb-6 border-t border-gray-100 pt-4 flex flex-col gap-1">
-        <Link
-          href="/flashcards"
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-        >
-          <FlashcardIcon />
-          Flashcards
+      {/* ── Primary Nav ── */}
+      <nav className="flex-1 space-y-1 px-2">
+        {/* Learn / Practice */}
+        <NavLink
+          label="Learn"
+          icon={<Mic size={18} strokeWidth={2.5} />}
+          iconBg="#dff5c5"
+          iconColor="#2b6c00"
+          active={isChat}
+          onClick={onNewChat}
+        />
+
+        {/* Flashcards */}
+        <Link href="/flashcards" className="block">
+          <NavLink
+            label="Flashcards"
+            icon={<LayoutGrid size={18} strokeWidth={2.5} />}
+            iconBg="#fff4cc"
+            iconColor="#8c6e00"
+            active={isFlashcards}
+          />
         </Link>
-        <button
-          type="button"
-          disabled
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-400 opacity-50 cursor-not-allowed"
-        >
-          <UserIcon />
-          Profile (coming soon)
-        </button>
-        <Link
-          href="/billing"
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors"
-        >
-          <BillingIcon />
-          Billing
+
+        {/* Billing */}
+        <Link href="/billing" className="block">
+          <NavLink
+            label="Billing"
+            icon={<CreditCard size={18} strokeWidth={2.5} />}
+            iconBg="#dceeff"
+            iconColor="#004666"
+            active={isBilling}
+          />
         </Link>
-        <button
-          onClick={() => setSettingsOpen(true)}
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-600 hover:bg-gray-50 transition-colors text-left"
-        >
-          <SettingsIcon />
-          Settings
-        </button>
-        <button
+
+        {/* Settings */}
+        <Link href="/settings" className="block">
+          <NavLink
+            label="Settings"
+            icon={<Settings2 size={18} strokeWidth={2.5} />}
+            iconBg="#ffe9cc"
+            iconColor="#683a00"
+            active={isSettings}
+          />
+        </Link>
+
+        {/* Sign out */}
+        <NavLink
+          label="Sign out"
+          icon={<LogOut size={18} strokeWidth={2.5} />}
+          iconBg="#ffeaea"
+          iconColor="#ba1a1a"
+          active={false}
           onClick={onLogout}
-          className="flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-gray-500 hover:bg-gray-50 hover:text-red-500 transition-colors mt-1"
-        >
-          <LogoutIcon />
-          Sign out
-        </button>
+          danger
+        />
+
+        {/* ── Session history ── */}
+        <div className="pt-4">
+          <p
+            className="px-4 pb-1 text-xs font-bold uppercase tracking-widest"
+            style={{ color: '#becbb1' }}
+          >
+            History
+          </p>
+
+          {sessions.length === 0 && !loading && (
+            <p className="px-4 py-2 text-xs" style={{ color: '#becbb1' }}>
+              Your sessions will appear here.
+            </p>
+          )}
+
+          <nav className="flex flex-col mt-1">
+            {groups.map((group) => (
+              <div key={group.label} className="mb-1">
+                <p className="px-4 py-1 text-[10px] font-bold uppercase tracking-wide" style={{ color: '#becbb1' }}>
+                  {group.label}
+                </p>
+                {group.items.map((session) => (
+                  <SessionItem
+                    key={session.id}
+                    session={session}
+                    active={session.id === currentSessionId}
+                    onClick={onSessionClick ? () => onSessionClick(session) : undefined}
+                  />
+                ))}
+              </div>
+            ))}
+          </nav>
+
+          {loading && (
+            <div className="flex justify-center py-3">
+              <div className="w-4 h-4 rounded-full border-2 border-[#58cc02] border-t-transparent animate-spin" />
+            </div>
+          )}
+          <div ref={sentinelRef} className="h-1" />
+        </div>
+      </nav>
+
+      {/* ── Go Premium CTA ── */}
+      <div className="px-4 mt-4">
+        <Link href="/billing">
+          <PremiumButton />
+        </Link>
       </div>
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </aside>
+  );
+}
+
+/* ── Sub-components ─────────────────────────────────────────────────────────── */
+
+function NavLink({
+  label,
+  icon,
+  iconBg,
+  iconColor,
+  active,
+  onClick,
+  danger,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  iconBg: string;
+  iconColor: string;
+  active: boolean;
+  onClick?: () => void;
+  danger?: boolean;
+}) {
+  const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const Tag = onClick ? 'button' : 'div';
+
+  return (
+    <Tag
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseDown={() => { setHovered(false); setPressed(true); }}
+      onMouseUp={() => setPressed(false)}
+      onMouseLeave={() => { setHovered(false); setPressed(false); }}
+      onTouchStart={() => setPressed(true)}
+      onTouchEnd={() => setPressed(false)}
+      className="flex items-center gap-3 w-full px-4 py-2.5 rounded-xl text-sm font-bold text-left select-none"
+      style={{
+        fontFamily: 'Lexend, sans-serif',
+        background: active ? '#e8f9d3' : hovered ? '#f3f3f3' : 'transparent',
+        color: active ? '#2b6c00' : danger ? '#ba1a1a' : '#3c3c3c',
+        transform: pressed ? 'translateY(2px)' : 'translateY(0)',
+        transition: 'transform 80ms ease, background 120ms ease',
+        cursor: 'pointer',
+        borderBottom: active ? '2px solid #8edd5c' : '2px solid transparent',
+      }}
+    >
+      {/* Colored icon badge */}
+      <span
+        className="shrink-0 flex items-center justify-center rounded-xl"
+        style={{
+          width: 36,
+          height: 36,
+          background: active ? '#c0f080' : iconBg,
+          color: iconColor,
+          transform: hovered && !pressed ? 'scale(1.12)' : 'scale(1)',
+          transition: 'transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1), background 120ms ease',
+        }}
+      >
+        {icon}
+      </span>
+      <span style={{ fontWeight: 700, letterSpacing: '-0.01em' }}>{label}</span>
+    </Tag>
+  );
+}
+
+function PremiumButton() {
+  const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <button
+      onMouseEnter={() => setHovered(true)}
+      onMouseDown={() => { setHovered(false); setPressed(true); }}
+      onMouseUp={() => setPressed(false)}
+      onMouseLeave={() => { setHovered(false); setPressed(false); }}
+      onTouchStart={() => setPressed(true)}
+      onTouchEnd={() => setPressed(false)}
+      className="w-full flex items-center justify-center gap-2 text-sm font-extrabold select-none"
+      style={{
+        fontFamily: 'Lexend, sans-serif',
+        background: hovered ? '#4fc5ff' : '#2fb8ff',
+        color: '#004666',
+        borderRadius: '14px',
+        padding: '12px 16px',
+        boxShadow: pressed
+          ? '0 1px 0 #006590'
+          : hovered
+          ? '0 6px 0 #006590'
+          : '0 4px 0 #006590',
+        transform: pressed
+          ? 'translateY(3px)'
+          : hovered
+          ? 'translateY(-2px)'
+          : 'translateY(0)',
+        transition: 'transform 100ms ease, box-shadow 100ms ease, background 120ms ease',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+    >
+      <Zap size={16} fill="#004666" strokeWidth={0} />
+      Go Premium
+    </button>
   );
 }
 
@@ -166,11 +304,14 @@ function SessionItem({ session, active, onClick }: { session: SessionSummary; ac
   return (
     <button
       onClick={onClick}
-      className={`flex flex-col w-full px-3 py-2 rounded-xl text-sm text-left transition-colors gap-0.5 ${
-        active ? 'bg-violet-50 text-[#8447FF] font-semibold' : 'text-gray-600 hover:bg-gray-50'
-      }`}
+      className="flex flex-col w-full px-4 py-2 rounded-xl text-sm text-left transition-colors gap-0.5"
+      style={
+        active
+          ? { background: '#f3f3f3', color: '#2b6c00', fontWeight: 700 }
+          : { color: '#6f7b64', fontWeight: 500 }
+      }
     >
-      <span className="truncate font-medium leading-snug">
+      <span className="truncate leading-snug">
         {session.title ?? 'New conversation'}
       </span>
     </button>
@@ -181,71 +322,17 @@ function groupByDate(sessions: SessionSummary[]): { label: string; items: Sessio
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const yesterday = today - 86400000;
-
   const groups = [
     { label: 'Today', items: [] as SessionSummary[] },
     { label: 'Yesterday', items: [] as SessionSummary[] },
     { label: 'Older', items: [] as SessionSummary[] },
   ];
-
   for (const session of sessions) {
     const d = new Date(session.startedAt);
     const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-    if (day >= today) {
-      groups[0].items.push(session);
-    } else if (day >= yesterday) {
-      groups[1].items.push(session);
-    } else {
-      groups[2].items.push(session);
-    }
+    if (day >= today)     groups[0].items.push(session);
+    else if (day >= yesterday) groups[1].items.push(session);
+    else                  groups[2].items.push(session);
   }
-
   return groups.filter((g) => g.items.length > 0);
-}
-
-function UserIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
-
-function SettingsIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-function LogoutIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-      <polyline points="16 17 21 12 16 7" />
-      <line x1="21" y1="12" x2="9" y2="12" />
-    </svg>
-  );
-}
-
-function BillingIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="1" y="4" width="22" height="16" rx="2" ry="2" />
-      <line x1="1" y1="10" x2="23" y2="10" />
-    </svg>
-  );
-}
-
-function FlashcardIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="2" y="5" width="20" height="14" rx="2" />
-      <line x1="2" y1="10" x2="22" y2="10" />
-      <line x1="7" y1="15" x2="12" y2="15" />
-    </svg>
-  );
 }

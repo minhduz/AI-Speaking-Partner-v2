@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SpeakUp Focus Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+                  "on-primary-fixed": "#082100",
+                  "tertiary-fixed": "#ffdcbf",
+                  "on-tertiary-container": "#683a00",
+                  "primary": "#2b6c00",
+                  "tertiary-container": "#ff9c27",
+                  "on-tertiary-fixed-variant": "#6a3b00",
+                  "on-secondary-fixed": "#001e2e",
+                  "surface-container-highest": "#e2e2e2",
+                  "background": "#f9f9f9",
+                  "tertiary-fixed-dim": "#ffb872",
+                  "primary-fixed-dim": "#6be026",
+                  "on-background": "#1a1c1c",
+                  "error-container": "#ffdad6",
+                  "on-secondary": "#ffffff",
+                  "surface-variant": "#e2e2e2",
+                  "secondary-fixed": "#c8e6ff",
+                  "on-primary-container": "#1e5000",
+                  "on-primary-fixed-variant": "#1f5100",
+                  "surface-container-low": "#f3f3f3",
+                  "on-error-container": "#93000a",
+                  "tertiary": "#8c5000",
+                  "secondary-container": "#2fb8ff",
+                  "error": "#ba1a1a",
+                  "primary-fixed": "#87fe45",
+                  "on-surface-variant": "#3f4a36",
+                  "inverse-primary": "#6be026",
+                  "on-tertiary-fixed": "#2d1600",
+                  "surface-bright": "#f9f9f9",
+                  "secondary-fixed-dim": "#88ceff",
+                  "on-error": "#ffffff",
+                  "primary-container": "#58cc02",
+                  "surface-container": "#eeeeee",
+                  "on-secondary-container": "#004666",
+                  "surface-container-high": "#e8e8e8",
+                  "surface-dim": "#dadada",
+                  "secondary": "#006590",
+                  "outline-variant": "#becbb1",
+                  "on-tertiary": "#ffffff",
+                  "surface-container-lowest": "#ffffff",
+                  "on-secondary-fixed-variant": "#004c6e",
+                  "outline": "#6f7b64",
+                  "on-surface": "#1a1c1c",
+                  "surface-tint": "#2b6c00",
+                  "inverse-surface": "#2f3131",
+                  "inverse-on-surface": "#f1f1f1",
+                  "surface": "#f9f9f9",
+                  "on-primary": "#ffffff"
+          },
+          "borderRadius": {
+                  "DEFAULT": "0.25rem",
+                  "lg": "0.5rem",
+                  "xl": "0.75rem",
+                  "full": "9999px"
+          },
+          "spacing": {
+                  "lg": "32px",
+                  "margin-mobile": "16px",
+                  "gutter": "16px",
+                  "md": "24px",
+                  "sm": "16px",
+                  "xs": "8px",
+                  "xl": "48px",
+                  "margin-desktop": "40px",
+                  "base": "4px"
+          },
+          "fontFamily": {
+                  "body-md": ["Lexend"],
+                  "label-sm": ["Lexend"],
+                  "headline-lg-mobile": ["Lexend"],
+                  "headline-lg": ["Lexend"],
+                  "body-lg": ["Lexend"],
+                  "headline-md": ["Lexend"],
+                  "display": ["Lexend"],
+                  "label-lg": ["Lexend"]
+          },
+          "fontSize": {
+                  "body-md": ["17px", {"lineHeight": "24px", "fontWeight": "500"}],
+                  "label-sm": ["13px", {"lineHeight": "16px", "fontWeight": "600"}],
+                  "headline-lg-mobile": ["24px", {"lineHeight": "30px", "fontWeight": "700"}],
+                  "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.01em", "fontWeight": "700"}],
+                  "body-lg": ["19px", {"lineHeight": "28px", "fontWeight": "500"}],
+                  "headline-md": ["24px", {"lineHeight": "32px", "fontWeight": "700"}],
+                  "display": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "800"}],
+                  "label-lg": ["15px", {"lineHeight": "20px", "letterSpacing": "0.05em", "fontWeight": "700"}]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .lip-button-primary {
+      box-shadow: 0 4px 0 #1f5100;
+    }
+    .lip-button-primary:active {
+      box-shadow: 0 0px 0 #1f5100;
+      transform: translateY(4px);
+    }
+    .lip-button-secondary {
+      box-shadow: 0 4px 0 #004c6e;
+    }
+    .lip-button-secondary:active {
+      box-shadow: 0 0px 0 #004c6e;
+      transform: translateY(4px);
+    }
+    .lip-button-ghost {
+      box-shadow: 0 4px 0 #e2e2e2;
+      border: 2px solid #e2e2e2;
+    }
+    .lip-button-ghost:active {
+      box-shadow: 0 0px 0 #e2e2e2;
+      transform: translateY(4px);
+    }
+    .card-border {
+      border: 2px solid #e2e2e2;
+    }
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 600, 'GRAD' 0, 'opsz' 24;
+    }
+  </style>
+</head>
+<body class="bg-surface text-on-surface font-body-md">
+<!-- Side Navigation -->
+<aside class="fixed left-0 top-0 h-full flex flex-col py-6 h-screen w-64 border-r-2 border-surface-variant bg-surface-container-lowest z-50">
+<div class="px-6 mb-8">
+<h1 class="font-headline-md text-headline-md font-black text-primary">SpeakUp</h1>
+<p class="font-body-md text-sm text-outline">Fluency Level: B2</p>
+</div>
+<nav class="flex-1 space-y-2">
+<a class="flex items-center gap-4 bg-primary-container text-on-primary-container border-b-4 border-primary rounded-xl px-4 py-3 mx-2" href="#">
+<span class="material-symbols-outlined">school</span>
+<span class="font-label-lg">Learn</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container rounded-xl px-4 py-3 mx-2 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">record_voice_over</span>
+<span class="font-label-lg">Practice</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container rounded-xl px-4 py-3 mx-2 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">leaderboard</span>
+<span class="font-label-lg">Leaderboard</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container rounded-xl px-4 py-3 mx-2 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">emoji_events</span>
+<span class="font-label-lg">Quests</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container rounded-xl px-4 py-3 mx-2 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">shopping_bag</span>
+<span class="font-label-lg">Shop</span>
+</a>
+</nav>
+<div class="px-4 mt-auto">
+<button class="w-full py-4 bg-secondary-container text-on-secondary-container rounded-xl font-bold lip-button-secondary transition-all">
+        Go Premium
+      </button>
+</div>
+</aside>
+<!-- Top Bar -->
+<header class="flex justify-between items-center px-margin-desktop h-20 sticky top-0 z-40 bg-surface border-b-2 border-surface-variant w-full max-w-[1200px] mx-auto ml-64">
+<div class="flex items-center gap-4">
+<h2 class="font-headline-lg text-headline-lg font-black text-primary">Focus Dashboard</h2>
+</div>
+<div class="flex items-center gap-6">
+<div class="flex items-center gap-2 text-error font-bold">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">local_fire_department</span>
+<span>14</span>
+</div>
+<div class="flex items-center gap-2 text-secondary font-bold">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">diamond</span>
+<span>1,240</span>
+</div>
+<div class="w-10 h-10 rounded-full bg-surface-container-highest flex items-center justify-center overflow-hidden border-2 border-outline-variant">
+<img alt="User Profile Avatar" class="w-full h-full object-cover" src="https://lh3.googleusercontent.com/aida-public/AB6AXuC-VwiuMb76WvU-rq837QdoxqM_TYZNDe3zlcGMtZnZPJPwh3SaoZP4f8vatcSZiu2vV2uqjPhNR9wdL1mt6irBz5b99H-WAgOUup4RyR3bqUALtiYrQO0f0jNEHfJRL3wEX2gI7YCovKchXpxk0QFdhBY9GqDfX6z-EcR52v9Y1FRfPNyys1v0hPQVy0K3VvJjTAx3OEjHXa-tKv1l-ex_EQ7Bo8VSUWE8qooZZD6D5sKFRB3T5R2pdy6O0tITuCe8y2vx470QWIKs"/>
+</div>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="ml-64 p-lg max-w-[1200px]">
+<!-- Hero Mic Section -->
+<section class="mb-xl">
+<div class="bg-secondary-container p-xl rounded-3xl flex flex-col md:flex-row items-center justify-between gap-xl relative overflow-hidden card-border">
+<div class="relative z-10 flex-1">
+<h2 class="font-display text-display text-on-secondary-container mb-xs">Ready to Speak?</h2>
+<p class="font-body-lg text-body-lg text-on-secondary-container/80 mb-lg">Start a conversation with 'Alex' to practice your B2 vocabulary in a natural setting.</p>
+<div class="flex gap-md">
+<button class="px-xl py-4 bg-primary-container text-on-primary-container rounded-2xl font-bold text-lg lip-button-primary flex items-center gap-3">
+<span class="material-symbols-outlined text-3xl">mic</span>
+              Start Session
+            </button>
+<button class="px-xl py-4 bg-surface-container-lowest text-secondary rounded-2xl font-bold text-lg lip-button-ghost">
+              Quick Practice
+            </button>
+</div>
+</div>
+<div class="relative z-10 w-48 h-48 bg-white/20 backdrop-blur-md rounded-full flex items-center justify-center border-4 border-white/30 animate-pulse">
+<div class="w-32 h-32 bg-white rounded-full flex items-center justify-center shadow-inner">
+<span class="material-symbols-outlined text-secondary text-6xl" style="font-variation-settings: 'FILL' 1;">mic</span>
+</div>
+</div>
+<!-- Decorative abstract pattern background -->
+<div class="absolute top-0 right-0 w-1/3 h-full opacity-10 pointer-events-none">
+<svg class="w-full h-full" viewbox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+<path d="M44.7,-76.4C58.1,-69.2,69.2,-58.1,76.4,-44.7C83.7,-31.3,87.1,-15.7,86.2,-0.5C85.3,14.6,80,29.3,71.5,41.9C63.1,54.5,51.5,65.1,38,72.4C24.5,79.7,9.1,83.7,-5.7,83.4C-20.5,83.1,-34.7,78.5,-47.4,70.5C-60,62.5,-71.2,51.1,-78.2,37.6C-85.2,24.1,-88.1,8.5,-86.3,-6.5C-84.5,-21.5,-78,-35.9,-68.2,-47.8C-58.4,-59.7,-45.3,-69.2,-31.6,-76.1C-17.8,-83,-3.3,-87.3,11.3,-86.2C25.9,-85.1,31.3,-83.6,44.7,-76.4Z" fill="#000" transform="translate(100 100)"></path>
+</svg>
+</div>
+</div>
+</section>
+<!-- High Density Bento Grid -->
+<section class="grid grid-cols-1 md:grid-cols-12 gap-lg">
+<!-- Weekly Progress (Large) -->
+<div class="md:col-span-8 bg-surface-container-lowest p-lg rounded-3xl card-border">
+<div class="flex justify-between items-center mb-lg">
+<h3 class="font-headline-md text-headline-md">Weekly Progress</h3>
+<span class="px-3 py-1 bg-primary-container text-on-primary-container rounded-full text-xs font-bold">+12% vs last week</span>
+</div>
+<div class="flex items-end justify-between h-48 gap-xs">
+<!-- Bars -->
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-outline-variant rounded-t-xl" style="height: 60%"></div>
+</div>
+<span class="text-xs font-bold text-outline">MON</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-outline-variant rounded-t-xl" style="height: 45%"></div>
+</div>
+<span class="text-xs font-bold text-outline">TUE</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-outline-variant rounded-t-xl" style="height: 85%"></div>
+</div>
+<span class="text-xs font-bold text-outline">WED</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-primary-container rounded-t-xl" style="height: 100%"></div>
+</div>
+<span class="text-xs font-bold text-primary">THU</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-surface-variant rounded-t-xl" style="height: 0%"></div>
+</div>
+<span class="text-xs font-bold text-outline">FRI</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-surface-variant rounded-t-xl" style="height: 0%"></div>
+</div>
+<span class="text-xs font-bold text-outline">SAT</span>
+</div>
+<div class="flex-1 flex flex-col items-center gap-xs">
+<div class="w-full bg-surface-container rounded-t-xl relative h-32">
+<div class="absolute bottom-0 w-full bg-surface-variant rounded-t-xl" style="height: 0%"></div>
+</div>
+<span class="text-xs font-bold text-outline">SUN</span>
+</div>
+</div>
+</div>
+<!-- Daily Streak (Small) -->
+<div class="md:col-span-4 bg-tertiary-container p-lg rounded-3xl card-border flex flex-col items-center justify-center text-on-tertiary-container text-center">
+<h3 class="font-label-lg mb-xs opacity-80 uppercase tracking-widest">Daily Streak</h3>
+<div class="relative mb-xs">
+<span class="material-symbols-outlined text-8xl" style="font-variation-settings: 'FILL' 1;">local_fire_department</span>
+<span class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/4 font-display text-4xl text-white">14</span>
+</div>
+<p class="font-headline-md">Keep it up!</p>
+<p class="text-sm opacity-80 mt-xs">Next reward in 3 days</p>
+</div>
+<!-- Vocabulary Mastered (Medium) -->
+<div class="md:col-span-5 bg-surface-container-lowest p-lg rounded-3xl card-border">
+<div class="flex justify-between items-center mb-lg">
+<h3 class="font-headline-md text-headline-md">Vocabulary</h3>
+<span class="material-symbols-outlined text-secondary">menu_book</span>
+</div>
+<div class="space-y-md">
+<div>
+<div class="flex justify-between text-sm font-bold mb-xs">
+<span>B2 Words</span>
+<span>842/1000</span>
+</div>
+<div class="h-4 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-secondary-container rounded-full" style="width: 84%"></div>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-sm">
+<div class="bg-surface-container p-sm rounded-2xl text-center">
+<p class="text-2xl font-black text-secondary">12</p>
+<p class="text-xs font-bold text-outline">New Today</p>
+</div>
+<div class="bg-surface-container p-sm rounded-2xl text-center">
+<p class="text-2xl font-black text-primary">98%</p>
+<p class="text-xs font-bold text-outline">Accuracy</p>
+</div>
+</div>
+</div>
+</div>
+<!-- Topic Heatmap (Medium) -->
+<div class="md:col-span-7 bg-surface-container-lowest p-lg rounded-3xl card-border">
+<h3 class="font-headline-md text-headline-md mb-lg">Mastery Heatmap</h3>
+<div class="grid grid-cols-4 gap-sm">
+<div class="aspect-square bg-primary-container/20 rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-primary mb-1">business_center</span>
+<span class="text-[10px] font-bold uppercase">Work</span>
+</div>
+<div class="aspect-square bg-primary-container rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-on-primary-container mb-1">restaurant</span>
+<span class="text-[10px] font-bold uppercase">Food</span>
+</div>
+<div class="aspect-square bg-primary-container/60 rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-on-primary-container mb-1">flight</span>
+<span class="text-[10px] font-bold uppercase">Travel</span>
+</div>
+<div class="aspect-square bg-surface-container rounded-xl flex items-center justify-center flex-col p-xs opacity-50">
+<span class="material-symbols-outlined text-outline mb-1">science</span>
+<span class="text-[10px] font-bold uppercase">Science</span>
+</div>
+<div class="aspect-square bg-primary-container rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-on-primary-container mb-1">theater_comedy</span>
+<span class="text-[10px] font-bold uppercase">Arts</span>
+</div>
+<div class="aspect-square bg-primary-container/40 rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-on-primary-container mb-1">sports_esports</span>
+<span class="text-[10px] font-bold uppercase">Gaming</span>
+</div>
+<div class="aspect-square bg-primary-container rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-on-primary-container mb-1">fitness_center</span>
+<span class="text-[10px] font-bold uppercase">Health</span>
+</div>
+<div class="aspect-square bg-primary-container/10 rounded-xl flex items-center justify-center flex-col p-xs">
+<span class="material-symbols-outlined text-primary mb-1">public</span>
+<span class="text-[10px] font-bold uppercase">Politics</span>
+</div>
+</div>
+</div>
+</section>
+<!-- Active Quests -->
+<section class="mt-xl">
+<div class="flex justify-between items-end mb-lg">
+<h3 class="font-headline-lg text-headline-lg">Active Quests</h3>
+<a class="text-secondary font-bold hover:underline" href="#">View all</a>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-md">
+<div class="bg-surface-container-low p-md rounded-2xl card-border flex gap-md items-center">
+<div class="w-12 h-12 bg-tertiary-container rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-on-tertiary-container">record_voice_over</span>
+</div>
+<div class="flex-1">
+<p class="font-bold text-on-surface">5-Min Chat</p>
+<p class="text-xs text-outline">0/5 Minutes</p>
+</div>
+<div class="w-6 h-6 rounded-full border-2 border-outline-variant"></div>
+</div>
+<div class="bg-surface-container-low p-md rounded-2xl card-border flex gap-md items-center">
+<div class="w-12 h-12 bg-secondary-container rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-on-secondary-container">spellcheck</span>
+</div>
+<div class="flex-1">
+<p class="font-bold text-on-surface">Perfect Quiz</p>
+<p class="text-xs text-outline">Complete 1 lesson</p>
+</div>
+<div class="w-6 h-6 rounded-full border-2 border-outline-variant"></div>
+</div>
+<div class="bg-surface-container-low p-md rounded-2xl card-border flex gap-md items-center border-primary/30 bg-primary/5">
+<div class="w-12 h-12 bg-primary-container rounded-xl flex items-center justify-center">
+<span class="material-symbols-outlined text-on-primary-container">groups</span>
+</div>
+<div class="flex-1">
+<p class="font-bold text-on-surface">Social Learner</p>
+<p class="text-xs text-primary font-bold">Claim Reward!</p>
+</div>
+<span class="material-symbols-outlined text-primary" style="font-variation-settings: 'FILL' 1;">check_circle</span>
+</div>
+</div>
+</section>
+</main>
+<script>
+    // Subtle interactivity for cards
+    document.querySelectorAll('.card-border').forEach(card => {
+      card.addEventListener('mouseenter', () => {
+        card.style.transform = 'translateY(-2px)';
+        card.style.transition = 'transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)';
+      });
+      card.addEventListener('mouseleave', () => {
+        card.style.transform = 'translateY(0px)';
+      });
+    });
+
+    // Mock progress bar animation
+    setTimeout(() => {
+      document.querySelectorAll('.bg-secondary-container.h-full').forEach(bar => {
+        const width = bar.style.width;
+        bar.style.width = '0%';
+        setTimeout(() => {
+          bar.style.transition = 'width 1s ease-out';
+          bar.style.width = width;
+        }, 100);
+      });
+    }, 500);
+  </script>
+</body></html>

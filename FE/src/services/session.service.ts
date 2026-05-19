@@ -69,6 +69,14 @@ export interface StartSessionResponse {
   is_first_session: boolean;
 }
 
+export interface SessionQuota {
+  is_unlimited: boolean;
+  daily_session_limit: number;
+  session_token_limit: number;
+  sessions_used: number;
+  can_start: boolean;
+}
+
 export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
 
 export class BillingLimitError extends Error {
@@ -172,6 +180,15 @@ export interface CloseSessionResponse {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export const sessionService = {
+  getQuota: async (): Promise<SessionQuota | null> => {
+    log('GET /session/quota');
+    const res = await fetchWithAuth(`${API_BASE}/session/quota`);
+    if (!res.ok) return null;
+    const data: SessionQuota = await res.json();
+    log('GET /session/quota â†’', data);
+    return data;
+  },
+
   start: async (): Promise<StartSessionResponse> => {
     log('POST /session/start');
     const res = await fetchWithAuth(`${API_BASE}/session/start`, {
