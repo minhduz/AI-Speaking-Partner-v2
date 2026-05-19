@@ -9,19 +9,38 @@ export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, dis
 
   if (hideMic) return null;
 
+  const buttonStyle = disabled
+    ? {
+        background: disabledReason ? '#f3f3f3' : '#f3f3f3',
+        color: disabledReason ? '#6f7b64' : '#afafaf',
+        boxShadow: '0 6px 0 #e2e2e2',
+        border: '2px solid #e2e2e2',
+      }
+    : isRecording
+      ? {
+          background: '#ff5c5c',
+          color: '#ffffff',
+          boxShadow: '0 6px 0 #c73232',
+          border: '2px solid #e54848',
+        }
+      : {
+          background: '#58cc02',
+          color: '#ffffff',
+          boxShadow: '0 6px 0 #46a302',
+          border: '2px solid #46a302',
+        };
+
   return (
-    <div className="px-6 pb-8 flex justify-center">
-      <div className="relative flex flex-col items-center gap-4">
-        {/* Ambient glow ring */}
+    <div className="px-6 pb-8 flex justify-center" style={{ fontFamily: 'Lexend, sans-serif' }}>
+      <div className="relative flex flex-col items-center gap-3">
         <div
           className={`pointer-events-none absolute inset-0 m-auto rounded-full transition-all duration-300 ${
             isRecording
-              ? 'h-28 w-28 bg-rose-400/30 blur-xl scale-125 animate-pulse'
-              : 'h-28 w-28 bg-[#8447FF]/20 blur-xl scale-100'
+              ? 'h-28 w-28 bg-[#ff5c5c]/20 blur-xl scale-125 animate-pulse'
+              : 'h-28 w-28 bg-[#58cc02]/20 blur-xl scale-100'
           }`}
         />
 
-        {/* Mic button — Duolingo lip style */}
         <button
           ref={micBtnRef}
           disabled={disabled}
@@ -47,53 +66,22 @@ export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, dis
             activePointerIdRef.current = null;
             onStopMic();
           }}
-          className={`relative h-[88px] w-[88px] rounded-full flex items-center justify-center text-white select-none touch-none transition-all duration-200
-            disabled:opacity-40 disabled:cursor-not-allowed
-            ${isRecording
-              ? 'scale-110 ring-8 ring-rose-200/80 animate-pulse'
-              : 'hover:scale-105'
-            }
+          className={`relative h-[88px] w-[88px] rounded-[30px] flex items-center justify-center select-none touch-none transition-all duration-200
+            disabled:opacity-70 disabled:cursor-not-allowed
+            ${isRecording ? 'scale-105 animate-pulse' : disabled ? '' : 'hover:-translate-y-0.5 hover:brightness-[1.03] active:translate-y-1'}
           `}
-          style={
-            disabled
-              ? {
-                  background: disabledReason ? '#2f3437' : '#ccc',
-                  boxShadow: disabledReason ? '0 6px 0 #171a1c' : '0 6px 0 #aaa',
-                  borderRadius: '50%',
-                }
-              : isRecording
-              ? { background: 'linear-gradient(145deg, #ff6b7a, #e53e3e)', boxShadow: '0 6px 0 #a31b1b', borderRadius: '50%' }
-              : { background: 'linear-gradient(145deg, #9B6BFF, #8447FF)', boxShadow: '0 6px 0 #5c2fd6', borderRadius: '50%' }
-          }
-          onMouseDown={(e) => {
-            if (!disabled && !isRecording) {
-              (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.05) translateY(6px)';
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = isRecording
-                ? '0 0 0 #a31b1b'
-                : '0 0 0 #5c2fd6';
-            }
-          }}
-          onMouseUp={(e) => {
-            if (!disabled) {
-              (e.currentTarget as HTMLButtonElement).style.transform = '';
-              (e.currentTarget as HTMLButtonElement).style.boxShadow = isRecording
-                ? '0 6px 0 #a31b1b'
-                : '0 6px 0 #5c2fd6';
-            }
-          }}
+          style={buttonStyle}
         >
-          {/* Inner highlight ring */}
-          <span className="absolute inset-2 rounded-full bg-white/15" />
+          <span className="absolute inset-2 rounded-[24px] bg-white/20" />
           {isRecording ? <StopIcon /> : <MicIcon />}
         </button>
 
-        {/* Label */}
         <div className="relative flex flex-col items-center gap-0.5">
-          <p className="text-xs font-extrabold tracking-widest uppercase" style={{ color: isRecording ? '#e53e3e' : disabled ? (disabledReason ? '#2f3437' : '#c0c0c0') : '#8447FF' }}>
+          <p className="text-[11px] font-extrabold tracking-widest uppercase" style={{ color: isRecording ? '#c73232' : disabled ? '#afafaf' : '#2b6c00' }}>
             {disabled && disabledReason ? disabledReason : isRecording ? 'Recording' : disabled ? 'Listen first' : 'Hold to speak'}
           </p>
           {!disabled && !isRecording && (
-            <p className="text-[10px] font-medium" style={{ color: '#c0c0c0' }}>Release to send</p>
+            <p className="text-[10px] font-semibold" style={{ color: '#afafaf' }}>Release to send</p>
           )}
         </div>
       </div>
@@ -103,7 +91,7 @@ export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, dis
 
 function MicIcon() {
   return (
-    <svg className="relative z-10 h-9 w-9" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <svg className="relative z-10 h-9 w-9" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 2a3 3 0 0 1 3 3v7a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <line x1="12" y1="19" x2="12" y2="23" />
@@ -115,7 +103,7 @@ function MicIcon() {
 function StopIcon() {
   return (
     <svg className="relative z-10 h-8 w-8" viewBox="0 0 24 24" fill="white">
-      <rect x="6" y="6" width="12" height="12" rx="2" />
+      <rect x="6" y="6" width="12" height="12" rx="3" />
     </svg>
   );
 }

@@ -63,6 +63,10 @@ async function request<T>(path: string, init: RequestInit = {}, retry = true): P
     throw new Error(error.message ?? 'Request failed');
   }
 
+  if (res.status === 204) {
+    return undefined as T;
+  }
+
   return res.json() as Promise<T>;
 }
 

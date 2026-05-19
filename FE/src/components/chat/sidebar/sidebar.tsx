@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   CreditCard,
   Settings2,
+  UserCircle,
   LogOut,
   Zap,
 } from 'lucide-react';
@@ -70,10 +71,11 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
   const isFlashcards = pathname?.startsWith('/flashcards') ?? false;
   const isBilling    = pathname?.startsWith('/billing') ?? false;
   const isSettings   = pathname?.startsWith('/settings') ?? false;
+  const isProfile    = pathname?.startsWith('/profile') ?? false;
 
   return (
     <aside
-      className="flex flex-col w-64 shrink-0 h-full py-6"
+      className="flex flex-col w-64 shrink-0 h-full min-h-0 py-6"
       style={{ background: '#ffffff', borderRight: '2px solid #e2e2e2' }}
     >
       {/* ── Logo ── */}
@@ -90,7 +92,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
       </div>
 
       {/* ── Primary Nav ── */}
-      <nav className="flex-1 space-y-1 px-2">
+      <nav className="flex-1 min-h-0 space-y-1 px-2 overflow-y-auto custom-scrollbar pr-1">
         {/* Learn / Practice */}
         <NavLink
           label="Learn"
@@ -134,16 +136,16 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           />
         </Link>
 
-        {/* Sign out */}
-        <NavLink
-          label="Sign out"
-          icon={<LogOut size={18} strokeWidth={2.5} />}
-          iconBg="#ffeaea"
-          iconColor="#ba1a1a"
-          active={false}
-          onClick={onLogout}
-          danger
-        />
+        {/* Profile */}
+        <Link href="/profile" className="block">
+          <NavLink
+            label="Profile"
+            icon={<UserCircle size={18} strokeWidth={2.5} />}
+            iconBg="#d7ffb8"
+            iconColor="#2b6c00"
+            active={isProfile}
+          />
+        </Link>
 
         {/* ── Session history ── */}
         <div className="pt-4">
@@ -188,10 +190,22 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
       </nav>
 
       {/* ── Go Premium CTA ── */}
-      <div className="px-4 mt-4">
+      <div className="px-4 mt-4 shrink-0">
         <Link href="/billing">
           <PremiumButton />
         </Link>
+        <div className="mt-5 pt-4" style={{ borderTop: '2px solid #f1f1f1' }}>
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200 hover:bg-[#ffecec] active:translate-y-1"
+            style={{ background: '#fff5f5', color: '#9b1c1c', border: '2px solid #ffd6d6', boxShadow: '0 3px 0 #ffd6d6' }}
+          >
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: '#ffe0e0', color: '#9b1c1c' }}>
+              <LogOut size={18} strokeWidth={2.5} />
+            </div>
+            <span className="text-sm font-extrabold">Sign out</span>
+          </button>
+        </div>
       </div>
 
     </aside>
