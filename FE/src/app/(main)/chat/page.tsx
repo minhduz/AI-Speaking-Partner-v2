@@ -254,30 +254,28 @@ export default function ChatPage() {
         {/* AI presence indicator — replaces the normal header */}
         <div className="shrink-0 grid grid-cols-[80px_1fr_80px] items-start px-4 pt-6 pb-2">
           <div />
-          <div className="h-12 w-12 justify-self-center rounded-full bg-violet-100 flex items-center justify-center animate-pulse">
-            <div className="h-6 w-6 rounded-full bg-[#8447FF]" />
-          </div>
+          <AiPresence isRecording={isRecording} status={status} />
           <div className="flex justify-end">
             <EndSessionButton onClick={() => setConfirmEnd(true)} />
           </div>
         </div>
 
-        {/* Deck card — pinned above the conversation when a deck is active.
-            Replaces the previous "deck OR bubbles" toggle so the user can see
-            what they said and what the AI replied while the card stays in view. */}
+        {/* Exercise dock — compact floating card so it never takes over the chat. */}
         {deckVisible && (
-          <div className="shrink-0 border-b border-gray-100 px-6 py-3">
-            <DeckCardView
-              key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
-              deck={currentDeck!}
-              isLighter={lighterMode}
-              onAccept={() => void acceptDeckChallenge()}
-              onReject={() => void rejectDeckChallenge()}
-              onLighterMode={() => void enterLighterMode()}
-              onEndSession={() => void endSession('user_clicked')}
-              onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
-              onSkip={() => void skipDeckCard()}
-            />
+          <div className="pointer-events-none fixed left-6 top-24 z-30 w-[min(360px,calc(100vw-48px))]">
+            <div className="pointer-events-auto">
+              <DeckCardView
+                key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
+                deck={currentDeck!}
+                isLighter={lighterMode}
+                onAccept={() => void acceptDeckChallenge()}
+                onReject={() => void rejectDeckChallenge()}
+                onLighterMode={() => void enterLighterMode()}
+                onEndSession={() => void endSession('user_clicked')}
+                onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
+                onSkip={() => void skipDeckCard()}
+              />
+            </div>
           </div>
         )}
 
@@ -561,6 +559,40 @@ function EndSessionButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+function AiPresence({ isRecording, status }: { isRecording: boolean; status: string }) {
+  const isThinking = status === 'processing' || status === 'greeting';
+  const label = isRecording ? 'Listening' : isThinking ? 'Thinking' : 'AI Partner';
+  const subLabel = isRecording ? 'I’m hearing you' : isThinking ? 'Preparing reply' : 'Ready to practice';
+
+  return (
+    <div className="justify-self-center flex items-center gap-3 rounded-[24px] px-3 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2', fontFamily: 'Lexend, sans-serif' }}>
+      <div className="relative w-12 h-12 rounded-2xl flex items-center justify-center shrink-0" style={{ background: isRecording ? '#ffe0e0' : '#d7ffb8', color: isRecording ? '#9b1c1c' : '#2b6c00', border: isRecording ? '2px solid #ffc6c6' : '2px solid #c8f2a4' }}>
+        <span className="absolute inset-0 rounded-2xl animate-ping opacity-20" style={{ background: isRecording ? '#ff5c5c' : '#58cc02' }} />
+        <span className="relative w-7 h-7 rounded-xl flex items-center justify-center" style={{ background: '#ffffff' }}>
+          <Sparkles size={16} strokeWidth={2.8} />
+        </span>
+      </div>
+      <div className="hidden sm:block min-w-[116px]">
+        <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: isRecording ? '#9b1c1c' : '#2b6c00' }}>{label}</p>
+        <p className="text-[11px] font-bold" style={{ color: '#6f7b64' }}>{subLabel}</p>
+      </div>
+      <div className="hidden sm:flex items-end gap-1 h-6 pl-1">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="w-1.5 rounded-full animate-pulse"
+            style={{
+              height: `${10 + i * 5}px`,
+              background: isRecording ? '#ff5c5c' : i === 1 ? '#2fb8ff' : '#58cc02',
+              animationDelay: `${i * 140}ms`,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   onWordDoubleClick,
@@ -595,7 +627,7 @@ function MessageBubble({
   const showThinkingDots = message.pending && isAi && (aiSentences?.length ?? 0) === 0;
 
   return (
-    <div className={`flex w-full ${isAi ? 'justify-start' : 'justify-end'} px-2 py-1`}>
+    <div className={`flex w-full ${isAi ? 'justify-start' : 'justify-end'} px-2 py-1`} style={{ fontFamily: 'Lexend, sans-serif' }}>
       <div
         onDoubleClick={handleDoubleClick}
         className={`max-w-[85%] md:max-w-[75%] flex flex-col select-text cursor-text ${isAi ? 'items-start' : 'items-end'}`}
@@ -605,22 +637,27 @@ function MessageBubble({
         ) : isAi && aiSentences ? (
           <div className="flex flex-col gap-1.5">
             {aiSentences.map((s, i) => (
-              <p key={i} className="text-xl md:text-2xl font-medium text-gray-900 leading-relaxed tracking-tight">
+              <p key={i} className="text-xl md:text-2xl font-black leading-relaxed tracking-tight" style={{ color: '#1a1c1c' }}>
                 {s}
               </p>
             ))}
           </div>
         ) : message.pending ? (
-          <p className="text-xl md:text-2xl font-medium leading-relaxed tracking-tight text-gray-300">
+          <p className="text-xl md:text-2xl font-black leading-relaxed tracking-tight" style={{ color: '#afafaf' }}>
             {message.text || '…'}
           </p>
         ) : (
-          <p className={`text-xl md:text-2xl font-medium leading-relaxed tracking-tight ${isAi ? 'text-gray-900' : 'text-gray-400'}`}>
+          <p className="text-xl md:text-2xl font-black leading-relaxed tracking-tight" style={{ color: isAi ? '#1a1c1c' : '#afafaf' }}>
             {message.text}
           </p>
         )}
         {!message.pending && message.pronunciationScore !== undefined && (
-          <div className={`mt-2 inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-widest uppercase ${isAi ? 'bg-gray-100 text-gray-400' : 'bg-violet-50 text-[#8447FF]'}`}>
+          <div
+            className="mt-2 inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-widest uppercase"
+            style={isAi
+              ? { background: '#f3f3f3', color: '#6f7b64' }
+              : { background: '#d7ffb8', color: '#2b6c00', border: '2px solid #c8f2a4' }}
+          >
             Pronunciation: {Math.round(message.pronunciationScore * 100)}%
           </div>
         )}
@@ -693,44 +730,36 @@ function DeckCardView({
   const acceptLabel = isContinuation ? 'Continue' : "Let’s go";
 
   return (
-    <div className="w-full max-w-md mx-auto flex flex-col gap-5 pt-2 pb-4">
-      {/* Continuation banner */}
-      {isContinuation && deck.status === 'not_started' && (
-        <p className="text-xs font-medium text-violet-500 flex items-center gap-1">
-          ↩ Picking up from last session
-        </p>
-      )}
-
-      {/* Mission — hidden in lighter mode to keep it low-pressure */}
-      {!isLighter && (
-        <div className="bg-violet-50 rounded-2xl px-4 py-3.5">
-          <p className="text-[10px] font-semibold text-violet-500 uppercase tracking-widest mb-1">Mission</p>
-          <p className="text-sm font-medium text-gray-800 leading-snug">{deck.mission}</p>
-          {deck.reason && (
-            <p className="text-xs text-gray-500 mt-1.5 leading-snug">{deck.reason}</p>
+    <div className="w-full rounded-[28px] p-4 flex flex-col gap-3" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2', fontFamily: 'Lexend, sans-serif' }}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>{cardLabel}</p>
+          {isContinuation && deck.status === 'not_started' && (
+            <p className="mt-1 text-[11px] font-bold" style={{ color: '#8447ff' }}>↩ Picking up from last session</p>
           )}
+        </div>
+        <span className="px-2 py-1 rounded-full text-[10px] font-extrabold shrink-0" style={{ background: isLighter ? '#dceeff' : '#d7ffb8', color: isLighter ? '#004666' : '#2b6c00' }}>
+          {isLighter ? 'Quick' : 'Practice'}
+        </span>
+      </div>
+
+      {!isLighter && (
+        <div className="rounded-2xl px-3 py-2" style={{ background: '#f4efff', border: '2px solid #ebe0ff' }}>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#8447ff' }}>Mission</p>
+          <p className="mt-1 text-xs font-bold leading-snug" style={{ color: '#1a1c1c' }}>{deck.mission}</p>
+          {deck.reason && <p className="mt-1 text-[11px] font-semibold leading-snug" style={{ color: '#6f7b64' }}>{deck.reason}</p>}
         </div>
       )}
 
-      {/* Card */}
-      <div className="flex flex-col gap-3">
-        <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-widest">
-          {cardLabel}
-          {!isLighter && card.attempts > 0 && (
-            <span className="ml-2 normal-case font-normal text-gray-400">
-              · Attempt {card.attempts + 1}
-            </span>
-          )}
-        </span>
-        <h2 className="text-2xl font-semibold text-gray-900 leading-snug">{card.title}</h2>
-        <p className="text-base text-gray-600 leading-relaxed">{card.task}</p>
+      <div className="flex flex-col gap-2">
+        <h2 className="text-lg font-black leading-snug" style={{ color: '#1a1c1c' }}>{card.title}</h2>
+        <p className="text-sm font-semibold leading-relaxed" style={{ color: '#6f7b64' }}>{card.task}</p>
 
-        {/* Success criteria — hidden in lighter mode */}
         {!isLighter && Array.isArray(card.success_criteria) && card.success_criteria.length > 0 && (
-          <ul className="flex flex-col gap-1.5 mt-1">
-            {card.success_criteria.map((criterion, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm text-gray-500">
-                <span className="text-violet-400 mt-0.5 shrink-0">✓</span>
+          <ul className="grid gap-1 mt-1">
+            {card.success_criteria.slice(0, 2).map((criterion, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs font-semibold" style={{ color: '#6f7b64' }}>
+                <span className="mt-0.5 shrink-0" style={{ color: '#58cc02' }}>✓</span>
                 {criterion}
               </li>
             ))}
@@ -739,71 +768,40 @@ function DeckCardView({
 
         {card.result && card.feedback && (
           <p
-            className={`text-sm italic mt-2 leading-snug ${
-              card.result === 'passed'
-                ? 'text-emerald-600'
-                : card.result === 'partial'
-                ? 'text-amber-600'
-                : 'text-rose-600'
-            }`}
+            className="text-xs font-bold italic mt-1 leading-snug"
+            style={{ color: card.result === 'passed' ? '#2b6c00' : card.result === 'partial' ? '#683a00' : '#9b1c1c' }}
           >
             {card.feedback}
           </p>
         )}
       </div>
 
-      {/* Actions */}
       {deck.status === 'not_started' && !showRejectOptions && (
-        <div className="flex gap-3">
+        <div className="flex gap-2 pt-1">
           <button
             onClick={onAccept}
-            className="lip-btn lip-btn-green flex-1 py-3 text-sm"
+            className="lip-btn lip-btn-green flex-1 h-10 text-xs"
             style={{ '--btn-radius': '14px' } as React.CSSProperties}
           >
             {acceptLabel}
           </button>
-          {isOnboarding ? (
-            <button
-              onClick={onReject}
-              className="lip-btn lip-btn-ghost flex-1 py-3 text-sm"
-              style={{ '--btn-radius': '14px' } as React.CSSProperties}
-            >
-              Maybe later
-            </button>
-          ) : (
-            <button
-              onClick={() => setShowRejectOptions(true)}
-              className="lip-btn lip-btn-ghost flex-1 py-3 text-sm"
-              style={{ '--btn-radius': '14px' } as React.CSSProperties}
-            >
-              Not today
-            </button>
-          )}
+          <button
+            onClick={isOnboarding ? onReject : () => setShowRejectOptions(true)}
+            className="lip-btn lip-btn-ghost flex-1 h-10 text-xs"
+            style={{ '--btn-radius': '14px' } as React.CSSProperties}
+          >
+            {isOnboarding ? 'Maybe later' : 'Not today'}
+          </button>
         </div>
       )}
 
       {!isOnboarding && deck.status === 'not_started' && showRejectOptions && (
-        <div className="flex flex-col gap-3">
-          <p className="text-xs text-gray-400 text-center tracking-wide">What would you prefer?</p>
-          <div className="flex gap-2">
-            <button
-              onClick={onReject}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
-            >
-              Free talk
-            </button>
-            <button
-              onClick={onLighterMode}
-              className="flex-1 py-2.5 rounded-xl bg-violet-50 text-violet-700 text-sm font-semibold hover:bg-violet-100 active:scale-95 transition-all"
-            >
-              Quick task
-            </button>
-            <button
-              onClick={onEndSession}
-              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-500 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
-            >
-              That&apos;s all
-            </button>
+        <div className="grid gap-2 pt-1">
+          <p className="text-[11px] font-bold text-center" style={{ color: '#6f7b64' }}>What would you prefer?</p>
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={onReject} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>Free talk</button>
+            <button onClick={onLighterMode} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#ebe0ff] active:translate-y-0.5" style={{ background: '#f4efff', color: '#8447ff', border: '2px solid #ebe0ff' }}>Quick</button>
+            <button onClick={onEndSession} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>End</button>
           </div>
         </div>
       )}

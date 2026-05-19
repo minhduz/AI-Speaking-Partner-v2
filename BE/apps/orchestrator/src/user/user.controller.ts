@@ -1,5 +1,5 @@
 import { Controller, Get, Put, Post, Delete, Body, Req, UseGuards, HttpCode } from '@nestjs/common';
-import { IsOptional, IsString, IsIn, IsNumber, Min, Max } from 'class-validator';
+import { IsOptional, IsString, IsIn, IsNumber, Min, Max, MinLength } from 'class-validator';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -24,6 +24,11 @@ class UpdateUserDto {
   @IsOptional() @IsIn(ACCEPTED_VOICES as unknown as string[]) voiceId?: string;
   @IsOptional() @IsNumber() @Min(0.75) @Max(1.5) speechRate?: number;
   @IsOptional() @IsIn(ALLOWED_STYLES as unknown as string[]) conversationStyle?: string;
+}
+
+class ChangePasswordDto {
+  @IsOptional() @IsString() currentPassword?: string;
+  @IsString() @MinLength(8) newPassword!: string;
 }
 
 @Controller('user')
@@ -55,6 +60,12 @@ export class UserController {
       speech_rate: dto.speechRate,
     });
     return { audio_b64: r.data.audio_b64, format: r.data.format ?? 'mp3' };
+  }
+
+  @Post('change-password')
+  @HttpCode(204)
+  changePassword(@Req() req, @Body() dto: ChangePasswordDto) {
+    return this.userService.changePassword(req.user.id, dto.currentPassword, dto.newPassword);
   }
 
   @Delete('me') @HttpCode(204)

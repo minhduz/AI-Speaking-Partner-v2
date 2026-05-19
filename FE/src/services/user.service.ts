@@ -7,6 +7,9 @@ export const userService = {
   updateSettings: (patch: Partial<UserSettings>): Promise<UserProfile> =>
     httpClient.put<UserProfile>('/user/me', patch),
 
+  changePassword: (payload: { currentPassword?: string; newPassword: string }): Promise<void> =>
+    httpClient.post<void>('/user/change-password', payload),
+
   previewVoice: (voiceId: string, speechRate: number, text?: string) =>
     httpClient.post<{ audio_b64: string; format: string }>('/user/voice-preview', {
       voiceId,
