@@ -130,8 +130,6 @@ function isEndSessionIntent(transcript: string): boolean {
     'see you',
     'talk later',
     'catch you later',
-    "i'm good",
-    'i am good',
     // Vietnamese — natural (per spec)
     'hôm nay thế thôi',
     'hom nay the thoi',
@@ -616,7 +614,14 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (!sid) return;
     try {
       const deck = await sessionService.getDeck(sid);
-      if (sessionIdRef.current === sid) setCurrentDeck(deck);
+      if (sessionIdRef.current !== sid) return;
+      // Never let a stale poll revert to a lower card index — this can happen
+      // when the interval fires while advanceDeckCard's PUT is still in flight,
+      // causing the auto-advance useEffect to re-trigger for an already-passed card.
+      setCurrentDeck((prev) => {
+        if (prev && deck && deck.current_card_index < prev.current_card_index) return prev;
+        return deck;
+      });
     } catch { /* silent — 3s interval will retry */ }
   }, []);
 
@@ -1026,8 +1031,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Last card skipped — AI says goodbye, then session auto-ends after audio.
-          pendingAutoEndRef.current = true;
+          // Last card skipped — AI asks if user wants to keep chatting or stop.
+          // Do NOT auto-end here; let the user decide via voice or End button.
           void processTurn('');
         }
       }

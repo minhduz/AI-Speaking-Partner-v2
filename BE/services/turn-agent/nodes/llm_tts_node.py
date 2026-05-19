@@ -20,7 +20,8 @@ _TTS_MAX_CHARS = 80
 # Sentinel marking the start of the deck-eval JSON block emitted by the LLM at the
 # end of its response when a deck is active. Held back from TTS so the user never
 # hears "EVAL passed true ...".
-_EVAL_MARKER = "EVAL:"
+# Matches both "EVAL:{" and "EVAL {" (LLM sometimes omits the colon).
+_EVAL_RE = re.compile(r"EVAL\s*:\s*\{|EVAL\s+\{")
 
 # Sentinel the LLM emits after its farewell when it decides the session should end.
 # Stripped from TTS and converted to a session_ended SSE event.
@@ -133,7 +134,7 @@ async def llm_tts_node(state: dict) -> dict:
             nonlocal full_response, eval_buffer, eval_started, session_end_seen
             tts_buffer = ""
             # Retain enough chars to catch either marker split across chunks.
-            holdback = max(len(_EVAL_MARKER), len(_SESSION_END_MARKER)) - 1
+            holdback = max(len("EVAL:{"), len(_SESSION_END_MARKER)) - 1
             try:
                 async with sess.post(
                     f"{settings.llm_gateway_url}/stream",
@@ -164,11 +165,12 @@ async def llm_tts_node(state: dict) -> dict:
                                 + tts_buffer[session_idx + len(_SESSION_END_MARKER):].lstrip()
                             ).strip()
 
-                        marker_idx = tts_buffer.find(_EVAL_MARKER)
-                        if marker_idx >= 0:
+                        eval_match = _EVAL_RE.search(tts_buffer)
+                        if eval_match:
                             # Split at the marker: prefix → TTS (flush all), rest → eval.
-                            eval_buffer = tts_buffer[marker_idx + len(_EVAL_MARKER):]
-                            tts_buffer = tts_buffer[:marker_idx].rstrip()
+                            # Preserve the opening "{" that the regex consumed.
+                            eval_buffer = "{" + tts_buffer[eval_match.end():]
+                            tts_buffer = tts_buffer[:eval_match.start()].rstrip()
                             eval_started = True
 
                             # Flush remaining TTS-eligible text now that the boundary is known.
@@ -221,7 +223,8 @@ async def llm_tts_node(state: dict) -> dict:
         # ends_clean false on the spoken portion (slice before EVAL:) means the
         # LLM truncated or the holdback/flush dropped tail bytes — either way,
         # this tells us where to look on the next reproduction.
-        marker_pos = full_response.find(_EVAL_MARKER)
+        eval_match_diag = _EVAL_RE.search(full_response)
+        marker_pos = eval_match_diag.start() if eval_match_diag else -1
         spoken_portion = full_response if marker_pos < 0 else full_response[:marker_pos]
         spoken_clean = spoken_portion.rstrip()
         spoken_ends_clean = spoken_clean.endswith((".", "!", "?", '"', "'", "”", "’"))
@@ -325,9 +328,9 @@ async def llm_tts_node(state: dict) -> dict:
     # Strip the EVAL block from full_response before returning so downstream nodes
     # (e.g. session-history persistence) don't store it in conversation logs.
     spoken_response = full_response
-    marker_idx = spoken_response.find(_EVAL_MARKER)
-    if marker_idx >= 0:
-        spoken_response = spoken_response[:marker_idx].rstrip()
+    eval_match_strip = _EVAL_RE.search(spoken_response)
+    if eval_match_strip:
+        spoken_response = spoken_response[:eval_match_strip.start()].rstrip()
 
     # Strip SESSION_END from persisted text. The SSE event is emitted during
     # stream processing before TTS segmentation so the marker is never spoken.

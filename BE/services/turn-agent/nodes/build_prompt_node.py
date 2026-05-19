@@ -299,9 +299,10 @@ SESSION_MODE_INSTRUCTIONS: dict[str, str] = {
     "WARM_UP": """
 SESSION MODE: WARM_UP (turns 1-2)
 - Be conversational and low-pressure.
-- Ease the user in. Ask one simple, open question.
+- Ease the user in. Ask ONE simple, open question.
 - Don't correct, don't push, don't challenge yet.
 - Goal: get them talking and comfortable.
+- STRICT: ask only ONE question per response. Never ask two or more questions at once.
 """,
     "CHALLENGE": """
 SESSION MODE: CHALLENGE (turns 3-8)
@@ -311,6 +312,7 @@ SESSION MODE: CHALLENGE (turns 3-8)
 - Don't let them escape with one-word answers.
 - If they struggle, don't rescue them immediately — let them work for it.
 - Goal: create the productive discomfort that causes growth.
+- STRICT: ask only ONE question per response. Never ask two or more questions at once.
 """,
     "REFLECTION": """
 SESSION MODE: REFLECTION (turns 9+)
@@ -321,6 +323,7 @@ SESSION MODE: REFLECTION (turns 9+)
   2. Tease what's coming next time with ONE sentence to create anticipation.
 - Do NOT say "goodbye" or "see you next time" robotically. Make it feel natural.
 - Goal: leave them with unfinished business — a reason to come back.
+- STRICT: ask only ONE question per response. Never ask two or more questions at once.
 - When you deliver your final farewell sentence, append the token SESSION_END on the same line.
   Example: "See you next time, duc! SESSION_END"
   The system will strip SESSION_END before TTS — the user will never hear it.
@@ -513,7 +516,7 @@ def _build_card_context_block(state: dict) -> str:
 
 def _build_card_soft_offer_block(state: dict) -> str:
     """
-    Soft challenge block — injected when deck is not_started and turn >= 3.
+    Soft challenge block — injected when deck is not_started and turn 3-4.
     The AI may offer the challenge naturally; the user can accept or decline freely.
     Critically: no forced redirect, no strict 'stay on task' rules.
     """
@@ -538,6 +541,34 @@ def _build_card_soft_offer_block(state: dict) -> str:
         "7. NEVER open your response by pitching the challenge. Warm up first.\n"
         "\nEVAL: Only output EVAL:{...} if the user actually attempted the card task.\n"
         "Do NOT output EVAL if the user is warming up, chatting, or declined.\n"
+    )
+
+
+def _build_card_hard_offer_block(state: dict) -> str:
+    """
+    Hard challenge block — injected when deck is not_started and turn >= 5.
+    The AI has warmed up enough; it MUST offer the challenge this turn.
+    """
+    card_title = (state.get("card_title") or "").strip()
+    card_task  = (state.get("card_task") or "").strip()
+    card_type  = (state.get("card_type") or "").strip()
+
+    return (
+        "\n\nCHALLENGE TO OFFER — required this turn:\n"
+        f"Type: {card_type}\n"
+        f"Title: {card_title}\n"
+        f"Task: {card_task}\n"
+        "\nOFFER RULES:\n"
+        "1. First respond naturally to what the user just said (1-2 sentences max).\n"
+        "2. Then YOU MUST offer the challenge in ONE short sentence — e.g.:\n"
+        '   "I\'ve got a quick practice ready for you — want to give it a try?"\n'
+        '   or: "Actually, I\'ve got a short exercise that fits perfectly — feel like trying it?"\n'
+        '   or: "Let\'s try a quick real practice — ready for it?"\n'
+        "3. The user can say YES or NO — both are fine. But you MUST offer it this turn.\n"
+        "4. If the user says YES → guide them through the task and evaluate.\n"
+        "5. If the user says NO → drop it completely and continue the conversation.\n"
+        "\nEVAL: Only output EVAL:{...} if the user actually attempted the card task.\n"
+        "Do NOT output EVAL if the user declined.\n"
     )
 
 
@@ -611,13 +642,20 @@ async def build_prompt_node(state: dict) -> dict:
         tokens = data.get("estimated_tokens", 0)
         system_prompt: str = data["system_prompt"].replace(GENERIC_GUIDELINES, "")
 
-        # Promote SESSION_INSIGHT only when no external active mission exists.
-        mission_block = None if active_mission else _build_active_mission_block(data.get("chunks_debug", []))
-        if mission_block:
-            system_prompt += mission_block
-
         deck_active = bool(state.get("deck_active", False))
         deck_status = (state.get("deck_status") or "none").strip()
+
+        # Suppress mission block when we're about to present a deck challenge offer —
+        # the "Stay on this mission" instruction conflicts with the offer and wins.
+        _deck_offer_pending = (
+            not is_onboarding
+            and deck_status == "not_started"
+            and turn_index >= 3
+        )
+        # Promote SESSION_INSIGHT only when no external active mission exists.
+        mission_block = None if active_mission else _build_active_mission_block(data.get("chunks_debug", []))
+        if mission_block and not _deck_offer_pending:
+            system_prompt += mission_block
 
         if is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
@@ -712,26 +750,37 @@ async def build_prompt_node(state: dict) -> dict:
                     chunks_used, tokens,
                 )
             elif deck_status == "ended_early" and not transcript:
-                # User skipped the last card — session is ending, AI says goodbye.
+                # User skipped — pivot to free chat and let them decide whether to stay.
+                mode = get_session_mode(turn_index)
+                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
                 system_prompt += (
-                    "\n\nSESSION ENDING: The user just skipped the final exercise and the session is now ending. "
-                    "Say a short, warm goodbye in 1-2 sentences. "
-                    "Acknowledge any effort from today. "
-                    "Do NOT output an EVAL block. Do NOT ask any questions or invite further conversation."
+                    "\n\nDECK SKIPPED: The user skipped the exercise. "
+                    "In 1-2 warm sentences, acknowledge that's totally fine. "
+                    "Then ask ONE open question to keep the conversation going — e.g. about their day, "
+                    "something they mentioned earlier, or what else is on their mind. "
+                    "Do NOT mention the exercise again. Do NOT output an EVAL block. "
+                    "Do NOT say goodbye or imply the session is ending."
                 )
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→goodbye)",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→free_chat)",
                     chunks_used, tokens,
                 )
             elif deck_status == "not_started" and turn_index >= 3:
-                # Deck ready but user hasn't accepted yet — soft optional offer
+                # Turn 3-4: soft optional offer; turn 5+: AI must offer the challenge
                 mode = get_session_mode(turn_index)
                 system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
-                system_prompt += _build_card_soft_offer_block(state)
-                log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(soft_offer)  mode=%s  card=%s",
-                    chunks_used, tokens, mode, state.get("card_title", ""),
-                )
+                if turn_index >= 5:
+                    system_prompt += _build_card_hard_offer_block(state)
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(hard_offer)  mode=%s  card=%s",
+                        chunks_used, tokens, mode, state.get("card_title", ""),
+                    )
+                else:
+                    system_prompt += _build_card_soft_offer_block(state)
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(soft_offer)  mode=%s  card=%s",
+                        chunks_used, tokens, mode, state.get("card_title", ""),
+                    )
             else:
                 # Pure warm-up (not_started turn<=2) or no deck — standard session mode
                 mode = get_session_mode(turn_index)
@@ -770,7 +819,10 @@ async def build_prompt_node(state: dict) -> dict:
                 fallback += _build_card_context_block(state)
             elif deck_status == "not_started" and turn_index >= 3:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
-                fallback += _build_card_soft_offer_block(state)
+                if turn_index >= 5:
+                    fallback += _build_card_hard_offer_block(state)
+                else:
+                    fallback += _build_card_soft_offer_block(state)
             else:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
                 if active_mission:

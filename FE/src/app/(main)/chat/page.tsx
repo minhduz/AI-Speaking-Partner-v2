@@ -151,16 +151,15 @@ export default function ChatPage() {
   // least once — not when the session is eagerly created in the background.
   const isFocusedLiveSession = !reviewMode && sessionStarted;
 
-  // For onboarding, the not_started deck card is revealed only after the AI
-  // has delivered its MINI_CHALLENGE transition sentence. We detect this by
-  // scanning the last AI message for known transition keywords.
+  // The not_started deck card is revealed only after the AI has delivered a
+  // transition sentence (session 1: MINI_CHALLENGE, session 2+: soft challenge offer).
+  // We detect this by scanning the last AI message for known transition keywords.
   // Once in_progress (user accepted), always show regardless.
   const TRANSITION_KEYWORDS = ['real practice', 'quick practice', 'short exercise', "let's try", "ready for a quick", "i've got a short"];
   const lastAiText = [...messages].reverse().find((m) => m.role === 'ai')?.text?.toLowerCase() ?? '';
   const aiHasTransitioned = TRANSITION_KEYWORDS.some((kw) => lastAiText.includes(kw));
 
   const onboardingDeckReady =
-    !isOnboardingSession ||
     currentDeck?.status === 'in_progress' ||
     aiHasTransitioned;
 
