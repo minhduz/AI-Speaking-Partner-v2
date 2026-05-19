@@ -9,6 +9,7 @@ import {
   type EndReason,
   type ExerciseDeck,
 } from '@/services/session.service';
+import { billingService } from '@/services/billing.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
@@ -249,8 +250,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const segmentQueueRef = useRef<SegmentQueueItem[]>([]);
   const segmentIdleResolversRef = useRef<(() => void)[]>([]);
   const isPlayingRef = useRef(false);
-  // Tracks an in-flight eager session.start() so startMic can await the same
-  // promise instead of firing a second concurrent session creation.
+  // Tracks an in-flight session.start() so only one live session can be
+  // created for the first meaningful user turn.
   const sessionStartPromiseRef = useRef<Promise<void> | null>(null);
   const isFirstSessionRef = useRef<boolean>(false);
   const pendingAutoEndRef = useRef<boolean>(false);
@@ -300,6 +301,36 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       `This session has reached the ${err.limit?.toLocaleString() ?? '30,000'} token limit. Start a new session or upgrade to Pro for longer practice.`,
     );
   }, []);
+
+  const checkSessionQuota = useCallback(async () => {
+    try {
+      const [quota, usage] = await Promise.all([
+        sessionService.getQuota().catch(() => null),
+        billingService.getUsage().catch(() => null),
+      ]);
+
+      const quotaLimitReached =
+        !!quota &&
+        !quota.is_unlimited &&
+        !quota.can_start;
+
+      const usageLimitReached =
+        !!usage &&
+        !usage.is_unlimited &&
+        usage.daily_session_limit > -1 &&
+        usage.sessions_used >= usage.daily_session_limit;
+
+      if (!quotaLimitReached && !usageLimitReached) return;
+
+      setBillingLimitError(new BillingLimitError(
+        'SESSION_LIMIT_REACHED',
+        usage?.daily_session_limit ?? quota?.daily_session_limit ?? 10,
+        Math.max(usage?.sessions_used ?? 0, quota?.sessions_used ?? 0),
+      ));
+    } catch (err) {
+      console.error('[session quota]', err);
+    }
+  }, [setBillingLimitError]);
 
   const enterReview = useCallback(async (sessionId: string) => {
     setReviewMode(true);
@@ -495,6 +526,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
+    void checkSessionQuota();
     if (_greetingTextCache && _greetingTextCache.length > 0) {
       setGreetingSentences(_greetingTextCache);
       setStatus('ready');
@@ -502,24 +534,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       setGreetingSentences([]);
       await runGreeting();
     }
-    // Eagerly create session right after greeting so the BE can start generating
-    // the deck while the user decides to tap mic. Typical gap: 3-10s. Without this,
-    // deck generation only begins on mic tap → user waits 3-5s for card to appear.
-    if (isAuthenticated && !sessionIdRef.current && !sessionStartPromiseRef.current) {
-      sessionStartPromiseRef.current = sessionService
-        .start()
-        .then(({ session_id, is_first_session }) => {
-          if (sessionIdRef.current) return; // mic tapped first, that one wins
-          sessionIdRef.current = session_id;
-          setCurrentSessionId(session_id);
-          isFirstSessionRef.current = Boolean(is_first_session);
-        })
-        .catch((err) => {
-          if (err instanceof BillingLimitError) setBillingLimitError(err);
-        })
-        .finally(() => { sessionStartPromiseRef.current = null; });
-    }
-  }, [runGreeting, isAuthenticated, setBillingLimitError]);
+  }, [runGreeting, checkSessionQuota]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
@@ -620,9 +635,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     } catch { /* silent — 3s interval will retry */ }
   }, []);
 
-  // Poll deck state every 3s as a safety net. Event-driven re-polls (in
-  // startMic after sessionService.start(), and in streamTurnText after `done`)
-  // beat the interval for responsiveness; this just catches anything missed.
+  // Poll deck state every 3s as a safety net. Event-driven re-polls after the
+  // first meaningful turn starts a session, and after `done`, beat the interval
+  // for responsiveness; this just catches anything missed.
   useEffect(() => {
     if (!currentSessionId) return;
     void pollDeck();
@@ -744,8 +759,40 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
   // ── Turn flow ───────────────────────────────────────────────────────────────
   const processTurn = useCallback(async (transcript: string) => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
+    const trimmedTranscript = transcript.trim();
+    let sessionId = sessionIdRef.current;
+    if (!sessionId) {
+      if (!trimmedTranscript) return;
+
+      try {
+        if (!sessionStartPromiseRef.current) {
+          sessionStartPromiseRef.current = sessionService
+            .start()
+            .then(({ session_id, is_first_session }) => {
+              sessionIdRef.current = session_id;
+              setCurrentSessionId(session_id);
+              isFirstSessionRef.current = Boolean(is_first_session);
+            })
+            .finally(() => { sessionStartPromiseRef.current = null; });
+        }
+        await sessionStartPromiseRef.current;
+        sessionId = sessionIdRef.current;
+        if (!sessionId) return;
+        setIsOnboardingSession(isFirstSessionRef.current);
+        window.setTimeout(() => { void pollDeck(); }, 600);
+        window.setTimeout(() => { void pollDeck(); }, 1800);
+      } catch (err) {
+        setMessages((prev) => prev.filter((m) => !m.pending));
+        if (err instanceof BillingLimitError) {
+          setBillingLimitError(err);
+        } else {
+          setBillingLimitCode(null);
+          setErrorMessage('Failed to start session');
+        }
+        setStatus('error');
+        return;
+      }
+    }
 
     setStatus('processing');
     setErrorMessage(null);
@@ -1107,6 +1154,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         if (!hasSpokenRef.current) {
           setMessages((prev) => prev.filter((m) => !m.pending));
           setErrorMessage("You didn't say anything. Please try again.");
+          if (!sessionIdRef.current) setSessionStarted(false);
           setStatus('ready');
           return;
         }
@@ -1137,6 +1185,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
   const startMic = useCallback(() => {
     if (statusRef.current !== 'ready' && statusRef.current !== 'error') return;
+    if (billingLimitCode === 'SESSION_LIMIT_REACHED') return;
     statusRef.current = 'recording';
     isStoppingRef.current = false;
     pendingStopRef.current = false;
@@ -1154,22 +1203,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setStatus('recording');
     setSessionStarted(true);
 
-    const ensureSession = sessionIdRef.current
-      ? Promise.resolve()
-      : (sessionStartPromiseRef.current ?? sessionService.start().then(({ session_id, is_first_session }) => {
-          sessionIdRef.current = session_id;
-          setCurrentSessionId(session_id);
-          isFirstSessionRef.current = Boolean(is_first_session);
-          // Eager start didn't run (e.g. billing error cleared it) — fall back to
-          // aggressive early polls so deck still appears within ~2s.
-          window.setTimeout(() => { void pollDeck(); }, 600);
-          window.setTimeout(() => { void pollDeck(); }, 1800);
-        }));
-    ensureSession
-      .then(() => {
-        setIsOnboardingSession(isFirstSessionRef.current);
-        return startRecording();
-      })
+    startRecording()
       .then(() => {
         if (pendingStopRef.current) {
           pendingStopRef.current = false;
@@ -1183,6 +1217,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         if (ctx && ctx.state !== 'closed') ctx.close();
         audioCtxRef.current = null;
         setStatus('ready');
+        if (!sessionIdRef.current) setSessionStarted(false);
         if (err instanceof BillingLimitError) {
           setBillingLimitError(err);
         } else {
@@ -1190,7 +1225,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           setErrorMessage('Failed to start recording');
         }
       });
-  }, [setBillingLimitError, startRecording, runStop, pollDeck]);
+  }, [billingLimitCode, setBillingLimitError, startRecording, runStop]);
 
   const stopMic = useCallback(() => {
     if (statusRef.current !== 'recording') return;

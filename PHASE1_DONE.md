@@ -1,6 +1,7 @@
 # Phase 1 — Exercise Deck: Data Model + Storage
 
 ## Mục tiêu
+
 Tạo nền tảng lưu trữ Exercise Deck trong Redis. Không có UI, không có prompt injection, không có AI generation.
 
 ---
@@ -9,7 +10,8 @@ Tạo nền tảng lưu trữ Exercise Deck trong Redis. Không có UI, không c
 
 ### Memory-service (Python)
 
-**`BE/services/memory-service/layers/exercise_deck.py`** *(mới)*
+**`BE/services/memory-service/layers/exercise_deck.py`** _(mới)_
+
 - Class `ExerciseDeckService` với các static method:
   - `create(session_id, mission_source, cards)` — tạo deck mới
   - `get(session_id)` — đọc deck từ Redis
@@ -19,7 +21,8 @@ Tạo nền tảng lưu trữ Exercise Deck trong Redis. Không có UI, không c
 - Redis key: `session:{session_id}:exercise_deck`
 - TTL: 72 giờ
 
-**`BE/services/memory-service/routers/exercise_deck_ops.py`** *(mới)*
+**`BE/services/memory-service/routers/exercise_deck_ops.py`** _(mới)_
+
 - 5 endpoints:
   - `POST /exercise-deck/{session_id}` — tạo/thay thế deck
   - `GET /exercise-deck/{session_id}` — đọc deck
@@ -27,31 +30,36 @@ Tạo nền tảng lưu trữ Exercise Deck trong Redis. Không có UI, không c
   - `PUT /exercise-deck/{session_id}/advance` — advance sang card tiếp
   - `PUT /exercise-deck/{session_id}/end` — kết thúc deck
 
-**`BE/services/memory-service/main.py`** *(sửa)*
+**`BE/services/memory-service/main.py`** _(sửa)_
+
 - Đăng ký `deck_router` vào app
 
 ---
 
 ### Orchestrator (NestJS)
 
-**`BE/apps/orchestrator/src/session/session.service.ts`** *(sửa)*
+**`BE/apps/orchestrator/src/session/session.service.ts`** _(sửa)_
+
 - 4 method proxy tới memory-service:
   - `getDeck(sessionId)`
   - `createDeck(sessionId, body)`
   - `advanceDeck(sessionId)`
   - `endDeck(sessionId)`
 
-**`BE/apps/orchestrator/src/session/session.controller.ts`** *(sửa)*
+**`BE/apps/orchestrator/src/session/session.controller.ts`** _(sửa)_
+
 - 4 route expose ra ngoài:
   - `GET /session/:id/deck`
   - `POST /session/:id/deck`
   - `PUT /session/:id/deck/advance`
   - `PUT /session/:id/deck/end`
 
-**`BE/apps/orchestrator/src/turn/turn.service.ts`** *(sửa)*
+**`BE/apps/orchestrator/src/turn/turn.service.ts`** _(sửa)_
+
 - Method `getDeckInfo(sessionId)` — fetch deck state từ memory-service, trả về `{ status, current_card_index, cards }`
 
-**`BE/apps/orchestrator/src/turn/turn.controller.ts`** *(sửa)*
+**`BE/apps/orchestrator/src/turn/turn.controller.ts`** _(sửa)_
+
 - Thêm 3 header vào cả 2 stream endpoint (`/turn/:id/stream` và `/turn/:id/stream-text`):
   - `X-Deck-Status` — trạng thái deck (`active` / `completed` / `none`)
   - `X-Deck-Card-Index` — index card hiện tại
@@ -84,9 +92,9 @@ Tạo nền tảng lưu trữ Exercise Deck trong Redis. Không có UI, không c
 
 ## Test kết quả
 
-| Endpoint | Kết quả |
-|----------|---------|
-| POST `/session/:id/deck` | ✅ Tạo deck, trả về JSON đúng |
-| GET `/session/:id/deck` | ✅ Đọc lại đúng data |
-| PUT `/session/:id/deck/advance` | ✅ `current_card_index` tăng đúng |
-| PUT `/session/:id/deck/advance` (lần 2, hết cards) | ✅ `status` tự chuyển thành `completed` |
+| Endpoint                                           | Kết quả                              |
+| -------------------------------------------------- | ------------------------------------ |
+| POST `/session/:id/deck`                           | Tạo deck, trả về JSON đúng           |
+| GET `/session/:id/deck`                            | Đọc lại đúng data                    |
+| PUT `/session/:id/deck/advance`                    | `current_card_index` tăng đúng       |
+| PUT `/session/:id/deck/advance` (lần 2, hết cards) | `status` tự chuyển thành `completed` |

@@ -114,6 +114,10 @@ export class SessionController {
   @Post('start')
   start(@Req() req) { return this.sessionService.start(req.user.id); }
 
+  // GET /session/quota: current daily session allowance without creating a session
+  @Get('quota')
+  quota(@Req() req) { return this.sessionService.getQuota(req.user.id); }
+
   // GET /session/list?page=1&limit=25
   @Get('list')
   list(@Req() req, @Query('page') page = '1', @Query('limit') limit = '25') {

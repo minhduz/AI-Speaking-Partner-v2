@@ -39,6 +39,44 @@ export class SessionService {
     return this.repo.count({ where: { userId, startedAt: MoreThanOrEqual(todayMidnight) } });
   }
 
+  async getQuota(userId: string) {
+    const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
+    let limits = { is_unlimited: false, daily_session_limit: 10, session_token_limit: 30000 };
+    let billingSessionsUsed = 0;
+    try {
+      const { data } = await firstValueFrom(
+        this.http.get<any>(`${billingUrl}/internal/limits/${userId}`),
+      );
+      limits = data;
+    } catch { /* fail open if billing unreachable */ }
+
+    try {
+      const { data } = await firstValueFrom(
+        this.http.get<any>(`${billingUrl}/usage/${userId}`),
+      );
+      billingSessionsUsed = Number(data?.sessions_used ?? 0);
+      if (typeof data?.daily_session_limit === 'number') {
+        limits.daily_session_limit = data.daily_session_limit;
+      }
+      if (typeof data?.session_token_limit === 'number') {
+        limits.session_token_limit = data.session_token_limit;
+      }
+      if (typeof data?.is_unlimited === 'boolean') {
+        limits.is_unlimited = data.is_unlimited;
+      }
+    } catch { /* fail open if billing usage is unreachable */ }
+
+    const todayCount = await this.countTodaySessions(userId);
+    const sessionsUsed = Math.max(todayCount, billingSessionsUsed);
+    return {
+      is_unlimited: limits.is_unlimited,
+      daily_session_limit: limits.daily_session_limit,
+      session_token_limit: limits.session_token_limit,
+      sessions_used: sessionsUsed,
+      can_start: limits.is_unlimited || sessionsUsed < limits.daily_session_limit,
+    };
+  }
+
   /**
    * Returns true for pre-session onboarding greetings.
    * A single active orphan can happen on refresh before the user really speaks;
@@ -81,22 +119,13 @@ export class SessionService {
 
   async start(userId: string) {
     const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
-    let limits = { is_unlimited: false, daily_session_limit: 10, session_token_limit: 30000 };
-    try {
-      const { data } = await firstValueFrom(
-        this.http.get<any>(`${billingUrl}/internal/limits/${userId}`),
-      );
-      limits = data;
-    } catch { /* fail open if billing unreachable */ }
+    const quota = await this.getQuota(userId);
 
-    if (!limits.is_unlimited) {
-      const todayCount = await this.countTodaySessions(userId);
-      if (todayCount >= limits.daily_session_limit) {
-        throw new HttpException(
-          { error: 'SESSION_LIMIT_REACHED', limit: limits.daily_session_limit, used: todayCount },
-          HttpStatus.TOO_MANY_REQUESTS,
-        );
-      }
+    if (!quota.is_unlimited && !quota.can_start) {
+      throw new HttpException(
+        { error: 'SESSION_LIMIT_REACHED', limit: quota.daily_session_limit, used: quota.sessions_used },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     const [sessionsBeforeStart, completedOrAbandonedBefore, onlySessionBeforeStart] = await Promise.all([

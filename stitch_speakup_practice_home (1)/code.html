@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>SpeakUp - Master Your Fluency</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                "primary-fixed-dim": "#6be026",
+                "outline": "#6f7b64",
+                "surface-container-highest": "#e2e2e2",
+                "on-surface": "#1a1c1c",
+                "on-secondary-fixed-variant": "#004c6e",
+                "on-secondary-fixed": "#001e2e",
+                "surface": "#f9f9f9",
+                "surface-variant": "#e2e2e2",
+                "surface-bright": "#f9f9f9",
+                "tertiary-container": "#ff9c27",
+                "inverse-surface": "#2f3131",
+                "primary-fixed": "#87fe45",
+                "secondary-container": "#2fb8ff",
+                "inverse-primary": "#6be026",
+                "on-primary-fixed-variant": "#1f5100",
+                "surface-container": "#eeeeee",
+                "primary": "#2b6c00",
+                "on-surface-variant": "#3f4a36",
+                "on-error-container": "#93000a",
+                "on-background": "#1a1c1c",
+                "secondary-fixed": "#c8e6ff",
+                "on-primary-fixed": "#082100",
+                "background": "#f9f9f9",
+                "tertiary-fixed": "#ffdcbf",
+                "tertiary-fixed-dim": "#ffb872",
+                "surface-container-low": "#f3f3f3",
+                "surface-container-lowest": "#ffffff",
+                "on-tertiary-fixed": "#2d1600",
+                "on-secondary": "#ffffff",
+                "outline-variant": "#becbb1",
+                "on-tertiary": "#ffffff",
+                "on-secondary-container": "#004666",
+                "inverse-on-surface": "#f1f1f1",
+                "secondary-fixed-dim": "#88ceff",
+                "surface-dim": "#dadada",
+                "error": "#ba1a1a",
+                "secondary": "#006590",
+                "on-tertiary-fixed-variant": "#6a3b00",
+                "error-container": "#ffdad6",
+                "tertiary": "#8c5000",
+                "on-tertiary-container": "#683a00",
+                "on-primary": "#ffffff",
+                "on-primary-container": "#1e5000",
+                "primary-container": "#58cc02",
+                "on-error": "#ffffff",
+                "surface-tint": "#2b6c00",
+                "surface-container-high": "#e8e8e8"
+            },
+            "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "12px",
+                "2xl": "16px",
+                "full": "9999px"
+            },
+            "spacing": {
+                "margin-mobile": "16px",
+                "margin-desktop": "40px",
+                "base": "4px",
+                "gutter": "16px",
+                "xl": "48px",
+                "sm": "16px",
+                "md": "24px",
+                "xs": "8px",
+                "lg": "32px"
+            },
+            "fontFamily": {
+                "headline-md": ["Lexend"],
+                "body-md": ["Lexend"],
+                "label-lg": ["Lexend"],
+                "display": ["Lexend"],
+                "label-sm": ["Lexend"],
+                "body-lg": ["Lexend"],
+                "headline-lg": ["Lexend"]
+            },
+            "fontSize": {
+                "headline-md": ["24px", {"lineHeight": "32px", "fontWeight": "700"}],
+                "body-md": ["17px", {"lineHeight": "24px", "fontWeight": "500"}],
+                "label-lg": ["15px", {"lineHeight": "20px", "letterSpacing": "0.05em", "fontWeight": "700"}],
+                "display": ["48px", {"lineHeight": "56px", "letterSpacing": "-0.02em", "fontWeight": "800"}],
+                "label-sm": ["13px", {"lineHeight": "16px", "fontWeight": "600"}],
+                "body-lg": ["19px", {"lineHeight": "28px", "fontWeight": "500"}],
+                "headline-lg": ["32px", {"lineHeight": "40px", "letterSpacing": "-0.01em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Lexend', sans-serif; }
+        .lip-primary {
+            box-shadow: 0 4px 0 #1f5100;
+        }
+        .lip-primary:active {
+            box-shadow: 0 0px 0 #1f5100;
+            transform: translateY(4px);
+        }
+        .lip-secondary {
+            box-shadow: 0 4px 0 #004666;
+        }
+        .lip-secondary:active {
+            box-shadow: 0 0px 0 #004666;
+            transform: translateY(4px);
+        }
+        .lip-tertiary {
+            box-shadow: 0 4px 0 #683a00;
+        }
+        .lip-tertiary:active {
+            box-shadow: 0 0px 0 #683a00;
+            transform: translateY(4px);
+        }
+        .lip-ghost {
+            box-shadow: 0 4px 0 #e2e2e2;
+        }
+        .lip-ghost:active {
+            box-shadow: 0 0px 0 #e2e2e2;
+            transform: translateY(4px);
+        }
+        .bento-card {
+            border: 2px solid #e2e2e2;
+        }
+    </style>
+</head>
+<body class="bg-surface text-on-surface">
+<!-- Side Navigation Shell -->
+<nav class="fixed left-0 top-0 h-full flex flex-col py-6 h-screen w-64 border-r-2 border-surface-variant bg-surface-container-lowest z-50">
+<div class="px-6 mb-10">
+<h1 class="font-headline-md text-headline-md font-black text-primary">SpeakUp</h1>
+<p class="text-label-sm text-outline">Fluency Level: B2</p>
+</div>
+<div class="flex-1 flex flex-col gap-2">
+<!-- Learn (Active) -->
+<a class="flex items-center gap-4 bg-primary-container text-on-primary-container border-b-4 border-primary rounded-xl px-4 py-3 mx-4 lip-primary" href="#">
+<span class="material-symbols-outlined" data-weight="fill">school</span>
+<span class="font-label-lg text-label-lg">Learn</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container-high rounded-xl px-4 py-3 mx-4 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">record_voice_over</span>
+<span class="font-label-lg text-label-lg">Practice</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container-high rounded-xl px-4 py-3 mx-4 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">leaderboard</span>
+<span class="font-label-lg text-label-lg">Leaderboard</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container-high rounded-xl px-4 py-3 mx-4 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">emoji_events</span>
+<span class="font-label-lg text-label-lg">Quests</span>
+</a>
+<a class="flex items-center gap-4 text-outline hover:bg-surface-container-high rounded-xl px-4 py-3 mx-4 transition-all duration-200" href="#">
+<span class="material-symbols-outlined">shopping_bag</span>
+<span class="font-label-lg text-label-lg">Shop</span>
+</a>
+</div>
+<div class="px-4 mt-auto">
+<button class="w-full py-4 bg-secondary-container text-white rounded-2xl font-bold lip-secondary flex items-center justify-center gap-2">
+<span class="material-symbols-outlined">diamond</span>
+                Go Premium
+            </button>
+</div>
+</nav>
+<!-- Top App Bar Shell -->
+<header class="fixed top-0 right-0 left-64 h-20 bg-surface border-b-2 border-surface-variant flex items-center px-10 z-40">
+<div class="flex-1"></div>
+<div class="flex items-center gap-8">
+<div class="flex items-center gap-2 px-3 py-1.5 rounded-xl hover:bg-surface-container transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-tertiary text-2xl" style="font-variation-settings: 'FILL' 1;">local_fire_department</span>
+<span class="font-label-lg text-tertiary">7 Days</span>
+</div>
+<div class="flex items-center gap-2 px-3 py-1.5 rounded-xl hover:bg-surface-container transition-colors cursor-pointer">
+<span class="material-symbols-outlined text-secondary text-2xl" style="font-variation-settings: 'FILL' 1;">diamond</span>
+<span class="font-label-lg text-secondary">1,240 XP</span>
+</div>
+<div class="w-10 h-10 rounded-full bg-surface-container-high border-2 border-outline-variant overflow-hidden cursor-pointer">
+<img alt="Profile" data-alt="A clean, friendly portrait of a young male professional with a warm smile, set against a soft blurred studio background. The lighting is bright and cheerful, matching a vibrant and modern ed-tech platform aesthetic with high-key illumination and natural skin tones." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBjQ132znN1gKxR4H3qqbAdql5_X-SdUxe0qUpMsZ0HB60MJszaUkb46rEDlIzw1uQcQzgo40J2PV_tGxsx7ZvQOS80rmM2yjkxyv2O_5kMSSNhgAAydS6vYBq9FRIdaaXGSHpqoopMX-QYB8sb6Tc-nVuj4r93YMovC3w7nGLGvjXrI9chIOd3GwdyD6ya7cPwoG8INZDj442VpwDhewRDPMFuwLXMiAL5KpZIdCeNo1chEwQs7WOk0itmraz9fMryYKAYq7Y11X0v"/>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-64 mt-20 p-10 max-w-[1200px] mx-auto">
+<section class="mb-12">
+<h2 class="font-headline-lg text-headline-lg text-on-surface">Welcome back, Jonathan!</h2>
+<p class="font-body-lg text-body-lg text-outline-variant mt-1">Ready for your daily practice?</p>
+</section>
+<!-- Bento Grid Layout -->
+<div class="grid grid-cols-12 gap-8">
+<!-- Main Hero Card: Today's Focus -->
+<div class="col-span-8 bento-card bg-surface-container-lowest rounded-3xl p-8 flex flex-col justify-between min-h-[400px]">
+<div class="flex justify-between items-start">
+<div>
+<span class="inline-block bg-primary-fixed text-on-primary-fixed px-4 py-1 rounded-full font-label-sm mb-4">TODAY'S FOCUS</span>
+<h3 class="font-headline-lg text-headline-lg mb-2">Fluency &amp; Intonation Challenge</h3>
+<p class="text-outline max-w-md">Master the natural rhythm of conversational English through our advanced AI-voice feedback module.</p>
+</div>
+<div class="w-32 h-32 flex items-center justify-center bg-primary-container/20 rounded-full">
+<span class="material-symbols-outlined text-primary text-6xl" style="font-variation-settings: 'FILL' 1;">waves</span>
+</div>
+</div>
+<div class="flex items-center gap-10 mt-8">
+<div class="flex-1">
+<div class="flex justify-between mb-2 font-label-sm">
+<span>PROGRESS</span>
+<span>65%</span>
+</div>
+<div class="h-4 w-full bg-surface-container rounded-full overflow-hidden">
+<div class="h-full bg-primary-container rounded-full" style="width: 65%"></div>
+</div>
+</div>
+<!-- Massive Microphone CTA -->
+<button class="w-24 h-24 rounded-full bg-primary-container flex items-center justify-center lip-primary group">
+<span class="material-symbols-outlined text-white text-4xl group-active:scale-90 transition-transform">mic</span>
+</button>
+</div>
+</div>
+<!-- Side Card: Daily Streak -->
+<div class="col-span-4 bento-card bg-surface-container-lowest rounded-3xl p-8 flex flex-col items-center justify-center text-center">
+<div class="relative mb-6">
+<div class="w-32 h-32 bg-tertiary-fixed rounded-full flex items-center justify-center">
+<span class="material-symbols-outlined text-tertiary text-7xl" style="font-variation-settings: 'FILL' 1;">local_fire_department</span>
+</div>
+<div class="absolute -bottom-2 -right-2 bg-white p-2 rounded-xl border-2 border-surface-variant font-black text-2xl">7</div>
+</div>
+<h4 class="font-headline-md text-headline-md mb-2">Daily Streak</h4>
+<p class="text-outline text-label-lg mb-6">You're on fire! 3 more days to hit your weekly goal.</p>
+<button class="w-full py-4 rounded-2xl bg-surface border-2 border-surface-variant font-bold text-outline-variant lip-ghost">
+                    View Calendar
+                </button>
+</div>
+<!-- Secondary Card: Vocabulary Duel -->
+<div class="col-span-6 bento-card bg-tertiary-container text-white rounded-3xl p-8 flex gap-6 items-center lip-tertiary cursor-pointer hover:-translate-y-1 transition-transform">
+<div class="w-20 h-20 bg-white/20 rounded-2xl flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-4xl" style="font-variation-settings: 'FILL' 1;">swords</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md">Vocabulary Duel</h4>
+<p class="opacity-90 font-body-md">Challenge a friend to a 60-second word blitz.</p>
+</div>
+<span class="material-symbols-outlined ml-auto text-3xl">chevron_right</span>
+</div>
+<!-- Secondary Card: Listening Lab -->
+<div class="col-span-6 bento-card bg-secondary-container text-white rounded-3xl p-8 flex gap-6 items-center lip-secondary cursor-pointer hover:-translate-y-1 transition-transform">
+<div class="w-20 h-20 bg-white/20 rounded-2xl flex items-center justify-center shrink-0">
+<span class="material-symbols-outlined text-4xl" style="font-variation-settings: 'FILL' 1;">headphones</span>
+</div>
+<div>
+<h4 class="font-headline-md text-headline-md">Listening Lab</h4>
+<p class="opacity-90 font-body-md">Decode complex accents in immersive scenarios.</p>
+</div>
+<span class="material-symbols-outlined ml-auto text-3xl">chevron_right</span>
+</div>
+</div>
+<!-- Section: Friends Activity (Asymmetric Detail) -->
+<section class="mt-16 grid grid-cols-12 gap-8">
+<div class="col-span-4">
+<h3 class="font-headline-md text-headline-md mb-6">Friends Activity</h3>
+<div class="space-y-4">
+<div class="flex items-center gap-4 p-4 rounded-2xl border-2 border-surface-variant hover:border-primary-container transition-colors cursor-pointer">
+<img alt="Friend 1" class="w-12 h-12 rounded-full border-2 border-surface-variant" data-alt="A portrait of a cheerful young woman with curly hair, smiling brightly against a soft natural outdoor lighting. The image emphasizes a friendly and collaborative atmosphere for a social learning platform, using a clean and professional photography style." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCx9ZE0foJ6L3PASbI4s5gYz2tryHP1nFQ6Cb4GgkEJMEYMiUC8ilugfEzoDV8iDRHBLcHmgbEc06LWYB5n6SJCIMDluyrSpe4C1BircfaUXjSoX333zaXJIRvk7iGmz_CeHBoPfXTklYvxjCRJHLs3EEZlogFB8kdGf-FDoqCMTAuxwb9hL6GUA6SG4C3ECd7tdaC6Ea_1RlABjrOekcIo0kA7I3lfssTwk6NsryqY3-J_0iupB_lfl4MD-SjDnZ5hhBTFPX_QTwMT"/>
+<div class="flex-1">
+<p class="font-bold text-on-surface">Sarah just reached B2!</p>
+<p class="text-label-sm text-outline">2 hours ago</p>
+</div>
+<span class="material-symbols-outlined text-primary">celebration</span>
+</div>
+<div class="flex items-center gap-4 p-4 rounded-2xl border-2 border-surface-variant hover:border-primary-container transition-colors cursor-pointer">
+<img alt="Friend 2" class="w-12 h-12 rounded-full border-2 border-surface-variant" data-alt="A modern portrait of a man with glasses, looking thoughtful and motivated. The background is a clean, bright office setting with warm wood tones and soft focus. The composition is professional and optimistic, perfectly fitting a gamified learning environment." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDvmfWeFnA640S6UTFsh8NLwnG0ztdevYqgRkrYXmTv_jTyzF1o8X7cLtFTxYoQcLBS9oFzRuX7LDWRlZ1syvAO6V8i9WFZQjTnzkvrngovYwBiY9a-nSeN54k0kWRFRJfY8A89ySzrSRrWlDrY9HMqVm6JgmAm2WMmu2RFOrnr1NLpVCG0JhiLxIQp3zUZyb3zJlvDfjXXpQXNrBHKL5J3KSmIBizYZ6CyqIcVaCkOozhspRdHKsDUeHGHxtBdx1MN2rFjTfFfwlwd"/>
+<div class="flex-1">
+<p class="font-bold text-on-surface">Alex completed "Cafe Talk"</p>
+<p class="text-label-sm text-outline">5 hours ago</p>
+</div>
+<span class="material-symbols-outlined text-secondary">thumb_up</span>
+</div>
+</div>
+</div>
+<div class="col-span-8">
+<div class="relative w-full h-[250px] rounded-3xl overflow-hidden bento-card">
+<div class="absolute inset-0 bg-gradient-to-r from-primary/80 to-transparent z-10 p-8 flex flex-col justify-center">
+<h4 class="text-white font-headline-lg text-headline-lg max-w-sm">Join the Weekend Tournament!</h4>
+<p class="text-white/90 font-body-lg mb-6">Win 500 Diamonds and a unique badge.</p>
+<button class="w-fit px-8 py-3 bg-white text-primary rounded-2xl font-black lip-ghost">REGISTER NOW</button>
+</div>
+<img alt="Tournament Hero" class="w-full h-full object-cover" data-alt="A vibrant, high-energy scene featuring abstract 3D shapes, game trophies, and glowing neon accents in green and blue. The visual style is playful and gamified, reminiscent of high-end 3D character art for mobile gaming, with sharp focus and cinematic lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCtnJvQg_rYtZcPZ8tVQk_1YFXFk2cm8IyhhZ8XyjmyLvfoc4mXOnD_hoqstzgTos7OXETiOgFb_yhldzYCq_9QPunw2VrJeVh813x9SkTTV5TKKjie3Ma2YfKFyne2w23fv3bnLr4jzJd5kPoAKrhDJLA4V7o-cRtVSSlFEi3BOsl6oCQoP2nsGT-blBkFTwElBaKExWQVPWzHgG0o-OnVLX4Z5h4u0eTLErcODAXq-gpHADkr4dVIfRtmpcWtm5cp5qFwfiwQYsxq"/>
+</div>
+</div>
+</section>
+</main>
+<script>
+        // Simple micro-interactions for the mic button
+        const micBtn = document.querySelector('.group');
+        if (micBtn) {
+            micBtn.addEventListener('mousedown', () => {
+                const icon = micBtn.querySelector('.material-symbols-outlined');
+                icon.style.color = '#ff9c27';
+            });
+            micBtn.addEventListener('mouseup', () => {
+                const icon = micBtn.querySelector('.material-symbols-outlined');
+                icon.style.color = '#ffffff';
+            });
+        }
+
+        // Handle navigation active states
+        const navItems = document.querySelectorAll('nav a');
+        navItems.forEach(item => {
+            item.addEventListener('click', (e) => {
+                navItems.forEach(nav => {
+                    nav.classList.remove('bg-primary-container', 'text-on-primary-container', 'border-b-4', 'border-primary', 'lip-primary');
+                    nav.classList.add('text-outline', 'hover:bg-surface-container-high');
+                });
+                item.classList.add('bg-primary-container', 'text-on-primary-container', 'border-b-4', 'border-primary', 'lip-primary');
+                item.classList.remove('text-outline', 'hover:bg-surface-container-high');
+            });
+        });
+    </script>
+</body></html>
