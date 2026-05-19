@@ -151,9 +151,22 @@ export default function ChatPage() {
   // least once — not when the session is eagerly created in the background.
   const isFocusedLiveSession = !reviewMode && sessionStarted;
 
+  // For onboarding, the not_started deck card is revealed only after the AI
+  // has delivered its MINI_CHALLENGE transition sentence. We detect this by
+  // scanning the last AI message for known transition keywords.
+  // Once in_progress (user accepted), always show regardless.
+  const TRANSITION_KEYWORDS = ['real practice', 'quick practice', 'short exercise', "let's try", "ready for a quick", "i've got a short"];
+  const lastAiText = [...messages].reverse().find((m) => m.role === 'ai')?.text?.toLowerCase() ?? '';
+  const aiHasTransitioned = TRANSITION_KEYWORDS.some((kw) => lastAiText.includes(kw));
+
+  const onboardingDeckReady =
+    !isOnboardingSession ||
+    currentDeck?.status === 'in_progress' ||
+    aiHasTransitioned;
+
   const deckVisible =
     currentDeck !== null &&
-    !isOnboardingSession &&
+    onboardingDeckReady &&
     (currentDeck.status === 'not_started' || currentDeck.status === 'in_progress') &&
     currentDeck.cards.length > 0;
 
@@ -589,18 +602,29 @@ function DeckCardView({
   const [showRejectOptions, setShowRejectOptions] = useState(false);
 
   // In lighter mode: auto-advance as soon as any result arrives (no retry).
-  // Normal mode: auto-advance only when AI sets next_action = 'next_card'.
+  // Normal non-onboarding mode: auto-advance only when AI sets next_action = 'next_card'.
+  // Onboarding diagnostic: never auto-advance — wait for the user to press Next/Skip
+  // so the first-session flow feels deliberate and conversational.
   const card = deck.cards[deck.current_card_index];
+  const isOnboarding = deck.session_type === 'onboarding_diagnostic';
   useEffect(() => {
     if (!card?.result) return;
+
+    // Final onboarding card: briefly show completion state, then finalize the deck
+    // so the AI can give the first-session wrap-up without another user click.
+    if (isOnboarding && card.next_action === 'finish_session') {
+      const t = setTimeout(() => onNext(), 1600);
+      return () => clearTimeout(t);
+    }
+
+    if (isOnboarding) return;
     if (!isLighter && card.next_action !== 'next_card') return;
     const t = setTimeout(() => onNext(), 2000);
     return () => clearTimeout(t);
-  }, [card, card?.result, card?.next_action, isLighter, onNext]);
+  }, [card, card?.result, card?.next_action, isLighter, isOnboarding, onNext]);
 
   if (!card) return null;
 
-  const isOnboarding = deck.session_type === 'onboarding_diagnostic';
   let cardLabel: string;
   if (isLighter)        cardLabel = 'Quick task';
   else if (isOnboarding) cardLabel = `Mini check ${deck.current_card_index + 1} / ${deck.cards.length}`;
@@ -678,16 +702,27 @@ function DeckCardView({
           >
             {acceptLabel}
           </button>
-          <button
-            onClick={() => setShowRejectOptions(true)}
-            className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
-          >
-            Not today
-          </button>
+          {isOnboarding ? (
+            // Onboarding: simple "Maybe later" that rejects immediately
+            <button
+              onClick={onReject}
+              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+            >
+              Maybe later
+            </button>
+          ) : (
+            // Non-onboarding: show sub-option menu
+            <button
+              onClick={() => setShowRejectOptions(true)}
+              className="flex-1 py-2.5 rounded-xl bg-gray-100 text-gray-600 text-sm font-semibold hover:bg-gray-200 active:scale-95 transition-all"
+            >
+              Not today
+            </button>
+          )}
         </div>
       )}
 
-      {deck.status === 'not_started' && showRejectOptions && (
+      {!isOnboarding && deck.status === 'not_started' && showRejectOptions && (
         <div className="flex flex-col gap-3">
           <p className="text-xs text-gray-400 text-center tracking-wide">What would you prefer?</p>
           <div className="flex gap-2">
@@ -714,7 +749,13 @@ function DeckCardView({
       )}
 
       {deck.status === 'in_progress' && (
-        <DeckCardActions card={card} isLighter={isLighter} onNext={onNext} onSkip={onSkip} />
+        <DeckCardActions
+          card={card}
+          isLighter={isLighter}
+          isOnboarding={isOnboarding}
+          onNext={onNext}
+          onSkip={onSkip}
+        />
       )}
     </div>
   );
@@ -723,11 +764,13 @@ function DeckCardView({
 function DeckCardActions({
   card,
   isLighter,
+  isOnboarding,
   onNext,
   onSkip,
 }: {
   card: DeckCard;
   isLighter: boolean;
+  isOnboarding: boolean;
   onNext: () => void;
   onSkip: () => void;
 }) {
@@ -769,7 +812,15 @@ function DeckCardActions({
           {isLighter ? 'Done ✓' : 'Next →'}
         </button>
       )}
-      {showFinish && (
+      {showFinish && isOnboarding && (
+        <span className="inline-flex items-center gap-1.5 h-9 px-5 rounded-full bg-emerald-50 text-emerald-600 text-sm font-semibold animate-pulse">
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+          </svg>
+          Completed today
+        </span>
+      )}
+      {showFinish && !isOnboarding && (
         <button
           type="button"
           onClick={onNext}

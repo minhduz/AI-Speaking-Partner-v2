@@ -66,6 +66,7 @@ export type TurnEvent =
   | SegmentEvent
   | DeckEvalEvent
   | { type: 'title'; text: string }
+  | { type: 'session_ended' }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string; limit?: number; used?: number };
 

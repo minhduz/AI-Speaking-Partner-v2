@@ -159,6 +159,21 @@ function isEndSessionIntent(transcript: string): boolean {
     'du roi',
     'thế đủ rồi',
     'the du roi',
+    // fatigue / stop intent — common natural phrasing
+    'i am tired',
+    "i'm tired",
+    'im tired',
+    'i feel tired',
+    'too tired',
+    'had enough',
+    "i've had enough",
+    'i have had enough',
+    'close the chat',
+    'close chat',
+    'we can close',
+    'can close',
+    'stop now',
+    'close right now',
   ].some((phrase) => normalized.includes(phrase));
 }
 
@@ -239,6 +254,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const sessionStartPromiseRef = useRef<Promise<void> | null>(null);
   const isFirstSessionRef = useRef<boolean>(false);
   const pendingAutoEndRef = useRef<boolean>(false);
+  const pendingAutoEndReasonRef = useRef<EndReason>('voice_intent');
   // Stable ref so processTurn can call endSession without adding it to deps.
   const endSessionRef = useRef<(reason?: EndReason) => Promise<void>>(async () => {});
   // Chains segment scheduling so audio is pushed onto the timeline in arrival order
@@ -779,6 +795,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           });
         } else if (event.type === 'title') {
           setSessionTitleUpdate({ sessionId, title: event.text });
+        } else if (event.type === 'session_ended') {
+          // LLM emitted SESSION_END marker. Do not close immediately here:
+          // wait for the `done` event so the current farewell audio/text finishes,
+          // then run the normal closing overlay flow via voice_intent.
+          pendingAutoEndRef.current = true;
+          pendingAutoEndReasonRef.current = 'voice_intent';
         } else if (event.type === 'done') {
           // Wait for all segments to finish revealing before flipping pending → false.
           // The bubble was already rendered via `sentences[]`, so no layout change.
@@ -805,9 +827,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           setStatus('ready');
           if (pendingAutoEndRef.current) {
             pendingAutoEndRef.current = false;
-            await new Promise((r) => setTimeout(r, 1500));
+            const reason = pendingAutoEndReasonRef.current;
+            await new Promise((r) => setTimeout(r, 1200));
             if (sessionIdRef.current === sessionId) {
-              void endSessionRef.current('idle_timeout');
+              void endSessionRef.current(reason);
             }
           }
           return;
@@ -1020,10 +1043,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       await sessionService.acceptDeckChallenge(sessionId);
       const deck = await sessionService.getDeck(sessionId);
       setCurrentDeck(deck);
+      // Trigger AI turn so it reads the card task and encourages the user to begin
+      void processTurn('');
     } catch (err) {
       console.error('[acceptDeckChallenge]', err);
     }
-  }, []);
+  }, [processTurn]);
 
   const rejectDeckChallenge = useCallback(async () => {
     const sessionId = sessionIdRef.current;
@@ -1031,10 +1056,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     try {
       await sessionService.rejectDeckChallenge(sessionId);
       setCurrentDeck(null);
+      // Trigger AI turn so it acknowledges the rejection and asks what user prefers
+      void processTurn('');
     } catch (err) {
       console.error('[rejectDeckChallenge]', err);
     }
-  }, []);
+  }, [processTurn]);
 
   /** Accept the deck and switch to lighter UI mode (1 card, no criteria, no retry). */
   const enterLighterMode = useCallback(async () => {
@@ -1084,14 +1111,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           return;
         }
         if (isEndSessionIntent(transcript)) {
-          setMessages((prev) => {
-            const withoutPending = prev.filter((m) => !m.pending);
-            return transcript.trim()
-              ? [...withoutPending, { role: 'user' as const, text: transcript }]
-              : withoutPending;
-          });
-          void endSession('voice_intent');
-          return;
+          // Universal voice-close flow: let the AI say a natural farewell first,
+          // then auto-close after the streamed audio finishes. This covers
+          // "bye", "I'm tired", "close the chat", "that's enough", etc.
+          pendingAutoEndRef.current = true;
+          pendingAutoEndReasonRef.current = 'voice_intent';
+          return processTurn(transcript);
         }
         // Reset idle timer on every completed turn
         if (idleTimerRef.current) clearTimeout(idleTimerRef.current);

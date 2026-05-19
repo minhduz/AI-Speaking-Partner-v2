@@ -1,28 +1,11 @@
 'use client';
 
-import { useRef, useEffect } from 'react';
+import { useRef } from 'react';
 import type { MessageInputProps } from './message-input.types';
 
 export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, hideMic }: MessageInputProps) {
   const micBtnRef = useRef<HTMLButtonElement>(null);
-
-  // Non-passive touch listeners so e.preventDefault() works, preventing the browser
-  // from also firing synthetic mouse events (mousedown/mouseup) after touch events.
-  // Without this, startMic gets called twice on touch (touchstart + mousedown).
-  useEffect(() => {
-    const btn = micBtnRef.current;
-    if (!btn || hideMic) return;
-    const handleTouchStart = (e: TouchEvent) => { e.preventDefault(); onStartMic(); };
-    const handleTouchEnd = (e: TouchEvent) => { e.preventDefault(); onStopMic(); };
-    btn.addEventListener('touchstart', handleTouchStart, { passive: false });
-    btn.addEventListener('touchend', handleTouchEnd, { passive: false });
-    btn.addEventListener('touchcancel', handleTouchEnd, { passive: false });
-    return () => {
-      btn.removeEventListener('touchstart', handleTouchStart);
-      btn.removeEventListener('touchend', handleTouchEnd);
-      btn.removeEventListener('touchcancel', handleTouchEnd);
-    };
-  }, [hideMic, onStartMic, onStopMic]);
+  const activePointerIdRef = useRef<number | null>(null);
 
   if (hideMic) return null;
 
@@ -40,10 +23,28 @@ export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, hid
           ref={micBtnRef}
           disabled={disabled}
           aria-label={isRecording ? 'Release to send' : 'Hold to talk'}
-          onMouseDown={onStartMic}
-          onMouseUp={onStopMic}
-          onMouseLeave={onStopMic}
-          className={`relative h-20 w-20 rounded-full flex items-center justify-center text-white shadow-[0_18px_45px_rgba(132,71,255,0.32)] transition-all duration-200 select-none disabled:opacity-45 disabled:cursor-not-allowed disabled:shadow-none ${
+          onPointerDown={(e) => {
+            if (disabled || activePointerIdRef.current !== null) return;
+            e.preventDefault();
+            activePointerIdRef.current = e.pointerId;
+            e.currentTarget.setPointerCapture(e.pointerId);
+            onStartMic();
+          }}
+          onPointerUp={(e) => {
+            if (activePointerIdRef.current !== e.pointerId) return;
+            e.preventDefault();
+            activePointerIdRef.current = null;
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              e.currentTarget.releasePointerCapture(e.pointerId);
+            }
+            onStopMic();
+          }}
+          onPointerCancel={(e) => {
+            if (activePointerIdRef.current !== e.pointerId) return;
+            activePointerIdRef.current = null;
+            onStopMic();
+          }}
+          className={`relative h-20 w-20 rounded-full flex items-center justify-center text-white shadow-[0_18px_45px_rgba(132,71,255,0.32)] transition-all duration-200 select-none touch-none disabled:opacity-45 disabled:cursor-not-allowed disabled:shadow-none ${
             isRecording
               ? 'bg-gradient-to-br from-rose-400 to-rose-600 scale-110 ring-8 ring-rose-200/80 animate-pulse'
               : 'bg-gradient-to-br from-[#9B6BFF] via-[#8447FF] to-[#6D35E8] hover:scale-105 active:scale-95'

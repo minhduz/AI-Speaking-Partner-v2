@@ -22,6 +22,10 @@ _TTS_MAX_CHARS = 80
 # hears "EVAL passed true ...".
 _EVAL_MARKER = "EVAL:"
 
+# Sentinel the LLM emits after its farewell when it decides the session should end.
+# Stripped from TTS and converted to a session_ended SSE event.
+_SESSION_END_MARKER = "SESSION_END"
+
 
 def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, str]:
     m = _SENTENCE_RE.match(buffer)
@@ -78,7 +82,13 @@ async def llm_tts_node(state: dict) -> dict:
         for m in state.get("recent_messages", [])
         if m.get("role") and m.get("content")
     ]
-    messages_for_llm = recent + [{"role": "user", "content": state["transcript"]}]
+    # Empty transcript means an internal UI-driven turn (e.g. user clicked
+    # "Let's go", Next card, or deck completed). Some LLM providers return an
+    # empty stream for an empty user message, so send a harmless synthetic
+    # instruction to let the system prompt drive the response. Keep
+    # state['transcript'] unchanged so card intro/eval logic still sees it empty.
+    llm_user_content = state["transcript"].strip() or "Continue."
+    messages_for_llm = recent + [{"role": "user", "content": llm_user_content}]
 
     # Producer puts (segment_text, synth_task) tuples onto the queue in order.
     # Consumer awaits each task and emits the segment event when audio is ready.
@@ -87,6 +97,8 @@ async def llm_tts_node(state: dict) -> dict:
     voice_id    = state.get("voice_id") or "Adrian"
     speech_rate = state.get("speech_rate") or 1.0
     tts_payload_base = {"voice": voice_id, "speech_rate": speech_rate}
+
+    session_end_seen = False
 
     async with aiohttp.ClientSession() as sess:
 
@@ -118,9 +130,10 @@ async def llm_tts_node(state: dict) -> dict:
             we keep the last (len(marker) - 1) chars of tts_buffer pinned in a
             holdback whenever no marker has been seen yet.
             """
-            nonlocal full_response, eval_buffer, eval_started
+            nonlocal full_response, eval_buffer, eval_started, session_end_seen
             tts_buffer = ""
-            holdback = len(_EVAL_MARKER) - 1  # chars to retain in case marker spans chunks
+            # Retain enough chars to catch either marker split across chunks.
+            holdback = max(len(_EVAL_MARKER), len(_SESSION_END_MARKER)) - 1
             try:
                 async with sess.post(
                     f"{settings.llm_gateway_url}/stream",
@@ -139,6 +152,18 @@ async def llm_tts_node(state: dict) -> dict:
                             continue
 
                         tts_buffer += text
+
+                        # SESSION_END is a control marker, not spoken content. It can
+                        # appear before or after EVAL; strip it before any TTS split.
+                        session_idx = tts_buffer.find(_SESSION_END_MARKER)
+                        if session_idx >= 0:
+                            session_end_seen = True
+                            tts_buffer = (
+                                tts_buffer[:session_idx].rstrip()
+                                + " "
+                                + tts_buffer[session_idx + len(_SESSION_END_MARKER):].lstrip()
+                            ).strip()
+
                         marker_idx = tts_buffer.find(_EVAL_MARKER)
                         if marker_idx >= 0:
                             # Split at the marker: prefix → TTS (flush all), rest → eval.
@@ -202,9 +227,13 @@ async def llm_tts_node(state: dict) -> dict:
         spoken_ends_clean = spoken_clean.endswith((".", "!", "?", '"', "'", "”", "’"))
         tail_repr = full_response[-80:].replace("\n", "\\n")
         log.info(
-            "[llm_tts] stream end  full_len=%d  spoken_len=%d  eval_started=%s  spoken_ends_clean=%s  tail=%r",
-            len(full_response), len(spoken_portion), eval_started, spoken_ends_clean, tail_repr,
+            "[llm_tts] stream end  full_len=%d  spoken_len=%d  eval_started=%s  session_end_seen=%s  spoken_ends_clean=%s  tail=%r",
+            len(full_response), len(spoken_portion), eval_started, session_end_seen, spoken_ends_clean, tail_repr,
         )
+
+        if session_end_seen:
+            writer({"type": "session_ended"})
+            log.info("[llm_tts] session_ended signal emitted  session=%s", state.get("session_id"))
 
         # ── Phase 5 — Deck evaluation handling ────────────────────────────
         # When a deck is active, the LLM appends `EVAL:{...json...}` at the very end
@@ -299,6 +328,11 @@ async def llm_tts_node(state: dict) -> dict:
     marker_idx = spoken_response.find(_EVAL_MARKER)
     if marker_idx >= 0:
         spoken_response = spoken_response[:marker_idx].rstrip()
+
+    # Strip SESSION_END from persisted text. The SSE event is emitted during
+    # stream processing before TTS segmentation so the marker is never spoken.
+    if _SESSION_END_MARKER in spoken_response:
+        spoken_response = spoken_response.replace(_SESSION_END_MARKER, "").rstrip()
 
     return {"full_response": spoken_response, "tokens_used": tokens_used}
 

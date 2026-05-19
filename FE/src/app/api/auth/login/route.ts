@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  DEV_COOKIE_OPTIONS,
+  fetchAuthBackend,
+  hasAuthTokens,
+  readBackendJson,
+} from '../_utils';
 
-const BE_URL = process.env.BACKEND_URL ?? 'http://localhost:3000';
 const DEV_BYPASS = process.env.DEV_AUTH_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
-
-const DEV_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: false,
-  sameSite: 'strict' as const,
-  path: '/',
-  maxAge: 60 * 60 * 24 * 7,
-};
 
 export async function POST(req: NextRequest) {
   if (DEV_BYPASS) {
@@ -20,16 +17,17 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
 
-  const res = await fetch(`${BE_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await fetchAuthBackend('/auth/login', body);
+  if (res instanceof NextResponse) return res;
 
-  const data = await res.json();
+  const data = await readBackendJson(res);
 
   if (!res.ok) {
     return NextResponse.json(data, { status: res.status });
+  }
+
+  if (!hasAuthTokens(data)) {
+    return NextResponse.json({ message: 'Invalid auth response from backend' }, { status: 502 });
   }
 
   const { access_token, refresh_token } = data;

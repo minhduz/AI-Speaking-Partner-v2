@@ -212,13 +212,13 @@ def get_onboarding_phase(turn_index: int, onboarding_state: dict | None = None) 
         for field in ("motivation", "confidence_signal", "speaking_style", "emotional_energy")
         if state.get(field) not in (None, "", "unclear")
     )
-    if confident < 2:
-        return "DISCOVERY"
-    if turn_index <= 3:
-        return "DISCOVERY"     # PHASE 2 — adaptive discovery
-    if turn_index <= 6:
-        return "MINI_CHALLENGE"  # PHASE 3 — concrete tiny scenario
-    return "CLOSING"             # PHASE 4 — supportive feedback + tease next time
+    # Enough signal collected early → transition to MINI_CHALLENGE from turn 4
+    if confident >= 2 and turn_index >= 4:
+        return "MINI_CHALLENGE"
+    # Hard fallback: force transition at turn 6 even without enough signal
+    if turn_index >= 6:
+        return "MINI_CHALLENGE"
+    return "DISCOVERY"
 
 
 def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict | None = None) -> str:
@@ -258,16 +258,15 @@ def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict 
         )
     elif phase == "MINI_CHALLENGE":
         phase_block = (
-            "ONBOARDING PHASE: MINI CHALLENGE (transition turn)\n"
-            "- You now have enough signal. Transition naturally with one short line like: "
-            "\"Ok, I understand you a bit better now. Let's try a small real practice.\"\n"
-            "- Then give EXACTLY ONE concrete tiny scenario based on their learning goal.\n"
-            "  Casual → \"Imagine we just met at a coffee shop. Tell me about your week.\"\n"
-            "  Career → \"Imagine introducing yourself to a new international colleague. Go.\"\n"
-            "  Travel → \"Your flight just got delayed. Talk to me like I'm the airline staff.\"\n"
-            "  Education → \"Explain a topic you know well as if teaching a younger student.\"\n"
-            "  Social  → \"Tell me a short story about a memorable experience with someone.\"\n"
-            "- Keep it under 3 sentences. End with a clear prompt for them to start.\n"
+            "ONBOARDING PHASE: TRANSITION TO PRACTICE (turn when you've learned enough)\n"
+            "- You now have enough signal to move into a real practice exercise.\n"
+            "- Transition naturally with ONE short sentence — something like:\n"
+            "  \"Ok, I have a better sense of you now. Let's try a small real practice!\"\n"
+            "  or: \"Great, I think you're ready for a quick practice — let's go!\"\n"
+            "  or: \"I've got a short exercise ready for you — want to give it a go?\"\n"
+            "- Keep it to 1-2 sentences MAX. Do NOT describe the exercise yourself.\n"
+            "- Do NOT invent a scenario. A practice card will appear on the UI for the user to accept or decline.\n"
+            "- End your response there. The card UI handles the rest.\n"
         )
     else:  # CLOSING
         phase_block = (
@@ -276,6 +275,9 @@ def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict 
             "did well — be concrete, not generic. No corrections.\n"
             "- Tease ONE thing you'll adapt for next time, in a single sentence.\n"
             "- Make it feel like the end of a real conversation, not a robotic sign-off.\n"
+            "- When you deliver your final farewell sentence, append SESSION_END on the same line.\n"
+            "  Example: \"Take care, duc! SESSION_END\"\n"
+            "  The system strips SESSION_END before TTS — the user will never hear it.\n"
         )
 
     rules_block = (
@@ -319,7 +321,11 @@ SESSION MODE: REFLECTION (turns 9+)
   2. Tease what's coming next time with ONE sentence to create anticipation.
 - Do NOT say "goodbye" or "see you next time" robotically. Make it feel natural.
 - Goal: leave them with unfinished business — a reason to come back.
+- When you deliver your final farewell sentence, append the token SESSION_END on the same line.
+  Example: "See you next time, duc! SESSION_END"
+  The system will strip SESSION_END before TTS — the user will never hear it.
 """,
+
 }
 
 
@@ -431,7 +437,14 @@ def _build_card_context_block(state: dict) -> str:
         "\nCARD INSTRUCTIONS:\n"
         "1. Stay focused on this card's task. Do not ask unrelated questions.\n"
         "2. Keep response under 3 sentences.\n"
-        "3. Give short, specific feedback after the user answers.\n"
+        + (
+            "3. After the user answers well, give short positive feedback, then "
+            "add ONE warm transition sentence like: \"Want to give one more a shot? "
+            "Tap Next when you're ready!\" Do NOT describe the next card.\n"
+            if card_index + 1 < card_total else
+            "3. After the user answers well, give short positive feedback. "
+            "Do NOT say 'want to try one more' or 'tap Next' — this is the last card.\n"
+        ) +
         "4. If the user has not answered yet, invite them to answer the card task directly.\n"
         "5. If the user drifts, acknowledge briefly and redirect to the card.\n"
         "6. If the user asks a side question, answer in one sentence then return to the card.\n"
@@ -447,6 +460,11 @@ def _build_card_context_block(state: dict) -> str:
             'EVAL:{"passed":bool,"feedback":"short coaching note",'
             '"retryRecommended":bool,"nextAction":"retry|next_card|finish_session",'
             '"detectedIssues":["string"]}\n'
+            + (
+                "This is the LAST card. If passed=true, set nextAction=\"finish_session\".\n"
+                if card_index + 1 >= card_total else
+                "This is NOT the last card. If passed=true, set nextAction=\"next_card\".\n"
+            )
         )
         + "\nEvaluation rules:\n"
         "1. Be forgiving — if meaning is clear, grammar imperfect → passed=true with light feedback.\n"
@@ -604,7 +622,12 @@ async def build_prompt_node(state: dict) -> dict:
         if is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             phase = get_onboarding_phase(turn_index, onboarding_state)
-            system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
+            # Only inject the generic onboarding phase guidance before the deck starts.
+            # Once a card is in_progress/completed, the card/deck-specific block below
+            # must own the response; otherwise MINI_CHALLENGE repeats the old
+            # "I have a better sense... Let's try..." transition during card flow.
+            if not deck_active and deck_status not in ("completed",):
+                system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
 
             learned_block = _render_learned_block(onboarding_state)
             if learned_block:
@@ -613,8 +636,49 @@ async def build_prompt_node(state: dict) -> dict:
             # Onboarding mini-deck: strict mode only when in_progress (user accepted)
             if deck_active:  # in_progress
                 system_prompt += _build_card_context_block(state)
-            elif deck_status == "not_started" and turn_index >= 3:
-                system_prompt += _build_card_soft_offer_block(state)
+            elif deck_status == "completed":
+                # All onboarding cards done — praise user and offer continue/end.
+                system_prompt += (
+                    "\n\nONBOARDING EXERCISES COMPLETED:\n"
+                    "The user has just finished all the practice exercises. This was their FIRST session ever.\n"
+                    "Rules for your response:\n"
+                    "1. Praise them warmly and specifically — mention something they did well.\n"
+                    "2. Acknowledge this was their first session: \"For a first session, this is really great!\"\n"
+                    "3. Then offer a choice in a natural way:\n"
+                    "   \"Would you like to keep chatting about anything, or is this a good place to stop for today?\"\n"
+                    "4. Keep it to 3-4 sentences MAX. Be warm, not over-the-top.\n"
+                    "5. Do NOT start a new exercise. Do NOT mention cards or decks.\n"
+                    "6. If the user says they want to stop / goodbye / that's all / bye:\n"
+                    "   Give a warm one-sentence farewell, then append SESSION_END on the same line.\n"
+                    "   Example: \"Great work today — see you next time! SESSION_END\"\n"
+                    "   The system strips SESSION_END before TTS — the user will never hear it.\n"
+                )
+            elif deck_status in ("ended_early", "abandoned"):
+                # User declined the practice card — AI closes the card and asks what they'd prefer.
+                system_prompt += (
+                    "\n\nONBOARDING DECK DECLINED:\n"
+                    "The user just declined the practice exercise card. That's completely fine.\n"
+                    "In 1-2 sentences, acknowledge it warmly — no pressure. Then ask ONE open question:\n"
+                    "what topic, situation, or area they'd like to focus on or talk about today.\n"
+                    "Example: \"No worries at all! Is there a particular topic or situation "
+                    "you'd like to practice instead?\"\n"
+                    "Do NOT re-offer the card. Do NOT mention the exercise again.\n"
+                )
+            elif deck_status == "not_started" and phase == "MINI_CHALLENGE":
+                # In onboarding, the deck reveal is NOT optional once the phase reaches
+                # MINI_CHALLENGE. The generic soft-offer block says "warm up first" and
+                # "if the moment feels right", which can make the AI keep asking follow-ups
+                # past the 6-turn fallback. Force the transition and stop.
+                system_prompt += (
+                    "\n\nONBOARDING DECK READY — STRICT TRIGGER:\n"
+                    "You must transition to the practice card NOW.\n"
+                    "Say only 1 short, warm transition sentence, then stop.\n"
+                    "Good examples:\n"
+                    "- \"Ok, I have a better sense of you now. Let's try a small real practice!\"\n"
+                    "- \"I've got a short exercise ready for you — want to give it a go?\"\n"
+                    "Do NOT ask another discovery question.\n"
+                    "Do NOT describe the exercise yourself — the UI card is already visible.\n"
+                )
 
             log.info(
                 "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  ONBOARDING phase=%s  "

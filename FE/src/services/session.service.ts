@@ -159,7 +159,7 @@ export interface TurnResult {
  *   idle_timeout  – 15-min client-side idle timer
  *   tab_close     – beforeunload / beacon
  */
-export type EndReason = 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
+export type EndReason = 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close' | 'ai_farewell';
 
 export interface CloseSessionResponse {
   session_id: string;
