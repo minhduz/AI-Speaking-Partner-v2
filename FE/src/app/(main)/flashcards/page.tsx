@@ -15,6 +15,12 @@ interface FlashcardWord {
   phonetic: string;
   examples: string[];
   createdAt: string;
+  // spaced repetition fields
+  status?: string; // 'new' | 'learning' | 'reviewing' | 'mastered'
+  reviewCount?: number;
+  masteryScore?: number;
+  nextReviewAt?: string;
+  lastReviewedAt?: string;
 }
 
 interface FlashcardGroup {
@@ -65,31 +71,50 @@ export default function FlashcardsPage() {
   const { logout } = useAuthContext();
   const router = useRouter();
   const [groups, setGroups] = useState<FlashcardGroup[]>([]);
+  const [masteredGroups, setMasteredGroups] = useState<FlashcardGroup[]>([]);
+  const [reviewDueWords, setReviewDueWords] = useState<FlashcardWord[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
-  const [deletedWordIds, setDeletedWordIds] = useState<Set<string>>(new Set());
+  const [activeMasteredTopic, setActiveMasteredTopic] = useState<string | null>(null);
+  const [view, setView] = useState<'active' | 'mastered' | 'review'>('active');
+  const [masteredWordIds, setMasteredWordIds] = useState<Set<string>>(new Set());
+  const [showReviewBanner, setShowReviewBanner] = useState(false);
 
   useEffect(() => {
-    async function loadFlashcards() {
+    async function loadAll() {
       try {
-        const data = await httpClient.get<FlashcardGroup[]>('/api/dictionary/flashcards');
-        setGroups(data);
-        if (data.length > 0) setActiveTopic(data[0].topic);
+        const [active, mastered, due] = await Promise.all([
+          httpClient.get<FlashcardGroup[]>('/api/dictionary/flashcards'),
+          httpClient.get<FlashcardGroup[]>('/api/dictionary/flashcards/archived'),
+          httpClient.get<FlashcardWord[]>('/api/dictionary/flashcards/review-due'),
+        ]);
+        setGroups(active);
+        setMasteredGroups(mastered);
+        setReviewDueWords(due);
+        if (active.length > 0) setActiveTopic(active[0].topic);
+        if (mastered.length > 0) setActiveMasteredTopic(mastered[0].topic);
+        if (due.length > 0) setShowReviewBanner(true);
       } catch (err) {
         console.error('Failed to load flashcards', err);
       } finally {
         setLoading(false);
       }
     }
-    loadFlashcards();
+    loadAll();
   }, []);
 
-  const handleWordLearned = useCallback((wordId: string) => {
-    setDeletedWordIds(prev => new Set(prev).add(wordId));
+  const handleWordMastered = useCallback((wordId: string) => {
+    setMasteredWordIds(prev => new Set(prev).add(wordId));
   }, []);
 
-  const activeGroup = groups.find(g => g.topic === activeTopic);
-  const activeWords = activeGroup?.words.filter(w => !deletedWordIds.has(w.id)) ?? [];
+  // Only topics that still have unswiped words
+  const nonEmptyGroups = groups.filter(g => g.words.some(w => !masteredWordIds.has(w.id)));
+  // Auto-advance: if user-selected topic is now empty, fall back to first non-empty
+  const effectiveTopic = nonEmptyGroups.find(g => g.topic === activeTopic)?.topic ?? nonEmptyGroups[0]?.topic ?? null;
+  const activeGroup = groups.find(g => g.topic === effectiveTopic);
+  const activeWords = activeGroup?.words.filter(w => !masteredWordIds.has(w.id)) ?? [];
+  const activeMasteredGroup = masteredGroups.find(g => g.topic === activeMasteredTopic);
+  const totalMastered = masteredGroups.reduce((s, g) => s + g.words.length, 0) + masteredWordIds.size;
 
   return (
     <div className="flex w-full h-full">
@@ -102,19 +127,37 @@ export default function FlashcardsPage() {
       <main className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
         <header className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40" style={{ background: '#f9f9f9' }}>
           <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>
-              Flashcards
-            </h1>
+            <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>Flashcards</h1>
           </div>
-          {!loading && groups.length > 0 && (
+          {!loading && (
             <div className="hidden md:flex items-center gap-3">
               <div className="rounded-2xl px-4 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}>
                 <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Library</p>
-                <p className="text-sm font-black" style={{ color: '#1a1c1c' }}>{groups.reduce((sum, g) => sum + g.words.filter(w => !deletedWordIds.has(w.id)).length, 0)} active words</p>
+                <p className="text-sm font-black" style={{ color: '#1a1c1c' }}>{groups.reduce((sum, g) => sum + g.words.filter(w => !masteredWordIds.has(w.id)).length, 0)} active · {totalMastered} mastered</p>
               </div>
             </div>
           )}
         </header>
+
+        {/* Review due banner */}
+        {showReviewBanner && reviewDueWords.length > 0 && (
+          <div className="mx-8 mb-2 rounded-2xl px-5 py-3 flex items-center justify-between gap-4 shrink-0" style={{ background: '#fff7d6', border: '2px solid #ffd900', boxShadow: '0 3px 0 #ffd900' }}>
+            <div className="flex items-center gap-3">
+              <span style={{ fontSize: 22 }}>🔔</span>
+              <p className="text-sm font-bold" style={{ color: '#683a00' }}>
+                Bạn có <strong>{reviewDueWords.length}</strong> từ cần ôn lại hôm nay — muốn ôn không?
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button onClick={() => setView('review')} className="px-4 py-2 rounded-xl text-sm font-extrabold transition active:translate-y-0.5" style={{ background: '#ffd900', color: '#683a00', boxShadow: '0 2px 0 #c9a800' }}>
+                Ôn ngay
+              </button>
+              <button onClick={() => setShowReviewBanner(false)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ color: '#6f7b64' }}>
+                Bỏ qua
+              </button>
+            </div>
+          </div>
+        )}
 
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -122,7 +165,7 @@ export default function FlashcardsPage() {
               <div className="w-6 h-6 rounded-full border-4 border-[#1e5000]/25 border-t-[#1e5000] animate-spin" />
             </div>
           </div>
-        ) : groups.length === 0 ? (
+        ) : groups.length === 0 && masteredGroups.length === 0 ? (
           <div className="flex-1 flex items-center justify-center px-6">
             <div className="w-full max-w-xl rounded-3xl p-8 text-center" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
               <div className="w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-5" style={{ background: '#dceeff', color: '#004666' }}>
@@ -139,46 +182,126 @@ export default function FlashcardsPage() {
           <div className="flex-1 overflow-hidden px-8 pb-8">
             <div className="h-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-5">
               <aside className="lg:col-span-4 flex flex-col gap-5 min-h-0">
-                <div className="rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
-                  <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Current topic</p>
-                  <div className="relative mt-3">
-                    <select
-                      value={activeTopic || ''}
-                      onChange={(e) => setActiveTopic(e.target.value)}
-                      className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-4 pr-11 text-base font-black transition"
-                      style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}
-                    >
-                      {groups.map((group) => {
-                        const count = group.words.filter(w => !deletedWordIds.has(w.id)).length;
-                        return <option key={group.topic} value={group.topic}>{group.topic} • {count} words</option>;
-                      })}
-                    </select>
-                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-                    </div>
-                  </div>
+
+                {/* View toggle */}
+                <div className="flex rounded-2xl p-1 shrink-0" style={{ background: '#f3f3f3', border: '2px solid #e2e2e2' }}>
+                  {(['active', 'mastered', 'review'] as const).map((v) => {
+                    const labels = { active: 'Studying', mastered: 'Archive', review: `Review${reviewDueWords.length > 0 ? ` (${reviewDueWords.length})` : ''}` };
+                    const active = view === v;
+                    return (
+                      <button key={v} onClick={() => setView(v)}
+                        className="flex-1 py-2 rounded-xl text-xs font-extrabold transition active:translate-y-0.5"
+                        style={active ? { background: '#ffffff', color: '#1a1c1c', boxShadow: '0 2px 0 #e2e2e2' } : { color: '#6f7b64' }}>
+                        {labels[v]}
+                      </button>
+                    );
+                  })}
                 </div>
 
-                <div className="rounded-3xl p-6 flex-1 min-h-0" style={{ background: '#dceeff', border: '2px solid #c8e6ff', boxShadow: '0 4px 0 #c8e6ff' }}>
-                  <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#004666' }}>Study plan</p>
-                  <h2 className="text-3xl font-black mt-2" style={{ color: '#004666' }}>{activeWords.length} cards</h2>
-                  <p className="text-sm font-semibold mt-2" style={{ color: '#004666' }}>Swipe left when learned, swipe right to review later. Practice mode turns this topic into mini games.</p>
-                  <div className="mt-5 grid grid-cols-2 gap-3">
-                    <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
-                      <p className="text-2xl font-black" style={{ color: '#2b6c00' }}>{learnedCountFromDeleted(activeGroup?.words ?? [], deletedWordIds)}</p>
-                      <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>learned</p>
+                {view === 'active' && (
+                  <>
+                    <div className="rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Current topic</p>
+                      <div className="relative mt-3">
+                        <select value={effectiveTopic || ''} onChange={(e) => setActiveTopic(e.target.value)}
+                          className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-4 pr-11 text-base font-black transition"
+                          style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}>
+                          {nonEmptyGroups.map((group) => {
+                            const count = group.words.filter(w => !masteredWordIds.has(w.id)).length;
+                            return <option key={group.topic} value={group.topic}>{group.topic} • {count} words</option>;
+                          })}
+                        </select>
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                        </div>
+                      </div>
                     </div>
-                    <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
-                      <p className="text-2xl font-black" style={{ color: '#683a00' }}>{groups.length}</p>
-                      <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>topics</p>
+                    <div className="rounded-3xl p-6 flex-1 min-h-0" style={{ background: '#dceeff', border: '2px solid #c8e6ff', boxShadow: '0 4px 0 #c8e6ff' }}>
+                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#004666' }}>Study plan</p>
+                      <h2 className="text-3xl font-black mt-2" style={{ color: '#004666' }}>{activeWords.length} cards</h2>
+                      <p className="text-sm font-semibold mt-2" style={{ color: '#004666' }}>Swipe left when learned, swipe right to review later.</p>
+                      <div className="mt-5 grid grid-cols-2 gap-3">
+                        <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
+                          <p className="text-2xl font-black" style={{ color: '#2b6c00' }}>{learnedCountFromLearned(activeGroup?.words ?? [], masteredWordIds)}</p>
+                          <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>this session</p>
+                        </div>
+                        <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
+                          <p className="text-2xl font-black" style={{ color: '#683a00' }}>{groups.length}</p>
+                          <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>topics</p>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {view === 'mastered' && (
+                  <div className="rounded-3xl p-6 flex-1 min-h-0 flex flex-col gap-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+                    <div>
+                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Archive</p>
+                      <p className="text-2xl font-black mt-1" style={{ color: '#1a1c1c' }}>{totalMastered} words archived</p>
+                    </div>
+                    {masteredGroups.length > 0 && (
+                      <div className="relative">
+                        <select value={activeMasteredTopic || ''} onChange={(e) => setActiveMasteredTopic(e.target.value)}
+                          className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-3 pr-11 text-sm font-black transition"
+                          style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}>
+                          {masteredGroups.map((g) => (
+                            <option key={g.topic} value={g.topic}>{g.topic} • {g.words.length}</option>
+                          ))}
+                        </select>
+                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex-1 overflow-y-auto min-h-0 space-y-2">
+                      {(activeMasteredGroup?.words ?? []).map(w => (
+                        <div key={w.id} className="rounded-2xl px-4 py-3 flex items-center justify-between" style={{ background: '#f9f9f9', border: '1px solid #e2e2e2' }}>
+                          <div>
+                            <p className="font-black text-sm" style={{ color: '#1a1c1c' }}>{w.word}</p>
+                            <p className="text-xs font-medium" style={{ color: '#6f7b64' }}>{w.translation}</p>
+                          </div>
+                          {w.lastReviewedAt && (
+                            <p className="text-[10px] font-bold" style={{ color: '#6f7b64' }}>
+                              {new Date(w.lastReviewedAt).toLocaleDateString()}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                      {masteredGroups.length === 0 && (
+                        <p className="text-sm font-medium text-center pt-4" style={{ color: '#6f7b64' }}>No archived words yet.</p>
+                      )}
                     </div>
                   </div>
-                </div>
+                )}
+
+                {view === 'review' && (
+                  <div className="rounded-3xl p-6 flex-1 min-h-0" style={{ background: '#fff7d6', border: '2px solid #ffd900', boxShadow: '0 4px 0 #ffd900' }}>
+                    <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#683a00' }}>Review</p>
+                    <p className="text-2xl font-black mt-1" style={{ color: '#683a00' }}>{reviewDueWords.length} words due</p>
+                    <p className="text-sm font-semibold mt-2" style={{ color: '#683a00' }}>Words due for review today. Swipe to refresh your memory.</p>
+                  </div>
+                )}
+
               </aside>
 
               <section className="lg:col-span-8 min-h-0 rounded-3xl overflow-hidden" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
-                {activeGroup && (
-                  <FlashcardDeck key={activeGroup.topic} topic={activeGroup.topic} words={activeWords} onWordLearned={handleWordLearned} />
+                {view === 'active' && effectiveTopic && (
+                  <FlashcardDeck key={effectiveTopic} topic={effectiveTopic} words={activeWords} onWordMastered={handleWordMastered} />
+                )}
+                {view === 'review' && (
+                  <FlashcardDeck key="review" topic="Review" words={reviewDueWords} onWordMastered={handleWordMastered} />
+                )}
+                {view === 'mastered' && (
+                  <div className="flex-1 h-full flex items-center justify-center">
+                    <div className="text-center px-8">
+                      <div className="w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-4" style={{ background: '#d7ffb8', color: '#2b6c00' }}>
+                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                      </div>
+                      <p className="text-lg font-black" style={{ color: '#1a1c1c' }}>Your archived words</p>
+                      <p className="text-sm font-medium mt-1" style={{ color: '#6f7b64' }}>Select a topic on the left to browse your archive.</p>
+                    </div>
+                  </div>
                 )}
               </section>
             </div>
@@ -189,36 +312,34 @@ export default function FlashcardsPage() {
   );
 }
 
-function learnedCountFromDeleted(words: FlashcardWord[], deletedWordIds: Set<string>): number {
-  return words.filter(w => deletedWordIds.has(w.id)).length;
+function learnedCountFromLearned(words: FlashcardWord[], learnedWordIds: Set<string>): number {
+  return words.filter(w => learnedWordIds.has(w.id)).length;
 }
 
 // ── FlashcardDeck ──────────────────────────────────────────────────────────
 
-function FlashcardDeck({ topic, words, onWordLearned }: { topic: string; words: FlashcardWord[]; onWordLearned: (wordId: string) => void }) {
+function FlashcardDeck({ topic, words, onWordMastered }: { topic: string; words: FlashcardWord[]; onWordMastered: (wordId: string) => void }) {
   const [studyMode, setStudyMode] = useState<StudyMode>('flash');
   const [practiceKey, setPracticeKey] = useState(0);
   const [deck, setDeck] = useState<FlashcardWord[]>(words.map(w => ({ ...w, uniqueKey: w.id })));
   const [learnedCount, setLearnedCount] = useState(0);
 
   const handleSwipeLeft = async (index: number) => {
-    const wordToDelete = deck[index];
+    const word = deck[index];
     setDeck(prev => prev.filter((_, i) => i !== index));
     setLearnedCount(c => c + 1);
-    onWordLearned(wordToDelete.id);
-    try {
-      await httpClient.delete(`/api/dictionary/flashcards/${wordToDelete.id}`);
-    } catch (err) {
-      console.error('Failed to delete flashcard', err);
-    }
+    onWordMastered(word.id);
+    httpClient.patch(`/api/dictionary/flashcards/${word.id}/review`, { result: 'easy' }).catch(() => {});
   };
 
   const handleSwipeRight = (index: number) => {
+    const word = deck[index];
     setDeck(prev => {
       const newDeck = [...prev];
       const [movedCard] = newDeck.splice(index, 1);
       return [...newDeck, { ...movedCard, uniqueKey: `${movedCard.id}-${Math.random()}` }];
     });
+    httpClient.patch(`/api/dictionary/flashcards/${word.id}/review`, { result: 'hard' }).catch(() => {});
   };
 
   const switchMode = (mode: StudyMode) => {

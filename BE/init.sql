@@ -262,6 +262,12 @@ CREATE TABLE IF NOT EXISTS dictionary.user_history (
   user_id           UUID      NOT NULL REFERENCES speaking_app.users(id) ON DELETE CASCADE,
   word_id           UUID      NOT NULL REFERENCES dictionary.cache(id) ON DELETE CASCADE,
   context_sentence  TEXT,
+  status            VARCHAR   NOT NULL DEFAULT 'new',
+  review_count      INT       NOT NULL DEFAULT 0,
+  mastery_score     FLOAT     NOT NULL DEFAULT 0,
+  interval_days     FLOAT     NOT NULL DEFAULT 1,
+  last_reviewed_at  TIMESTAMP,
+  next_review_at    TIMESTAMP,
   created_at        TIMESTAMP DEFAULT NOW()
 );
 

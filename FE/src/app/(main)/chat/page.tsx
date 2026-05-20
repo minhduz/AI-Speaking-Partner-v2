@@ -93,7 +93,7 @@ export default function ChatPage() {
   const prevSessionId = useRef<string | null>(null);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
-  const wordDictionary = useDictionary(sessionTitleUpdate?.title);
+  const wordDictionary = useDictionary();
   const [dictAnchor, setDictAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
