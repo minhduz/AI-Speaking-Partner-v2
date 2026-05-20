@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   AlertCircle, ArrowLeft, BookOpen, Briefcase, CheckCircle2,
   ChevronRight, Crown, Eye, EyeOff, GraduationCap, Lock, Mail,
-  MessageCircle, Mic, Loader2, Plane, Smile, Users, Zap,
+  MessageCircle, Mic, Loader2, Plane, Smile, Users, X, Zap,
 } from 'lucide-react';
 import type { ProficiencyLevel, RegisterFormProps } from './register-form.types';
 import { LANGUAGES, NATIVE_LANGUAGES, LEARNING_GOALS } from './register-form.types';
@@ -111,12 +111,21 @@ function TopBar({ step, onBack, stepOrder }: { step: Step; onBack: () => void; s
   const idx = stepOrder.indexOf(step as Step);
   const isSuccess = step === ('success' as Step);
   const progress = isSuccess ? totalSteps : idx + 1;
+  const isFirstStep = idx === 0;
   const showBack = idx > 0 && !isSuccess;
   return (
-    <div className="fixed top-0 left-0 right-0 z-10" style={{ background: '#f9f9f9', borderBottom: '2px solid #e2e2e2' }}>
-      <div className="max-w-xl mx-auto px-5 py-3 flex items-center gap-3">
+    <div
+      className="fixed top-0 left-0 right-0 z-10"
+      style={{
+        background: '#f9f9f9',
+        borderBottom: '2px solid #e2e2e2',
+        paddingTop: 'env(safe-area-inset-top, 0px)',
+      }}
+    >
+      <div className="max-w-xl mx-auto px-4 py-3 flex items-center gap-3">
         <div className="w-9 flex-shrink-0">
-          {showBack && step !== 'success' && (
+          {isSuccess ? null : showBack ? (
+            // Intermediate step → back arrow
             <button
               type="button" onClick={onBack}
               className="w-9 h-9 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-all"
@@ -124,7 +133,16 @@ function TopBar({ step, onBack, stepOrder }: { step: Step; onBack: () => void; s
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
-          )}
+          ) : isFirstStep ? (
+            // First step → exit (×) to /login
+            <Link
+              href="/login"
+              className="w-9 h-9 flex items-center justify-center rounded-xl text-gray-400 hover:bg-gray-100 hover:text-gray-700 transition-all"
+              aria-label="Back to login"
+            >
+              <X className="w-5 h-5" />
+            </Link>
+          ) : null}
         </div>
         <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
           <div
@@ -140,13 +158,21 @@ function TopBar({ step, onBack, stepOrder }: { step: Step; onBack: () => void; s
   );
 }
 
+
 function BottomBar({
   canContinue, onContinue, isLoading, label = 'Continue',
 }: {
   canContinue: boolean; onContinue: () => void; isLoading?: boolean; label?: string;
 }) {
   return (
-    <div className="fixed bottom-0 left-0 right-0 px-5 py-4" style={{ background: '#f9f9f9', borderTop: '2px solid #e2e2e2' }}>
+    <div
+      className="fixed bottom-0 left-0 right-0 px-4 pt-4"
+      style={{
+        background: '#f9f9f9',
+        borderTop: '2px solid #e2e2e2',
+        paddingBottom: 'max(16px, env(safe-area-inset-bottom, 16px))',
+      }}
+    >
       <div className="max-w-xl mx-auto flex items-center justify-between">
         <Link
           href="/login"
@@ -538,8 +564,8 @@ export function RegisterForm({ onSubmit, onGoogleAuth, onUpdateProfile, googleOn
     <div className="min-h-screen font-[family-name:var(--font-lexend)]" style={{ background: '#f9f9f9' }}>
       <TopBar step={step} onBack={goBack} stepOrder={STEP_ORDER} />
 
-      {/* Content area */}
-      <div className="pt-20 pb-24 px-5 min-h-screen">
+      {/* Content area — extra top padding accounts for safe-area-inset-top on notched phones */}
+      <div className="pt-20 pb-28 px-5 min-h-screen" style={{ paddingTop: 'calc(80px + env(safe-area-inset-top, 0px))' }}>
         <div
           className="max-w-xl mx-auto pt-8"
           key={step}

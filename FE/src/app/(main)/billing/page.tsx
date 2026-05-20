@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Loader2, ShieldCheck, Sparkles } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
+import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
 import {
   billingService, streamPaymentStatus,
@@ -136,30 +137,21 @@ export default function BillingPage() {
         className="flex flex-1 flex-col overflow-hidden"
         style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}
       >
-        {/* ── Top bar: synced with chat dashboard ── */}
-        <header
-          className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40"
-          style={{ background: '#f9f9f9' }}
-        >
-          <h1
-            className="text-2xl font-black"
-            style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}
-          >
-            Billing &amp; Subscription
-          </h1>
-
-          <div className="hidden md:flex items-center gap-3">
-            <div className="flex items-center gap-2 rounded-2xl px-4 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+        <PageHeader
+          title="Billing"
+          rightSlot={
+            <div className="hidden sm:flex items-center gap-2 rounded-2xl px-3 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}>
               <ShieldCheck className="h-4 w-4" style={{ color: '#2b6c00' }} />
-              <span className="text-xs font-extrabold" style={{ color: '#3f4a36' }}>
-                Secure QR checkout
-              </span>
+              <span className="text-xs font-extrabold" style={{ color: '#3f4a36' }}>Secure QR</span>
             </div>
-          </div>
-        </header>
+          }
+        />
 
         {/* ── Body ── */}
-        <div className="flex-1 overflow-y-auto px-6 py-6 md:px-10 md:py-8">
+        <div
+          className="flex-1 overflow-y-auto px-4 sm:px-8 md:px-10 py-6 md:py-8"
+          style={{ paddingBottom: 'max(88px, calc(72px + env(safe-area-inset-bottom, 0px)))' }}
+        >
           <div className="max-w-5xl mx-auto space-y-6">
             <section
               className="rounded-3xl p-6 md:p-8 overflow-hidden relative"
@@ -190,25 +182,28 @@ export default function BillingPage() {
 
             {checkoutError && <ErrorBanner message={checkoutError} />}
 
-            {/* ══ Bento Grid ══ */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className={`${hasUpgrade || isPro ? 'lg:col-span-8' : 'lg:col-span-12'} flex min-h-0 flex-col gap-5 self-stretch`}>
+            {/* ══ Bento Grid ══
+                Desktop (lg+): two columns — left (CurrentPlan stacked above BillingHistory),
+                right (UpgradeCard / ProLoveCard spanning both rows).
+                Mobile: flat DOM order so the CTA sits between the Plan summary and the
+                invoice list instead of being buried at the very bottom. */}
+            <div className={`grid grid-cols-1 gap-5 ${hasUpgrade || isPro ? 'lg:grid-cols-12 lg:grid-rows-[auto_1fr]' : ''}`}>
+              <div className={`${hasUpgrade || isPro ? 'lg:col-span-8 lg:row-start-1' : 'lg:col-span-12'} self-stretch`}>
                 <CurrentPlanCard
                   subscription={subscription} usage={usage} quota={quota}
                   isPro={isPro} planLabel={planLabel}
                   onCancel={() => setShowCancel(true)}
                 />
-                <BillingHistoryCard history={history} className="lg:flex-1" />
               </div>
 
               {isPro && (
-                <div className="lg:col-span-4 self-stretch">
+                <div className="lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2 self-stretch">
                   <ProLoveCard />
                 </div>
               )}
 
               {hasUpgrade && (
-                <div className="lg:col-span-4 self-stretch">
+                <div className="lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2 self-stretch">
                   <UpgradeCard
                     proHighlight={proHighlight!}
                     monthlyPlan={monthlyPlan}
@@ -216,6 +211,10 @@ export default function BillingPage() {
                   />
                 </div>
               )}
+
+              <div className={`${hasUpgrade || isPro ? 'lg:col-span-8 lg:col-start-1 lg:row-start-2' : 'lg:col-span-12'} min-h-0 self-stretch`}>
+                <BillingHistoryCard history={history} className="lg:h-full" />
+              </div>
             </div>
 
             <p className="text-center text-xs pb-2" style={{ color: '#6f7b64' }}>

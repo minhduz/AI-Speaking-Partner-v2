@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Bell, Download, KeyRound, LogOut, Settings2, ShieldCheck } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
+import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
 import { userService } from '@/services/user.service';
 import type { UserProfile } from '@/types/user.types';
@@ -83,15 +84,14 @@ export default function ProfilePage() {
         currentSessionId={null}
         onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
-      <main className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
-        <header className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40" style={{ background: '#f9f9f9' }}>
-          <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>
-            Profile
-          </h1>
-        </header>
+      <main className="flex-1 flex flex-col min-h-0 overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
+        <PageHeader title="Profile" />
 
-        <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar">
-          <div className="max-w-6xl mx-auto">
+        <div
+          className="flex-1 overflow-y-auto px-4 sm:px-8 custom-scrollbar"
+          style={{ paddingBottom: 'max(88px, calc(72px + env(safe-area-inset-bottom, 0px)))' }}
+        >
+          <div className="max-w-6xl mx-auto py-4">
             {loading ? (
               <div className="h-[60vh] flex items-center justify-center">
                 <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: '#58cc02' }}>

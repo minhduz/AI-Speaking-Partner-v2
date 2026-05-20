@@ -215,6 +215,43 @@ body {
   box-sizing: border-box;
 }
 
+/* ─── PWA / Mobile-first ─────────────────────────────────────────────── */
+
+/* Prevent pull-to-refresh & overscroll bounce in standalone PWA mode */
+html, body {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Remove the gray tap-highlight rectangle on iOS/Android */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Remove 300ms tap delay on tappable elements */
+button, a, [role="button"], label {
+  touch-action: manipulation;
+}
+
+/* Prevent accidental text selection on UI controls */
+button, [role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Momentum scrolling for scroll containers (iOS) */
+.overflow-y-auto, .overflow-y-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Safe-area CSS custom properties — readable in JS if needed */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
 @keyframes reveal {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }

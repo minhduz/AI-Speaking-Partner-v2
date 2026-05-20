@@ -3,6 +3,7 @@
 import { useAuthContext } from '@/contexts/auth-context';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { SettingsPanel } from '@/components/chat/settings-modal/settings-modal';
+import { PageHeader } from '@/components/shared/page-header';
 import { useRouter } from 'next/navigation';
 
 export default function SettingsPage() {
@@ -10,24 +11,23 @@ export default function SettingsPage() {
   const router = useRouter();
 
   return (
-    <div className="flex w-full h-full">
+    <div className="flex w-full h-full min-w-0">
       <Sidebar
         onNewChat={() => router.push('/chat')}
         onLogout={logout}
         currentSessionId={null}
         onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
-      <main className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
-        <header className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40" style={{ background: '#f9f9f9' }}>
-          <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>
-              Settings
-            </h1>
-          </div>
-        </header>
 
-        <div className="flex-1 overflow-hidden px-8 pb-8">
-          <div className="h-full max-w-6xl mx-auto">
+      <main
+        className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden"
+        style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}
+      >
+        <PageHeader title="Settings" />
+
+        {/* Scrollable content accounts for mobile bottom nav */}
+        <div className="flex-1 overflow-y-auto px-2 pb-24 sm:px-8 lg:overflow-hidden lg:pb-0">
+          <div className="w-full max-w-6xl mx-auto py-3 sm:py-4">
             <SettingsPanel />
           </div>
         </div>

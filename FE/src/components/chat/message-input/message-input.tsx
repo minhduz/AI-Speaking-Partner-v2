@@ -1,11 +1,19 @@
 'use client';
 
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import type { MessageInputProps } from './message-input.types';
 
 export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, disabledReason, hideMic }: MessageInputProps) {
   const micBtnRef = useRef<HTMLButtonElement>(null);
   const activePointerIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (activePointerIdRef.current === null) return;
+      activePointerIdRef.current = null;
+      onStopMic();
+    };
+  }, [onStopMic]);
 
   if (hideMic) return null;
 
@@ -31,7 +39,13 @@ export function MessageInput({ onStartMic, onStopMic, isRecording, disabled, dis
         };
 
   return (
-    <div className="px-6 pb-8 flex justify-center" style={{ fontFamily: 'Lexend, sans-serif' }}>
+    <div
+      className="px-6 flex justify-center"
+      style={{
+        paddingBottom: 'max(32px, env(safe-area-inset-bottom, 32px))',
+        fontFamily: 'Lexend, sans-serif',
+      }}
+    >
       <div className="relative flex flex-col items-center gap-3">
         <div
           className={`pointer-events-none absolute inset-0 m-auto rounded-full transition-all duration-300 ${

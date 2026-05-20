@@ -23,20 +23,24 @@ interface GoogleSignInButtonProps {
   width?: number;
 }
 
-export function GoogleSignInButton({ onCredential, text = 'continue_with', width = 400 }: GoogleSignInButtonProps) {
+export function GoogleSignInButton({ onCredential, text = 'continue_with', width }: GoogleSignInButtonProps) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLDivElement>(null);
   const callbackRef = useRef(onCredential);
   const initializedRef = useRef(false);
   callbackRef.current = onCredential;
 
   const initGoogle = useCallback(() => {
-    if (!window.google || !btnRef.current || initializedRef.current) return;
+    if (!window.google || !btnRef.current || !wrapperRef.current || initializedRef.current) return;
 
     const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID;
     if (!clientId) {
       console.error('[GoogleSignIn] NEXT_PUBLIC_GOOGLE_CLIENT_ID not set');
       return;
     }
+
+    // Auto-detect container width if not explicitly passed
+    const resolvedWidth = (width ?? Math.floor(wrapperRef.current.getBoundingClientRect().width)) || 360;
 
     initializedRef.current = true;
     window.google.accounts.id.initialize({
@@ -52,7 +56,7 @@ export function GoogleSignInButton({ onCredential, text = 'continue_with', width
       theme: 'outline',
       size: 'large',
       text,
-      width: Math.min(width, 400),
+      width: Math.min(resolvedWidth, 400),
       logo_alignment: 'left',
     });
   }, [text, width]);
@@ -63,7 +67,6 @@ export function GoogleSignInButton({ onCredential, text = 'continue_with', width
       return;
     }
 
-    // Avoid injecting duplicate script tags
     const existing = document.querySelector('script[src="https://accounts.google.com/gsi/client"]');
     if (existing) {
       existing.addEventListener('load', initGoogle);
@@ -79,7 +82,7 @@ export function GoogleSignInButton({ onCredential, text = 'continue_with', width
   }, [initGoogle]);
 
   return (
-    <div className="flex justify-center">
+    <div ref={wrapperRef} className="w-full flex justify-center" style={{ position: 'relative', zIndex: 1 }}>
       <div ref={btnRef} />
     </div>
   );

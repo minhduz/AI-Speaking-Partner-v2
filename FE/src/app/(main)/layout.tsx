@@ -25,5 +25,12 @@ export default function MainLayout({ children }: { children: ReactNode }) {
 
   if (!isAuthenticated) return null;
 
-  return <div className="flex h-screen bg-white overflow-hidden">{children}</div>;
+  return (
+    <div
+      className="flex bg-white overflow-hidden"
+      style={{ height: '100dvh' }}
+    >
+      {children}
+    </div>
+  );
 }

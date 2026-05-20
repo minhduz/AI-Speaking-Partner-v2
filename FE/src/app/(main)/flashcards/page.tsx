@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactElement } from 'react';
 import { httpClient } from '@/lib/http-client';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
+import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 import { motion, useMotionValue, useTransform, AnimatePresence } from 'framer-motion';
@@ -99,31 +100,29 @@ export default function FlashcardsPage() {
         currentSessionId={null}
         onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
-      <main className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
-        <header className="flex items-center justify-between px-10 h-20 shrink-0 sticky top-0 z-40" style={{ background: '#f9f9f9' }}>
-          <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>
-              Flashcards
-            </h1>
-          </div>
-          {!loading && groups.length > 0 && (
-            <div className="hidden md:flex items-center gap-3">
-              <div className="rounded-2xl px-4 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}>
-                <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Library</p>
-                <p className="text-sm font-black" style={{ color: '#1a1c1c' }}>{groups.reduce((sum, g) => sum + g.words.filter(w => !deletedWordIds.has(w.id)).length, 0)} active words</p>
+      <main className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
+        <PageHeader
+          title="Flashcards"
+          rightSlot={
+            !loading && groups.length > 0 ? (
+              <div className="hidden sm:block rounded-2xl px-3 py-2" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}>
+                <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Library</p>
+                <p className="text-sm font-black" style={{ color: '#1a1c1c' }}>
+                  {groups.reduce((sum, g) => sum + g.words.filter(w => !deletedWordIds.has(w.id)).length, 0)} words
+                </p>
               </div>
-            </div>
-          )}
-        </header>
+            ) : undefined
+          }
+        />
 
         {loading ? (
-          <div className="flex-1 flex items-center justify-center">
+          <div className="flex-1 flex items-center justify-center pb-24 lg:pb-0">
             <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: '#58cc02' }}>
               <div className="w-6 h-6 rounded-full border-4 border-[#1e5000]/25 border-t-[#1e5000] animate-spin" />
             </div>
           </div>
         ) : groups.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center px-6">
+          <div className="flex-1 flex items-center justify-center px-6 pb-24 lg:pb-8">
             <div className="w-full max-w-xl rounded-3xl p-8 text-center" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
               <div className="w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-5" style={{ background: '#dceeff', color: '#004666' }}>
                 <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="3" width="18" height="18" rx="3" /><path d="M3 9h18" /><path d="M9 21V9" /></svg>
@@ -136,9 +135,27 @@ export default function FlashcardsPage() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 overflow-hidden px-8 pb-8">
-            <div className="h-full max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <aside className="lg:col-span-4 flex flex-col gap-5 min-h-0">
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden px-3 pb-24 sm:px-8 lg:overflow-y-auto lg:pb-8">
+            <div className="mx-auto mb-3 lg:hidden">
+              <div className="relative">
+                <select
+                  value={activeTopic || ''}
+                  onChange={(e) => setActiveTopic(e.target.value)}
+                  className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-3 pr-11 text-sm font-black transition"
+                  style={{ background: '#ffffff', color: '#1a1c1c', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}
+                >
+                  {groups.map((group) => {
+                    const count = group.words.filter(w => !deletedWordIds.has(w.id)).length;
+                    return <option key={group.topic} value={group.topic}>{group.topic} - {count} words</option>;
+                  })}
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+                </div>
+              </div>
+            </div>
+            <div className="mx-auto grid w-full max-w-6xl flex-1 min-h-0 grid-cols-1 gap-4 lg:grid-cols-12 lg:gap-5">
+              <aside className="hidden lg:col-span-4 lg:flex flex-col gap-5 min-h-0">
                 <div className="rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
                   <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Current topic</p>
                   <div className="relative mt-3">
@@ -176,7 +193,9 @@ export default function FlashcardsPage() {
                 </div>
               </aside>
 
-              <section className="lg:col-span-8 min-h-0 rounded-3xl overflow-hidden" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+              <section
+                className="min-h-0 lg:col-span-8 rounded-3xl overflow-hidden flex flex-col lg:bg-white lg:border-2 lg:border-[#e2e2e2] lg:shadow-[0_4px_0_#e2e2e2]"
+              >
                 {activeGroup && (
                   <FlashcardDeck key={activeGroup.topic} topic={activeGroup.topic} words={activeWords} onWordLearned={handleWordLearned} />
                 )}
@@ -227,23 +246,23 @@ function FlashcardDeck({ topic, words, onWordLearned }: { topic: string; words: 
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 shrink-0">
-        <div>
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      <div className="flex flex-col gap-3 px-4 py-3 shrink-0 sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-4">
+        <div className="min-w-0">
           <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Deck</p>
-          <h2 className="text-xl font-black" style={{ color: '#1a1c1c' }}>{topic}</h2>
+          <h2 className="truncate text-lg font-black sm:text-xl" style={{ color: '#1a1c1c' }}>{topic}</h2>
         </div>
-        <div className="flex rounded-2xl p-1" style={{ background: '#f3f3f3', border: '2px solid #e2e2e2' }}>
+        <div className="grid grid-cols-2 rounded-2xl p-1 sm:flex" style={{ background: '#f3f3f3', border: '2px solid #e2e2e2' }}>
           <button
             onClick={() => switchMode('flash')}
-            className="px-5 py-2 rounded-xl text-sm font-extrabold transition active:translate-y-0.5"
+            className="px-4 py-2 rounded-xl text-xs font-extrabold transition active:translate-y-0.5 sm:px-5 sm:text-sm"
             style={studyMode === 'flash' ? { background: '#58cc02', color: '#1e5000', boxShadow: '0 3px 0 #46a302' } : { color: '#6f7b64' }}
           >
             Flashcard
           </button>
           <button
             onClick={() => switchMode('practice')}
-            className="px-5 py-2 rounded-xl text-sm font-extrabold transition active:translate-y-0.5"
+            className="px-4 py-2 rounded-xl text-xs font-extrabold transition active:translate-y-0.5 sm:px-5 sm:text-sm"
             style={studyMode === 'practice' ? { background: '#2fb8ff', color: '#004666', boxShadow: '0 3px 0 #1c93d1' } : { color: '#6f7b64' }}
           >
             Practice
@@ -268,8 +287,8 @@ function FlashcardDeck({ topic, words, onWordLearned }: { topic: string; words: 
             </button>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center relative overflow-hidden px-8 pb-6 pt-12">
-            <div className="absolute top-2 left-0 w-full flex justify-between px-10 text-xs font-extrabold tracking-widest uppercase" style={{ color: '#6f7b64' }}>
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center relative overflow-hidden px-4 pb-3 pt-7 sm:px-8 sm:pb-5 sm:pt-10">
+            <div className="pointer-events-none absolute top-1 left-0 w-full flex justify-between px-2 text-[10px] font-extrabold tracking-widest uppercase sm:top-2 sm:px-4 sm:text-xs lg:px-8" style={{ color: '#6f7b64' }}>
               <div className="flex flex-col items-center opacity-70">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mb-2"><path d="M19 12H5M5 12l7-7M5 12l7 7" /></svg>
                 Review Later
@@ -280,8 +299,11 @@ function FlashcardDeck({ topic, words, onWordLearned }: { topic: string; words: 
               </div>
             </div>
 
-            <div className="flex flex-col items-center gap-4">
-              <div className="relative w-[min(360px,calc(100vw-560px))] min-w-[280px] aspect-[3/4] perspective-1000">
+            <div className="flex min-h-0 flex-col items-center gap-3 sm:gap-4">
+              <div
+                className="relative aspect-[3/4] perspective-1000"
+                style={{ width: 'min(320px, calc(100vw - 56px), calc((100dvh - 260px) * 0.75))' }}
+              >
                 <AnimatePresence>
                   {deck.slice(0, 3).reverse().map((word) => {
                     const deckIndex = deck.findIndex(w => w.uniqueKey === word.uniqueKey);
