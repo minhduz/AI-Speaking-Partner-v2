@@ -139,6 +139,63 @@ export interface ExerciseDeck {
   is_continuation?: boolean;
 }
 
+export interface SessionEvaluationCard {
+  title: string;
+  type: string | null;
+  result: 'passed' | 'partial' | 'not_passed' | null;
+  attempts: number;
+  feedback: string;
+}
+
+export interface SessionEvaluationCorrection {
+  you_said: string;
+  try_this: string;
+  why: string;
+}
+
+export interface SessionEvaluationSkill {
+  skill: string;
+  level: 'Strong' | 'Okay' | 'Needs work';
+  evidence: string;
+}
+
+export interface SessionEvaluationPattern {
+  title: string;
+  evidence: string;
+  practice_tip: string;
+}
+
+export interface SessionEvaluationDrill {
+  title: string;
+  steps: string[];
+  success_criteria?: string;
+}
+
+export interface SessionEvaluation {
+  status: 'ready';
+  quality?: 'basic' | 'rich';
+  session_id: string;
+  generated_at: string;
+  summary: string;
+  highlights: string[];
+  growth_areas: string[];
+  next_focus: string;
+  energy: string;
+  cards: SessionEvaluationCard[];
+  spoken_samples: string[];
+  corrections?: SessionEvaluationCorrection[];
+  skill_radar?: SessionEvaluationSkill[];
+  recurring_pattern?: SessionEvaluationPattern | null;
+  next_drill?: SessionEvaluationDrill | null;
+  stats: {
+    user_turns: number;
+    cards_completed: number;
+    cards_total: number;
+    cards_skipped: number;
+    duration_minutes: number | null;
+  };
+}
+
 export interface OnboardingState {
   motivation?: string | null;
   confidence_signal?: string | null;
@@ -271,8 +328,15 @@ export const sessionService = {
     return wrapped();
   },
 
-  streamTurnText: async (sessionId: string, transcript: string): Promise<AsyncGenerator<TurnEvent>> => {
-    log(`POST /turn/${sessionId}/stream-text`, { transcript: transcript.slice(0, 60) });
+  streamTurnText: async (
+    sessionId: string,
+    transcript: string,
+    greetingText?: string,
+  ): Promise<AsyncGenerator<TurnEvent>> => {
+    log(`POST /turn/${sessionId}/stream-text`, {
+      transcript: transcript.slice(0, 60),
+      greetingText: greetingText ? `${greetingText.slice(0, 60)}…` : undefined,
+    });
     const res = await fetch(`${API_BASE}/turn/${sessionId}/stream-text`, {
       method: 'POST',
       headers: {
@@ -280,7 +344,12 @@ export const sessionService = {
         'Content-Type': 'application/json',
         'X-Client-Datetime': new Date().toISOString(),
       },
-      body: JSON.stringify({ transcript }),
+      // greeting_text is only sent on the FIRST turn of a session. The
+      // orchestrator forwards it to the turn-agent which (a) prepends it as a
+      // prior assistant message in the LLM prompt so the AI knows what it just
+      // asked, and (b) writes it to short-term so subsequent turns see it in
+      // recent_messages.
+      body: JSON.stringify(greetingText ? { transcript, greeting_text: greetingText } : { transcript }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => res.statusText);
@@ -400,6 +469,19 @@ export const sessionService = {
     const data = await res.json().catch(() => null);
     if (!data || data.status === 'none') return null;
     return data as ExerciseDeck;
+  },
+
+  /**
+   * Fetch the end-of-session evaluation report. Returns null while
+   * consolidation is still building it (BE responds {status:'pending'}),
+   * so the caller can poll.
+   */
+  getEvaluation: async (sessionId: string): Promise<SessionEvaluation | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/evaluation`);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'pending') return null;
+    return data as SessionEvaluation;
   },
 
   advanceDeckCard: async (sessionId: string): Promise<void> => {

@@ -74,7 +74,7 @@ export class TurnController {
   @Post(':session_id/stream-text')
   async streamTurnText(
     @Param('session_id') sessionId: string,
-    @Body() body: { transcript: string },
+    @Body() body: { transcript: string; greeting_text?: string },
     @Req() req,
     @Res() res: Response,
   ) {
@@ -84,7 +84,7 @@ export class TurnController {
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -94,6 +94,7 @@ export class TurnController {
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
+        this.turnService.getSessionInsight(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -115,6 +116,13 @@ export class TurnController {
           })()
         : getCurrentDatetime(user?.timezone ?? 'UTC');
 
+      // The greeting was streamed BEFORE this session was created (anon route).
+      // The FE sends it on the first turn so the turn-agent can preserve it as
+      // turn 0 in short-term memory AND show it to the LLM as the AI's prior
+      // turn — otherwise a short user reply to the greeting's question would
+      // arrive without context and the AI would re-ask or respond off-topic.
+      const greetingText = typeof body.greeting_text === 'string' ? body.greeting_text.trim() : '';
+
       const upstream = await this.http.axiosRef.post(
         `${this.cfg.get('TURN_AGENT_URL')}/turn/stream-text`,
         { transcript: body.transcript },
@@ -133,9 +141,14 @@ export class TurnController {
             'X-Current-Datetime':   currentDatetime,
             'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
             'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            // Compact JSON of the consolidated insight from last session.
+            // Turn-agent uses this to drive practice lead-in starting turn 3+.
+            // Greeting endpoint NO LONGER reads insight — it lives here now.
+            'X-Session-Insight':    sessionInsight ? encodeURIComponent(JSON.stringify(sessionInsight)) : '',
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
+            'X-Greeting-Text':      greetingText ? encodeHeader(greetingText) : '',
             'X-Deck-Active':             deck.active ? 'true' : 'false',
             'X-Deck-Status':             deck.status || 'none',
             'X-Deck-End-Reason':         deck.end_reason || '',
@@ -208,7 +221,7 @@ export class TurnController {
 
     try {
       // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -218,6 +231,7 @@ export class TurnController {
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
+        this.turnService.getSessionInsight(req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -268,6 +282,10 @@ export class TurnController {
             'X-Current-Datetime':   currentDatetime,
             'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
             'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            // Compact JSON of the consolidated insight from last session.
+            // Turn-agent uses this to drive practice lead-in starting turn 3+.
+            // Greeting endpoint NO LONGER reads insight — it lives here now.
+            'X-Session-Insight':    sessionInsight ? encodeURIComponent(JSON.stringify(sessionInsight)) : '',
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',

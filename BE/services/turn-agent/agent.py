@@ -38,6 +38,13 @@ class TurnState(TypedDict):
     card_attempts: int
     card_retry_allowed: bool
     card_success_criteria: list
+    # Greeting text — sent only on turn 1 by FE so the AI knows what it just
+    # asked. Empty on all other turns.
+    greeting_text: str
+    # Consolidated insight from prior sessions (struggled_with, energy, mission
+    # recommendation, etc.). Used by build_prompt_node to inject practice
+    # lead-in context once warmup is done. Empty for first-ever sessions.
+    session_insight: dict
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

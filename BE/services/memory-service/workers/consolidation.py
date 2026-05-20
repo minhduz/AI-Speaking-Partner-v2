@@ -9,6 +9,7 @@ from layers.short_term import ShortTermMemory
 from layers.long_term import LongTermMemory
 from layers import onboarding_state as onboarding
 from layers import today_challenge
+from layers import session_evaluation
 from layers.exercise_deck import ExerciseDeckService
 from db import database, settings
 
@@ -191,6 +192,18 @@ async def run_consolidation(user_id: str, session_id: str):
             )
         else:
             log.info("step 3 — no deck for this session (free-form turn flow)")
+
+        # Start the user-facing breakdown immediately. It has its own focused
+        # LLM pass and persists to sessions.breakdown independently, so the UI
+        # can show coaching feedback while memory consolidation continues.
+        asyncio.create_task(_build_and_persist_breakdown(
+            user_id=user_id,
+            session_id=session_id,
+            raw_deck=raw_deck,
+            messages=messages,
+            session_start_utc=session_start_utc,
+        ))
+        log.info("step 2.5 — session breakdown task started  session=%s", session_id)
 
         log.info("step 3 — calling LLM (combined long-term + short-term) from %d messages",
                  len(messages_to_extract))
@@ -450,6 +463,71 @@ async def run_consolidation(user_id: str, session_id: str):
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
+async def _build_and_persist_breakdown(
+    *,
+    user_id: str,
+    session_id: str,
+    raw_deck: dict | None,
+    messages: list[dict],
+    session_start_utc: datetime,
+):
+    """
+    Build the visible coaching report independently from memory consolidation.
+
+    This task is intentionally started as soon as we have messages + deck data.
+    If the LLM pass fails or takes too long, persist the basic deterministic
+    report so the frontend does not poll forever.
+    """
+    try:
+        report = await asyncio.wait_for(
+            session_evaluation.build_rich_report(
+                openai_client=_openai,
+                raw_deck=raw_deck,
+                messages=messages,
+                session_start_utc=session_start_utc,
+                session_id=session_id,
+            ),
+            timeout=14,
+        )
+    except Exception as report_err:
+        log.error(
+            "step 2.5 — rich session breakdown FAILED, persisting fallback  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            report_err,
+            exc_info=True,
+        )
+        report = session_evaluation.build_report(
+            session_insight=None,
+            raw_deck=raw_deck,
+            messages=messages,
+            session_start_utc=session_start_utc,
+            session_id=session_id,
+        )
+
+    try:
+        await database.execute(
+            "UPDATE speaking_app.sessions SET breakdown = $1::jsonb WHERE id = $2",
+            json.dumps(report, ensure_ascii=False, default=str),
+            session_id,
+        )
+        log.info(
+            "step 2.5 — session breakdown persisted  session=%s  quality=%s  corrections=%d  radar=%d",
+            session_id,
+            report.get("quality", "unknown"),
+            len(report.get("corrections", [])),
+            len(report.get("skill_radar", [])),
+        )
+    except Exception as persist_err:
+        log.error(
+            "step 2.5 — session breakdown persist FAILED  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            persist_err,
+            exc_info=True,
+        )
+
 
 def _parse_session_time(messages: list[dict]) -> datetime:
     try:

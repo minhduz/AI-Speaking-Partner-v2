@@ -25,4 +25,7 @@ export class Session {
   @Column({ name: 'ended_at', nullable: true }) endedAt: Date;
   @Column({ name: 'last_activity_at', nullable: true }) lastActivityAt: Date;
   @Column({ name: 'end_reason', nullable: true }) endReason: string;
+  // End-of-session evaluation report, written by the consolidation worker.
+  // Null until consolidation finishes (or for sessions that predate the feature).
+  @Column({ type: 'jsonb', nullable: true }) breakdown: Record<string, unknown> | null;
 }

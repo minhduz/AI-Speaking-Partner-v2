@@ -129,6 +129,24 @@ export class TurnService {
     }
   }
 
+  /**
+   * Fetches the consolidated session insight (struggled_with, energy, etc.)
+   * for the user. Used by the turn-agent to drive practice lead-in: once the
+   * conversation has warmed up (turn 3+), the AI can reference the insight to
+   * naturally propose a mission. Returns null on miss/error so callers fall
+   * back to a no-insight prompt branch.
+   */
+  async getSessionInsight(userId: string): Promise<any | null> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/session-insight/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      return data && data.has_insight ? data : null;
+    } catch (err: any) {
+      console.error(`[Turn] session-insight fetch failed:`, err?.message);
+      return null;
+    }
+  }
+
   async getDeckInfo(sessionId: string): Promise<{
     active: boolean;
     status: string;
@@ -222,7 +240,7 @@ export class TurnService {
         system_prompt += buildActiveMissionBlock(activeMission);
         console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
       } catch {
-        system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
+        system_prompt = `You are a warm, friendly AI companion. Speak only in ${user?.targetLanguage ?? 'English'} in every user-visible sentence. If the user uses their native language, understand it silently but do not mirror it. Today is ${currentDatetime}.`;
         system_prompt += buildActiveMissionBlock(activeMission);
       }
 

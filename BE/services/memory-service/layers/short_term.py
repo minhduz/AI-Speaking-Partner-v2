@@ -19,17 +19,29 @@ class ShortTermMemory:
     async def append(user_id: str, session_id: str, user_message: str, ai_message: str):
         key = ShortTermMemory._key(user_id)
         now = datetime.now(timezone.utc).isoformat()
+        # Skip empty messages so callers can append only one side of a pair —
+        # e.g. the turn-agent records the AI's greeting (turn 0) before any
+        # user message exists by passing user_message="". Pushing empty content
+        # would pollute the rolling buffer with {role:"user", content:""} and
+        # leak into the LLM's recent_messages on later turns.
+        pushed_roles = []
         for role, content in [("user", user_message), ("assistant", ai_message)]:
+            if not (content or "").strip():
+                continue
             await redis_client.client.rpush(key, json.dumps({
                 "role": role,
                 "content": content,
                 "timestamp": now,
                 "session_id": session_id,
             }))
+            pushed_roles.append(role)
+        if not pushed_roles:
+            return
         # Cap at MAX_ENTRIES — drops oldest entries from the left
         await redis_client.client.ltrim(key, -ShortTermMemory.MAX_ENTRIES, -1)
         await redis_client.client.expire(key, settings.short_term_ttl_seconds)
-        log.info("[short_term] appended  user=%s  session=%s  role=user+assistant", user_id, session_id)
+        log.info("[short_term] appended  user=%s  session=%s  roles=%s",
+                 user_id, session_id, "+".join(pushed_roles))
 
     @staticmethod
     async def get_all(user_id: str) -> list[dict]:

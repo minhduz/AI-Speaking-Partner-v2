@@ -275,7 +275,9 @@ async def stt(audio: UploadFile = File(...)):
     return {
         "transcript":    result["text"],
         "confidence":    result["confidence"],
-        "pronunciation": {"score": 0.85, "per_word": []},
+        # Soniox is STT-only — it does not assess pronunciation. score=None
+        # means "not measured"; never fabricate a number here.
+        "pronunciation": {"score": None, "per_word": []},
     }
 
 
@@ -338,7 +340,8 @@ async def stt_stream(audio: UploadFile = File(...)):
             yield f"data: {json.dumps({'text': item['text'], 'is_final': item['is_final']})}\n\n"
 
         transcript = last_text.strip()
-        yield f"data: {json.dumps({'done': True, 'transcript': transcript, 'confidence': 0.92, 'pronunciation': {'score': 0.85, 'per_word': []}})}\n\n"
+        # Pronunciation is not assessed (Soniox is STT-only). score=None.
+        yield f"data: {json.dumps({'done': True, 'transcript': transcript, 'confidence': 0.92, 'pronunciation': {'score': None, 'per_word': []}})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

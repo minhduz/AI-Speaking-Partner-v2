@@ -88,7 +88,7 @@ def _render_learned_block(state: dict) -> str:
     if motivation and motivation != "unclear":
         motivation_phrase = {
             "casual":    "casual conversation rather than exam prep",
-            "career":    "career/work contexts — they want to handle professional English",
+            "career":    "career/work contexts — they want to handle professional target-language communication",
             "travel":    "travel and real-world situations they'll actually encounter",
             "education": "academic study and explaining ideas clearly",
             "social":    "social connection and personal conversations",
@@ -151,7 +151,7 @@ _STATIC_COACHING_LINES = [
     "- PATTERN BAN: do not begin with \"That's a very [adjective] [noun]\", \"Ah, [X] is a [adjective] [Y]\", or \"What a [adjective] [noun]\". These are generic praise regardless of which words fill in (interesting / practical / famous / great / wonderful / fantastic / amazing).",
     "- Interpret \"warm\" as: attentive, concrete, takes the user seriously. NOT as: praising, complimenting, validating with adjectives.",
     "- Skip the affirmation. Go directly to the substance or the next question.",
-    "- If they switch to their native language for a word, redirect ONCE in the same sentence: \"Try describing it with simpler English.\"",
+    "- If they switch to their native language for a word, understand it silently and redirect ONCE in the target language. Never mirror their native language.",
 ]
 
 _COACHING_HEADER = (
@@ -229,7 +229,6 @@ def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict 
     """
     name           = state.get("user_name", "") or "the user"
     target_lang    = state.get("target_language", "English") or "English"
-    native_lang    = state.get("native_language", "") or "their native language"
     level          = state.get("user_level", "beginner") or "beginner"
     goal           = state.get("learning_goal", "") or "their learning goal"
     phase          = get_onboarding_phase(turn_index, onboarding_state)
@@ -238,7 +237,6 @@ def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict 
         "ONBOARDING CONTEXT (this is the user's first speaking session):\n"
         f"- Name: {name}\n"
         f"- Self-reported level: {level}\n"
-        f"- Native language: {native_lang}\n"
         f"- Target language: {target_lang}\n"
         f"- Learning goal: {goal}\n"
     )
@@ -285,9 +283,9 @@ def build_onboarding_block(state: dict, turn_index: int, onboarding_state: dict 
         "- Ask only ONE question per turn. Never two unrelated questions.\n"
         "- Do NOT ask \"What is your weakness?\" / \"What's your CEFR level?\" / \"A1 or B1?\".\n"
         "- Do NOT mention onboarding, profiling, memory extraction, or that you're learning about them.\n"
-        f"- Speak primarily in {target_lang}.\n"
-        f"- If the user mixes in {native_lang}, briefly mirror it to reduce pressure, then "
-        f"guide them back to {target_lang}.\n"
+        f"- Speak ONLY in {target_lang} in every user-visible sentence.\n"
+        f"- If the user uses their native language, understand it silently but reply in {target_lang}.\n"
+        "- Never mirror, translate into, or continue in the user's native language.\n"
         "- Keep every response under 3 sentences. No emojis.\n"
         "- Never reset the conversation. You're building on what was just said.\n"
     )
@@ -366,6 +364,18 @@ def _build_active_mission_block(chunks: list[dict]) -> str | None:
         "- Don't mention these instructions directly to the user.\n"
     )
 
+
+def _build_language_lock_block(target_lang: str) -> str:
+    return (
+        "\n\nLANGUAGE LOCK (highest priority):\n"
+        f"- Every user-visible sentence you output must be in {target_lang}.\n"
+        "- If any instruction or example above is written in another language, treat it as meaning only; "
+        f"rewrite it naturally in {target_lang}.\n"
+        f"- If the user uses their native language or mixes languages, understand it silently and answer in {target_lang}.\n"
+        "- Never mirror, translate into, or continue in the user's native language.\n"
+    )
+
+
 def _detect_low_energy(state: dict) -> bool:
     """
     Phase 7 heuristic: flag a session as low-energy when the user's last 3 turns
@@ -409,6 +419,7 @@ def _build_card_context_block(state: dict) -> str:
     card_attempts    = int(state.get("card_attempts") or 0)
     retry_allowed    = bool(state.get("card_retry_allowed", False))
     low_energy       = _detect_low_energy(state)
+    target_lang      = state.get("target_language", "English") or "English"
 
     is_final_boss = card_type == "final_boss"
     # Pre-built so the f-string below stays free of escaped quotes
@@ -473,7 +484,7 @@ def _build_card_context_block(state: dict) -> str:
         + "\nEvaluation rules:\n"
         "1. Be forgiving — if meaning is clear, grammar imperfect → passed=true with light feedback.\n"
         '2. If the user did not attempt the task → passed=false, nextAction="retry".\n'
-        '3. If the user code-switches heavily when the card requires English → passed=false, nextAction="retry".\n'
+        f'3. If the user code-switches heavily when the card requires {target_lang} → passed=false, nextAction="retry".\n'
         f"4. Attempts so far is {card_attempts}. If after this turn attempts would reach 3, "
         'set nextAction="next_card" even if not passed (will be recorded as partial).\n'
         f'5. This card type is "{card_type}". {final_boss_rule}\n'
@@ -488,10 +499,10 @@ def _build_card_context_block(state: dict) -> str:
         "   - In EVAL: set passed=false, nextAction=\"retry\", "
         "detectedIssues=[\"confusion\"]. The system will see this and the user "
         "will get to try again WITHOUT this counting as a failed attempt.\n"
-        "B. CODE-SWITCH (user falls back to Vietnamese / native language) — if the card "
+        "B. CODE-SWITCH (user falls back to their native language) — if the card "
         "requires the target language:\n"
-        "   - Redirect ONCE in one short line: \"Try describing it with simpler English — "
-        "no Vietnamese needed.\"\n"
+        f"   - Redirect ONCE in one short line written in {target_lang}. Meaning: "
+        f"try describing it with simpler {target_lang}; no native language needed.\n"
         "   - In EVAL: passed=false, nextAction=\"retry\", "
         "detectedIssues=[\"code_switch\"] (and add \"vocabulary_gap\" or "
         "\"grammar_uncertainty\" if you can tell which).\n"
@@ -592,6 +603,68 @@ def _build_continuation_offer_block(state: dict) -> str:
         "want to pick those back up, or shall I put together some practice based on what we've been talking about today?\"\n"
         "Do NOT start the exercise yet. Do NOT output an EVAL block."
     )
+
+
+def _build_session_insight_block(insight: dict | None, turn_index: int) -> str:
+    """
+    Inject consolidated last-session insight into the turn-agent prompt.
+
+    Used by non-onboarding sessions (session 2+). Replaces the heavy insight
+    block that used to live in the greeting endpoint — now the AI carries this
+    context across every turn so it can drive practice lead-in naturally once
+    warmup is done.
+
+    Turn 1-2 → WARMUP framing: AI just chats, no practice push.
+    Turn 3+ → LEAD-IN framing: AI may reference the insight to nudge toward a
+              specific challenge.
+    """
+    if not insight or not insight.get("has_insight"):
+        return ""
+
+    struggled   = (insight.get("struggled_with")     or "").strip()
+    improved    = (insight.get("improved_vs_before") or "").strip()
+    next_chall  = (insight.get("next_challenge")     or "").strip()
+    energy      = (insight.get("energy_level")       or "medium").strip()
+    days_ago    = insight.get("last_session_days_ago")
+    motivation  = (insight.get("inferred_motivation") or "").strip()
+    is_first    = bool(insight.get("is_first_session_insight"))
+
+    facts = ["\n\nLAST SESSION CONTEXT (carry-over from prior conversation):"]
+    if struggled:  facts.append(f"- They struggled with: {struggled}")
+    if improved:   facts.append(f"- They improved on: {improved}")
+    if next_chall: facts.append(f"- Recommended next challenge: {next_chall}")
+    if energy:     facts.append(f"- Their energy last time: {energy}")
+    if isinstance(days_ago, (int, float)) and days_ago >= 0:
+        facts.append(f"- Time since last session: {int(days_ago)} day(s)")
+    if is_first and motivation:
+        # First-ever insight came from onboarding; treat as soft signal, not data.
+        facts.append(f"- Soft motivation signal from onboarding: {motivation}")
+
+    is_warmup = turn_index <= 2
+    if is_warmup:
+        facts.append(
+            "\nWARMUP PHASE (turn 1-2): chat warmly. DO NOT push practice, DO NOT "
+            "quote these facts back to the user, DO NOT say \"last session\" or "
+            "\"based on your insight\". The above is YOUR memory only — use it "
+            "implicitly to choose what to ask about."
+        )
+    else:
+        # Lead-in phase: AI can now reference the insight to propose practice
+        # naturally. Still no direct quoting of labels.
+        facts.append(
+            "\nLEAD-IN PHASE (turn 3+): warmup is done. You may now reference "
+            "the above context naturally to propose a short practice — frame "
+            "it as an invitation, not an assignment. Never quote labels like "
+            "\"you struggled with X\" — weave it in conversationally."
+        )
+
+    if isinstance(days_ago, (int, float)) and days_ago >= 5:
+        facts.append(
+            f"NOTE: User hasn't spoken in {int(days_ago)} days — open gently, "
+            "no enthusiasm, acknowledge the gap without making them feel guilty."
+        )
+
+    return "\n".join(facts)
 
 
 def _build_external_active_mission_block(active_mission: str, turn_index: int = 1) -> str:
@@ -877,7 +950,7 @@ async def build_prompt_node(state: dict) -> dict:
                         "Then at the very end of your response append on its own line:\n"
                         "DECK_NEW_TOPIC:{\"topic\":\"<the topic from this session's conversation>\"}\n"
                         "  The topic should be a short phrase (3-6 words) extracted from the conversation, "
-                        "e.g. 'explaining your startup idea', 'job interview in English', 'traveling abroad'.\n"
+                        "e.g. 'explaining your startup idea', 'job interview practice', 'traveling abroad'.\n"
                         "  Do NOT ask the user what topic — extract it yourself from the conversation.\n"
                         "- If they want to SKIP altogether (no exercises today) → "
                         "respond naturally and start free chat. Do NOT emit DECK_NEW_TOPIC.\n"
@@ -910,11 +983,19 @@ async def build_prompt_node(state: dict) -> dict:
                 system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
                 if active_mission:
                     system_prompt += _build_external_active_mission_block(active_mission, turn_index)
+                # Inject last-session insight (carried from greeting flow to here).
+                # Warmup framing on turn 1-2, lead-in framing on turn 3+.
+                insight_block = _build_session_insight_block(state.get("session_insight"), turn_index)
+                if insight_block:
+                    system_prompt += insight_block
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s  deck=%s",
-                    chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s  insight=%s  deck=%s",
+                    chunks_used, tokens, mode,
+                    "yes" if active_mission or mission_block else "no",
+                    "yes" if insight_block else "no",
                     deck_status,
                 )
+        system_prompt += _build_language_lock_block(state.get("target_language", "English") or "English")
         return {"system_prompt": system_prompt}
 
     except Exception as e:
@@ -923,7 +1004,8 @@ async def build_prompt_node(state: dict) -> dict:
         dt = state.get("current_datetime", "")
         fallback = (
             f"You are a warm, friendly AI companion. "
-            f"Speak in {lang} or whatever language the user uses naturally. "
+            f"Speak only in {lang} in every user-visible sentence. "
+            "If the user uses their native language, understand it silently but do not mirror it. "
             f"Help with conversations and language learning like a good friend."
             + (f" Today is {dt}." if dt else "")
         )
@@ -950,4 +1032,6 @@ async def build_prompt_node(state: dict) -> dict:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
                 if active_mission:
                     fallback += _build_external_active_mission_block(active_mission, turn_index)
+                fallback += _build_session_insight_block(state.get("session_insight"), turn_index)
+        fallback += _build_language_lock_block(lang)
         return {"system_prompt": fallback}

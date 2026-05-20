@@ -237,17 +237,18 @@ export class SessionService {
     userId: string,
     sessionId: string,
   ): Promise<{ text: string; audio_b64: string | null }> {
-    // Fetch all context in parallel — saves 2-4s vs sequential calls
-    const [insight, recentContext, deck, user] = await Promise.all([
+    // Fetch context in parallel — saves 2-4s vs sequential calls. The closing
+    // is now short (detail lives in the evaluation board), so we no longer pull
+    // the recent-context snippet here.
+    const [insight, deck, user] = await Promise.all([
       this.getSessionInsight(userId),
-      this.getGreetingContext(userId),
       this.getDeck(sessionId).catch(() => null),
       this.userService.findById(userId).catch(() => null),
     ]);
 
     const struggled  = insight?.struggled_with ?? null;
-    const nextChall  = insight?.next_challenge ?? null;
     const firstName  = (user?.name ?? '').trim().split(/\s+/)[0] || '';
+    const targetLang = user?.targetLanguage ?? 'English';
 
     // Derive deck completion shape — undefined if no deck this session.
     const cards   = Array.isArray(deck?.cards) ? deck.cards : [];
@@ -291,24 +292,25 @@ export class SessionService {
       ].join('\n');
     }
 
+    // Closing is now intentionally SHORT — the detailed breakdown (what they
+    // practiced, what to improve, stats) lives in the visual evaluation board
+    // the user can open after this message. The spoken close is just a warm
+    // one-line sign-off that points there.
     const prompt = [
-      `You are an AI speaking coach. The user has just ended today's speaking session.`,
-      `Write a SHORT (3-4 sentences) closing message in a warm, coach-like tone.`,
+      `You are an AI speaking coach. The user just ended today's session.`,
+      `Speak ONLY in ${targetLang}. Never switch to the user's native language, even if they use it first.`,
+      `Write a VERY SHORT closing message: ONE or TWO sentences, warm and natural.`,
       ``,
       `Rules:`,
-      `1. Acknowledge one SPECIFIC thing the user practiced today (infer from context if available).`,
-      `2. Mention ONE concrete thing to improve next time.`,
-      `3. Tease the next session briefly.`,
-      `4. End with a natural sign-off like "See you next time!" or "Talk soon."`,
-      `5. NO emojis. NO generic openers like "Great job!". Start directly.`,
-      `6. Maximum 4 sentences.`,
-      `7. Never say "failed" or "incomplete" — use "paused", "continue next time", "still working on".`,
+      `1. Warmly acknowledge the effort in one short clause — do NOT list details or improvements (a visual breakdown shows those).`,
+      `2. End by pointing them to it, e.g. "Tap below to see your session breakdown." or "Your breakdown's ready below."`,
+      `3. NO emojis. NO generic openers like "Great job!". Start directly.`,
+      `4. Never say "failed" or "incomplete" — use "paused" or "continue next time".`,
+      `5. HARD LIMIT: 2 sentences. Do not exceed.`,
+      `6. If any template or example above is not in ${targetLang}, adapt the meaning into ${targetLang}; do not copy it verbatim.`,
       ``,
-      deckBlock,
-      ``,
-      struggled ? `What they struggled with today: ${struggled}` : '',
-      nextChall  ? `Recommended challenge for next time: ${nextChall}` : '',
-      recentContext ? `\nRecent context:\n${recentContext.slice(0, 600)}` : '',
+      deckBlock ? `Context (for tone only, do NOT recite): ${deckBlock.split('\n')[0]}` : '',
+      struggled ? `(internal) struggled with: ${struggled}` : '',
     ].filter(Boolean).join('\n');
 
     try {
@@ -337,10 +339,13 @@ export class SessionService {
 
   async getGreetingContext(userId: string): Promise<string> {
     const prefix = `[Greeting][getGreetingContext] user=${userId}`;
+    // Slim greeting: 1 snippet is enough for a single-sentence reference.
+    // Heavy context (insight, mission, today_challenge) now lives in the
+    // turn-agent's per-turn system prompt — not here.
     const payload = {
       query: 'recent conversation context',
       session_id: '',
-      limit: 3,
+      limit: 1,
       layers: ['short_term'],
     };
     console.log(`${prefix} → POST /retrieve layers=${JSON.stringify(payload.layers)}`);
@@ -742,6 +747,28 @@ export class SessionService {
     } catch (err: any) {
       console.error(`[Session] createDeck failed session=${sessionId}:`, err?.message);
       return { status: 'none', session_id: sessionId };
+    }
+  }
+
+  /**
+   * Fetch the user-facing session evaluation report from the session row.
+   * The consolidation worker persists it to `sessions.breakdown` on session
+   * end; returns {status:'pending'} until it's there so the FE can poll
+   * (post-session) or show "not available" (old History sessions).
+   */
+  async getEvaluation(sessionId: string, userId: string): Promise<any> {
+    try {
+      const session = await this.repo.findOne({
+        where: { id: sessionId, userId },
+        select: ['id', 'breakdown'],
+      });
+      if (!session || !session.breakdown) {
+        return { status: 'pending', session_id: sessionId };
+      }
+      return session.breakdown;
+    } catch (err: any) {
+      console.error(`[Session] getEvaluation failed session=${sessionId}:`, err?.message);
+      return { status: 'pending', session_id: sessionId };
     }
   }
 

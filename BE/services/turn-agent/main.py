@@ -49,6 +49,16 @@ def _parse_json_header(value: str | None) -> list:
         return []
 
 
+def _parse_json_object_header(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(unquote(value).strip())
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
 @app.post("/turn/stream")
 async def turn_stream(request: Request):
     form = await request.form()
@@ -88,6 +98,11 @@ async def turn_stream(request: Request):
         "card_attempts":      int(h.get("x-card-attempts", "0")),
         "card_retry_allowed": h.get("x-card-retry-allowed", "false").lower() == "true",
         "card_success_criteria": _parse_json_header(h.get("x-card-success-criteria")),
+        # Audio route doesn't carry greeting context; only the text route uses
+        # the greeting payload (FE STT happens before this call so the user's
+        # transcript is already known and they use /stream-text).
+        "greeting_text":         _decode_header(h.get("x-greeting-text")),
+        "session_insight":       _parse_json_object_header(h.get("x-session-insight")),
         # Intermediates — empty until nodes populate them
         "transcript":            "",
         "confidence":            0.0,
@@ -151,6 +166,17 @@ async def turn_stream_text(request: Request):
         "card_attempts":         int(h.get("x-card-attempts", "0")),
         "card_retry_allowed":    h.get("x-card-retry-allowed", "false").lower() == "true",
         "card_success_criteria": _parse_json_header(h.get("x-card-success-criteria")),
+        # Greeting text — present only on turn 1 of a freshly-started session.
+        # Used by llm_tts_node (prepend to LLM messages) and persist_node
+        # (write to short-term as turn 0) so a short user reply to the
+        # greeting's question doesn't arrive context-less.
+        "greeting_text":         _decode_header(h.get("x-greeting-text")),
+        # Session insight (consolidated facts from prior sessions: struggled_with,
+        # energy, recommended_next_session, etc.). Moved here from the greeting
+        # endpoint so the AI can reference it from turn 1 onwards. The
+        # build_prompt_node decides whether to inject warmup-only or lead-in
+        # framing based on turn_index.
+        "session_insight":       _parse_json_object_header(h.get("x-session-insight")),
         "transcript":            transcript,
         "confidence":           1.0,
         "pronunciation":        {"score": None, "per_word": []},

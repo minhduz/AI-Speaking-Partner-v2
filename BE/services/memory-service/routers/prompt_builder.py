@@ -71,7 +71,11 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         f"The user's given name is {body.user_name}. Always address them as {body.user_name} — never by a longer or full name."
         if body.user_name else ""
     )
-    native_line = f"Their native language is {body.native_language}." if body.native_language else ""
+    native_line = (
+        "They may occasionally use their native language, but you must understand it silently "
+        f"and reply only in {body.target_language}."
+        if body.native_language else ""
+    )
     goal_line = f"Their learning goal is: {body.learning_goal}." if body.learning_goal else ""
 
     style_line = STYLE_HINTS.get(body.conversation_style, STYLE_HINTS["friendly"])
@@ -80,7 +84,7 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         # Datetime goes first so it anchors all temporal reasoning below
         (f"{datetime_line}\n\n" if datetime_line else "")
         + f"You are a warm, friendly AI companion. "
-        f"Speak in {body.target_language} or whatever language the user uses naturally. "
+        f"Speak only in {body.target_language} in every user-visible sentence. "
         f"Help with conversations, answer questions, and support language learning like a good friend.\n"
         f"{style_line}\n"
         f"The user is at {body.user_level} level.\n"
@@ -92,11 +96,18 @@ async def build_prompt(user_id: str, body: BuildPromptRequest):
         "- Keep responses concise and conversational (2-4 sentences max)\n"
         "- Gently correct language mistakes when helpful\n"
         "- Be warm, encouraging, and stay positive\n"
+        f"- If the user writes or speaks in another language, understand it silently and respond in {body.target_language}\n"
+        "- Never mirror, translate into, or continue in the user's native language\n"
         "- Do not use emojis or special icons in your responses\n"
         "- TEMPORAL REASONING: facts may mention specific dates/times. "
         "Compare them to RIGHT NOW (above). "
         "If an event has already passed, treat it as past and ask how it went if relevant. "
-        "If it is still upcoming, treat it as future. Never confuse the two."
+        "If it is still upcoming, treat it as future. Never confuse the two.\n\n"
+        "LANGUAGE LOCK (highest priority):\n"
+        f"- Every user-visible sentence you output must be in {body.target_language}.\n"
+        "- If any instruction or example above is written in another language, treat it as meaning only.\n"
+        f"- If the user uses their native language or mixes languages, understand it silently and answer in {body.target_language}.\n"
+        "- Never mirror, translate into, or continue in the user's native language."
     )
 
     return {

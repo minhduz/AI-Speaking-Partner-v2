@@ -14,7 +14,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
-import type { DeckCard, ExerciseDeck } from '@/services/session.service';
+import type { DeckCard, ExerciseDeck, SessionEvaluation } from '@/services/session.service';
 
 const POPUP_W = 320;
 const POPUP_H = 440;
@@ -61,10 +61,16 @@ export default function ChatPage() {
     reviewSessionId,
     reviewHasMore,
     reviewLoading,
+    reviewEvaluation,
     isOnboardingSession,
     onboardingState,
     isEnding,
     closingText,
+    endChoices,
+    evaluation,
+    evaluationLoading,
+    viewEvaluation,
+    exitSession,
     sessionStarted,
     currentDeck,
     lighterMode,
@@ -173,10 +179,16 @@ export default function ChatPage() {
     currentDeck.cards.length > 0;
 
   // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
-  // Shown while the AI farewell message is playing. Blocks all interaction.
+  // Three phases: (1) farewell playing, (2) choices [View breakdown]/[Exit],
+  // (3) the evaluation board. Blocks all interaction until the user exits.
   if (isEnding) {
+    // Phase 3 — evaluation board
+    if (evaluation) {
+      return <EvaluationBoard evaluation={evaluation} onExit={exitSession} />;
+    }
+
     return (
-      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center">
+      <main className="flex flex-1 flex-col items-center justify-center gap-6 bg-white px-8 text-center" style={{ fontFamily: 'Lexend, sans-serif' }}>
         <div
           className="h-16 w-16 rounded-2xl flex items-center justify-center"
           style={{ background: '#f0e8ff' }}
@@ -199,6 +211,29 @@ export default function ChatPage() {
             <p className="text-sm font-medium animate-pulse" style={{ color: '#c0c0c0' }}>Preparing your recap…</p>
           )}
         </div>
+
+        {/* Phase 2 — choices, shown once the farewell finished playing */}
+        {endChoices && (
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => void viewEvaluation()}
+              disabled={evaluationLoading}
+              className="vp-btn-primary text-sm disabled:opacity-60"
+              style={{ padding: '10px 22px', borderRadius: '14px' }}
+            >
+              {evaluationLoading ? 'Loading…' : 'View breakdown'}
+            </button>
+            <button
+              type="button"
+              onClick={exitSession}
+              className="lip-btn lip-btn-ghost text-sm"
+              style={{ padding: '10px 22px', '--btn-radius': '14px' } as React.CSSProperties}
+            >
+              Exit
+            </button>
+          </div>
+        )}
       </main>
     );
   }
@@ -398,6 +433,8 @@ export default function ChatPage() {
           </div>
         </header>
 
+        {/* ── Content row: transcript scroller (+ breakdown panel in History) ── */}
+        <div className="flex flex-1 overflow-hidden">
         {/* ── Scrollable content ── */}
         <div
           ref={scrollContainerRef}
@@ -447,6 +484,25 @@ export default function ChatPage() {
               <ErrorBanner message={errorMessage} showUpgrade={billingLimitCode !== null} />
             </div>
           )}
+        </div>
+
+        {/* ── Breakdown panel — History only ── */}
+        {reviewMode && (
+          <aside
+            className="hidden md:block w-[400px] shrink-0 overflow-y-auto border-l px-6 py-6"
+            style={{ borderColor: '#ececec', background: '#ffffff' }}
+          >
+            {reviewEvaluation ? (
+              <EvaluationContent evaluation={reviewEvaluation} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-center">
+                <p className="text-sm font-medium" style={{ color: '#afafaf', fontFamily: 'Lexend, sans-serif' }}>
+                  No breakdown available for this session.
+                </p>
+              </div>
+            )}
+          </aside>
+        )}
         </div>
 
         {/* Waveform */}
@@ -562,6 +618,207 @@ function EndSessionButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+// Reusable breakdown body — used full-screen after a session (EvaluationBoard)
+// and embedded in the History split view.
+function EvaluationContent({ evaluation }: { evaluation: SessionEvaluation }) {
+  const s = evaluation.stats;
+  const highlights = evaluation.highlights ?? [];
+  const growthAreas = evaluation.growth_areas ?? [];
+  const cards = evaluation.cards ?? [];
+  const spokenSamples = evaluation.spoken_samples ?? [];
+  const corrections = evaluation.corrections ?? [];
+  const skillRadar = evaluation.skill_radar ?? [];
+  const recurringPattern = evaluation.recurring_pattern;
+  const nextDrill = evaluation.next_drill;
+  const resultColor = (r: string | null) =>
+    r === 'passed' ? '#2b6c00' : r === 'partial' ? '#683a00' : r === 'not_passed' ? '#9b1c1c' : '#6f7b64';
+  const resultLabel = (r: string | null) =>
+    r === 'passed' ? 'Passed' : r === 'partial' ? 'Partial' : r === 'not_passed' ? 'Needs work' : 'Skipped';
+  const levelColor = (level: string) =>
+    level === 'Strong' ? '#2b6c00' : level === 'Needs work' ? '#9b1c1c' : '#683a00';
+
+  return (
+    <div className="flex flex-col gap-5" style={{ fontFamily: 'Lexend, sans-serif' }}>
+      <div>
+        <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#afafaf' }}>
+          Session breakdown
+        </p>
+        <p className="mt-2 text-lg font-black leading-snug" style={{ color: '#1a1c1c' }}>{evaluation.summary}</p>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: 'Turns', value: String(s.user_turns) },
+          { label: 'Exercises', value: s.cards_total ? `${s.cards_completed}/${s.cards_total}` : '-' },
+          { label: 'Minutes', value: s.duration_minutes != null ? String(s.duration_minutes) : '-' },
+        ].map((stat) => (
+          <div key={stat.label} className="rounded-2xl px-3 py-3 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
+            <p className="text-xl font-black" style={{ color: '#1a1c1c' }}>{stat.value}</p>
+            <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: '#6f7b64' }}>{stat.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {highlights.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#2b6c00' }}>What went well</p>
+          <ul className="grid gap-1.5">
+            {highlights.map((h, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm font-semibold" style={{ color: '#3c3c3c' }}>
+                <span className="mt-0.5 shrink-0" style={{ color: '#58cc02' }}>✓</span>{h}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {growthAreas.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#683a00' }}>To work on</p>
+          <ul className="grid gap-1.5">
+            {growthAreas.map((g, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm font-semibold" style={{ color: '#3c3c3c' }}>
+                <span className="mt-0.5 shrink-0" style={{ color: '#e8a200' }}>→</span>{g}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {corrections.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#0f6f8f' }}>Top corrections</p>
+          <div className="grid gap-2">
+            {corrections.map((c, i) => (
+              <div key={i} className="rounded-2xl px-3 py-3" style={{ background: '#f8fbff', border: '2px solid #d8edf7' }}>
+                <div className="grid gap-2">
+                  <div>
+                    <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>You said</p>
+                    <p className="text-sm font-semibold leading-snug" style={{ color: '#3c3c3c' }}>&quot;{c.you_said}&quot;</p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#2b6c00' }}>Try this</p>
+                    <p className="text-sm font-black leading-snug" style={{ color: '#1a1c1c' }}>&quot;{c.try_this}&quot;</p>
+                  </div>
+                  <p className="text-xs font-semibold leading-snug" style={{ color: '#0f6f8f' }}>{c.why}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {skillRadar.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#6f7b64' }}>Skill radar</p>
+          <div className="grid gap-2">
+            {skillRadar.map((item) => (
+              <div key={item.skill} className="rounded-2xl px-3 py-2.5" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-black" style={{ color: '#1a1c1c' }}>{item.skill}</p>
+                  <span className="shrink-0 text-[10px] font-extrabold uppercase tracking-wide" style={{ color: levelColor(item.level) }}>
+                    {item.level}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs font-semibold leading-snug" style={{ color: '#6f7b64' }}>{item.evidence}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {recurringPattern && (
+        <div className="rounded-2xl px-3 py-3" style={{ background: '#fff8e8', border: '2px solid #f1dfb8' }}>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#683a00' }}>Recurring pattern</p>
+          <p className="mt-1 text-sm font-black leading-snug" style={{ color: '#1a1c1c' }}>{recurringPattern.title}</p>
+          <p className="mt-1 text-xs font-semibold leading-snug" style={{ color: '#6f7b64' }}>{recurringPattern.evidence}</p>
+          <p className="mt-2 text-xs font-bold leading-snug" style={{ color: '#683a00' }}>{recurringPattern.practice_tip}</p>
+        </div>
+      )}
+
+      {cards.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#6f7b64' }}>Exercises</p>
+          <div className="grid gap-2">
+            {cards.map((c, i) => (
+              <div key={i} className="rounded-2xl px-3 py-2.5" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold truncate" style={{ color: '#1a1c1c' }}>{c.title}</p>
+                  <span className="shrink-0 text-[10px] font-extrabold uppercase tracking-wide" style={{ color: resultColor(c.result) }}>
+                    {resultLabel(c.result)}
+                  </span>
+                </div>
+                {c.feedback && <p className="mt-1 text-xs font-semibold leading-snug" style={{ color: '#6f7b64' }}>{c.feedback}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {spokenSamples.length > 0 && (
+        <div>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest mb-2" style={{ color: '#6f7b64' }}>Things you said</p>
+          <div className="grid gap-1.5">
+            {spokenSamples.map((q, i) => (
+              <p key={i} className="rounded-2xl px-3 py-2 text-sm font-medium italic leading-snug" style={{ background: '#f4efff', color: '#3c3c3c' }}>
+                “{q}”
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {nextDrill && (
+        <div className="rounded-2xl px-3 py-3" style={{ background: '#f4efff', border: '2px solid #ebe0ff' }}>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#8447ff' }}>Next drill</p>
+          <p className="mt-1 text-sm font-black leading-snug" style={{ color: '#1a1c1c' }}>{nextDrill.title}</p>
+          <ul className="mt-2 grid gap-1.5">
+            {nextDrill.steps.map((step, i) => (
+              <li key={i} className="text-xs font-semibold leading-snug" style={{ color: '#3c3c3c' }}>
+                {i + 1}. {step}
+              </li>
+            ))}
+          </ul>
+          {nextDrill.success_criteria && (
+            <p className="mt-2 text-xs font-bold leading-snug" style={{ color: '#8447ff' }}>{nextDrill.success_criteria}</p>
+          )}
+        </div>
+      )}
+
+      {evaluation.next_focus && (
+        <div className="rounded-2xl px-3 py-2.5" style={{ background: '#f4efff', border: '2px solid #ebe0ff' }}>
+          <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#8447ff' }}>Next time</p>
+          <p className="mt-1 text-sm font-bold leading-snug" style={{ color: '#1a1c1c' }}>{evaluation.next_focus}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EvaluationBoard({ evaluation, onExit }: { evaluation: SessionEvaluation; onExit: () => void }) {
+  return (
+    <main className="flex flex-1 flex-col bg-white">
+      <div className="flex-1 overflow-y-auto px-6 py-8">
+        <div className="mx-auto w-full max-w-md">
+          <EvaluationContent evaluation={evaluation} />
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-gray-100 px-6 py-4">
+        <button
+          type="button"
+          onClick={onExit}
+          className="vp-btn-primary w-full text-sm"
+          style={{ padding: '12px', borderRadius: '14px' }}
+        >
+          Done
+        </button>
+      </div>
+    </main>
+  );
+}
+
 function AiPresence({ isRecording, status }: { isRecording: boolean; status: string }) {
   const isThinking = status === 'processing' || status === 'greeting';
   const label = isRecording ? 'Listening' : isThinking ? 'Thinking' : 'AI Partner';
@@ -653,16 +910,6 @@ function MessageBubble({
           <p className="text-xl md:text-2xl font-black leading-relaxed tracking-tight" style={{ color: isAi ? '#1a1c1c' : '#afafaf' }}>
             {message.text}
           </p>
-        )}
-        {!message.pending && message.pronunciationScore !== undefined && (
-          <div
-            className="mt-2 inline-flex items-center px-3 py-1 rounded-full text-[10px] font-extrabold tracking-widest uppercase"
-            style={isAi
-              ? { background: '#f3f3f3', color: '#6f7b64' }
-              : { background: '#d7ffb8', color: '#2b6c00', border: '2px solid #c8f2a4' }}
-          >
-            Pronunciation: {Math.round(message.pronunciationScore * 100)}%
-          </div>
         )}
       </div>
     </div>
