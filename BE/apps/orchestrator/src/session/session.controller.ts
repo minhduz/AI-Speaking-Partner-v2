@@ -31,27 +31,6 @@ function formatDatetimeInTimezone(date: Date, timezone: string): string {
   }
 }
 
-// Take the first whitespace-separated word — addresses users by a single given
-// name ("Đức" from "Đức Nguyễn Minh") instead of dumping the full stored name
-// into the prompt. Returns empty string for null/empty input.
-function firstName(fullName: string | null | undefined): string {
-  if (!fullName) return '';
-  return fullName.trim().split(/\s+/)[0] ?? '';
-}
-
-// One-line tone primer per conversation style. Mirrored in memory-service so
-// turn responses follow the same persona as the greeting.
-const STYLE_HINTS: Record<string, string> = {
-  friendly:     'Tone: warm and casual, like a supportive friend. Use contractions and natural phrasing.',
-  formal:       'Tone: polite and respectful, with complete sentences and no slang.',
-  casual:       'Tone: relaxed and brief, like texting a buddy.',
-  playful:      'Tone: light and witty, gentle humor when it fits naturally.',
-  professional: 'Tone: clear, focused, and expert — like a tutor on the clock.',
-};
-function styleHint(style: string | null | undefined): string {
-  return STYLE_HINTS[style ?? 'friendly'] ?? STYLE_HINTS.friendly;
-}
-
 function resolveClientDatetime(queryDatetime: string | undefined, timezone: string): string {
   if (queryDatetime) {
     try {
@@ -185,6 +164,13 @@ export class SessionController {
     return this.sessionService.getDeck(sessionId);
   }
 
+  // GET /session/:id/evaluation — user-facing end-of-session report.
+  // Returns {status:'pending'} until consolidation finishes building it.
+  @Get(':id/evaluation')
+  getEvaluation(@Param('id') sessionId: string, @Req() req) {
+    return this.sessionService.getEvaluation(sessionId, req.user.id);
+  }
+
   // POST /session/:id/deck — create or replace exercise deck for a session
   @Post(':id/deck')
   createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {
@@ -270,9 +256,11 @@ export class SessionController {
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
       const logPrefix = sessionId ? `[Greeting][session=${sessionId}]` : '[Greeting]';
 
-      // Bumped from 400 to 800 so the SESSION_INSIGHT JSON chunk (and other
-      // short-term facts surfaced via retrieval) isn't truncated mid-payload.
-      const MAX_CONTEXT_CHARS = 800;
+      // Slim greeting: 1 snippet, max 200 chars. The greeting is one sentence —
+      // it does not need (or benefit from) a long context dump. Heavy context
+      // (session_insight, today_challenge, mission) is injected per-turn by the
+      // turn-agent, not here.
+      const MAX_CONTEXT_CHARS = 200;
       const trimmedContext = greetingContext.length > MAX_CONTEXT_CHARS
         ? greetingContext.slice(0, MAX_CONTEXT_CHARS) + '…'
         : greetingContext;
@@ -291,22 +279,8 @@ export class SessionController {
       const isAbsent5Plus = daysAgo !== null && daysAgo >= 5;
 
       const targetLang = user?.targetLanguage ?? 'English';
-      const profileLines = [
-        user?.name ? `- Name: ${user.name}` : '',
-        user?.level ? `- Level: ${user.level}` : '',
-        user?.learningGoal ? `- Learning goal: ${user.learningGoal}` : '',
-        user?.nativeLanguage ? `- Native language: ${user.nativeLanguage}` : '',
-      ].filter(Boolean).join('\n');
 
       let systemPrompt: string;
-      const activeMissionBlock = activeMission
-        ? [
-            `ACTIVE MISSION (highest priority — this is what today's session is about):`,
-            `"${activeMission}"`,
-            `The greeting MUST reference this mission. Do not reference any other challenge.`,
-            `Previous-session challenges are background context only and must not replace this mission.`,
-          ].join('\n')
-        : '';
 
       if (shouldUseOnboarding) {
         // Onboarding greeting — first speaking session ever. Conversational,
@@ -345,97 +319,40 @@ export class SessionController {
           `- If the user mixes in ${user?.nativeLanguage ?? 'their native language'}, you may briefly mirror it to reduce pressure, then guide them back to ${targetLang}.`,
           `- No emojis.`,
         ].filter(Boolean).join('\n');
-      } else if (hasInsight) {
-        // Case A — returning user. Reference last session, give one mission.
-        const struggled = insight.struggled_with ?? 'nothing specific noted';
-        const improved  = insight.improved_vs_before ?? 'nothing noted yet';
-        const nextChall = activeMission ?? insight.next_challenge ?? 'pick up where they left off';
-        const energy    = insight.energy_level ?? 'medium';
-
-        const absenceNote = isAbsent5Plus
-          ? `\nNote: This user hasn't spoken in ${daysAgo} days. Do NOT be enthusiastic or act like nothing happened. Open gently — acknowledge the gap without making them feel guilty. Then still end with today's mission, but soften it.`
+      } else {
+        // ────────────────────────────────────────────────────────────────────
+        // Slim greeting (session 2+).
+        //
+        // Heavy context — session_insight, today_challenge, active_mission,
+        // recommendations — is NO LONGER injected here. The turn-agent owns
+        // those: it injects them into every in-session turn via build_prompt_node
+        // so the AI can drive practice from turn 3-4 onwards (after warm chat).
+        //
+        // The greeting itself is now a single warm line that may reference one
+        // recent-context snippet. Replies to it are preserved by the
+        // greeting_text payload mechanism (sent on the first user turn → stored
+        // as turn 1 in short-term so the LLM never loses what it just asked).
+        // ────────────────────────────────────────────────────────────────────
+        const absenceLine = isAbsent5Plus
+          ? `The user hasn't spoken in ${daysAgo} days — open gently, no enthusiasm. Do not make them feel guilty.`
           : '';
 
-        // Case A-bis — last session was the user's FIRST conversation. Open warmly,
-        // referencing the soft signal we got, not the structured insight fields.
-        // Do NOT mention onboarding, profiling, weakness, or CEFR labels.
-        const isFirstInsight = insight.is_first_session_insight === true;
-        let firstSessionBlock = '';
-        if (isFirstInsight) {
-          const motivation = insight.inferred_motivation;
-          const recommended = insight.recommended_next_session?.suggested_challenge;
-          firstSessionBlock = [
-            ``,
-            `CONTEXT: Last time was the user's first conversation with you.`,
-            motivation ? `- Soft motivation signal: ${motivation}` : '',
-            recommended ? `- Recommended starter for today: ${recommended}` : '',
-            ``,
-            `Open warmly and naturally — something like "Last time, I got a feel for your speaking style. Today let's start with something simple and real." Adapt the wording. Reference the motivation/context implicitly, never the labels.`,
-            `Do NOT say: "Based on your onboarding insight" / "I extracted your weakness" / "Your confidence signal is..." / "Last session you struggled with X."`,
-          ].filter(Boolean).join('\n');
-        }
-
         systemPrompt = [
-          `You are a sharp, warm AI speaking coach greeting a returning user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
+          `You are a warm AI speaking partner greeting a returning user.`,
+          `Speak in ${targetLang}.`,
+          `Right now: ${formattedDatetime}.`,
           '',
-          profileLines ? `User profile:\n${profileLines}` : '',
+          user?.name ? `User: ${user.name}` : '',
+          trimmedContext ? `\nOne recent snippet to weave in (only if natural — do NOT quote it verbatim):\n${trimmedContext}` : '',
+          absenceLine ? `\n${absenceLine}` : '',
           '',
-          activeMissionBlock,
-          activeMissionBlock ? '' : '',
-          `Last session insight:`,
-          `- They struggled with: ${struggled}`,
-          `- They improved on: ${improved}`,
-          `- Recommended challenge from memory: ${insight.next_challenge ?? 'none'}`,
-          `- Active mission for today: ${nextChall}`,
-          `- Their energy last time: ${energy}`,
-          absenceNote,
-          firstSessionBlock,
-          trimmedContext ? `\nAdditional recent context (use sparingly):\n${trimmedContext}` : '',
-          '',
-          `YOUR GREETING MUST:`,
-          `1. Open warmly — reference one specific thing from last session naturally, like a real conversation. BAD: "Last session you struggled with X." GOOD: weave it into a casual opener.`,
-          `2. Check in first — ask how they are, or something light and personal. Warm up BEFORE any practice.`,
-          `3. If there's a challenge ready for today, mention it as a casual invitation — NOT an assignment. e.g. "I have something short for us today if you're up for it." Leave room for them to accept or pass.`,
-          `4. Be 2-3 sentences MAX. No preamble. Start talking, don't introduce yourself.`,
-          `5. Match their energy — if "low", be gentler and skip the challenge mention entirely. If "high", be direct.`,
-          `6. Do NOT use emojis. Do NOT say "Great to see you!" or any generic opener.`,
-          `7. Do NOT present the challenge as mandatory. The user may want to just chat today — that is perfectly fine.`,
-          '',
-          `TEMPORAL REASONING: Recent context may mention events at specific times. Compare them to RIGHT NOW (${formattedDatetime}). If an event has already passed, ask how it went — do not wish them luck for it.`,
-        ].filter(Boolean).join('\n');
-      } else if (activeMission) {
-        systemPrompt = [
-          `You are a warm AI speaking coach greeting a user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
-          '',
-          profileLines ? `User profile:\n${profileLines}` : '',
-          '',
-          activeMissionBlock,
-          '',
-          `YOUR GREETING:`,
-          `1. Greet them naturally${user?.name ? ` by name (${user.name})` : ''} — start with a warm check-in, not the mission.`,
-          `2. Mention today's practice as an optional invitation, not a directive.`,
-          `3. Ask ONE light question — about how they're doing OR gently nudging toward the practice.`,
-          `4. 2 sentences MAX. No emojis.`,
-        ].filter(Boolean).join('\n');
-      } else {
-        // Case B — returning user with no usable insight/mission yet. Never call
-        // this a first session; consolidation may simply be late or too thin.
-        systemPrompt = [
-          `You are a warm AI speaking coach greeting a returning user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
-          '',
-          profileLines ? `User profile:\n${profileLines}` : '',
-          '',
-          `YOUR GREETING:`,
-          `1. Welcome them back naturally by name${user?.name ? '' : ' if you know it'}.`,
-          `2. Give them ONE simple practice direction based on their learning goal.`,
-          `3. Do not say this is their first session. Do not mention missing memory or missing insight.`,
-          `4. 2 sentences MAX. No emojis.`,
+          `YOUR GREETING — STRICT RULES:`,
+          `1. Output EXACTLY ONE sentence, max 25 words. No preamble, no second sentence.`,
+          `2. Be warm and natural — weave in the recent snippet implicitly if provided. Never say "last session", "based on your insight", or quote labels.`,
+          `3. Do NOT mention any challenge, practice, exercise, or mission — that is handled later in conversation, not here.`,
+          `4. Ending with ONE short question is fine (the system preserves context) — or close with a soft "ready when you are".`,
+          `5. No emojis. No generic openers like "Great to see you!" or "How can I help you today?".`,
+          `6. If the recent snippet mentions a past event, ask how it went; if a future event, do not wish luck if it has already passed (compare to right now).`,
         ].filter(Boolean).join('\n');
       }
 

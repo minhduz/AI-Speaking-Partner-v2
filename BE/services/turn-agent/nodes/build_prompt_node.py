@@ -594,6 +594,68 @@ def _build_continuation_offer_block(state: dict) -> str:
     )
 
 
+def _build_session_insight_block(insight: dict | None, turn_index: int) -> str:
+    """
+    Inject consolidated last-session insight into the turn-agent prompt.
+
+    Used by non-onboarding sessions (session 2+). Replaces the heavy insight
+    block that used to live in the greeting endpoint — now the AI carries this
+    context across every turn so it can drive practice lead-in naturally once
+    warmup is done.
+
+    Turn 1-2 → WARMUP framing: AI just chats, no practice push.
+    Turn 3+ → LEAD-IN framing: AI may reference the insight to nudge toward a
+              specific challenge.
+    """
+    if not insight or not insight.get("has_insight"):
+        return ""
+
+    struggled   = (insight.get("struggled_with")     or "").strip()
+    improved    = (insight.get("improved_vs_before") or "").strip()
+    next_chall  = (insight.get("next_challenge")     or "").strip()
+    energy      = (insight.get("energy_level")       or "medium").strip()
+    days_ago    = insight.get("last_session_days_ago")
+    motivation  = (insight.get("inferred_motivation") or "").strip()
+    is_first    = bool(insight.get("is_first_session_insight"))
+
+    facts = ["\n\nLAST SESSION CONTEXT (carry-over from prior conversation):"]
+    if struggled:  facts.append(f"- They struggled with: {struggled}")
+    if improved:   facts.append(f"- They improved on: {improved}")
+    if next_chall: facts.append(f"- Recommended next challenge: {next_chall}")
+    if energy:     facts.append(f"- Their energy last time: {energy}")
+    if isinstance(days_ago, (int, float)) and days_ago >= 0:
+        facts.append(f"- Time since last session: {int(days_ago)} day(s)")
+    if is_first and motivation:
+        # First-ever insight came from onboarding; treat as soft signal, not data.
+        facts.append(f"- Soft motivation signal from onboarding: {motivation}")
+
+    is_warmup = turn_index <= 2
+    if is_warmup:
+        facts.append(
+            "\nWARMUP PHASE (turn 1-2): chat warmly. DO NOT push practice, DO NOT "
+            "quote these facts back to the user, DO NOT say \"last session\" or "
+            "\"based on your insight\". The above is YOUR memory only — use it "
+            "implicitly to choose what to ask about."
+        )
+    else:
+        # Lead-in phase: AI can now reference the insight to propose practice
+        # naturally. Still no direct quoting of labels.
+        facts.append(
+            "\nLEAD-IN PHASE (turn 3+): warmup is done. You may now reference "
+            "the above context naturally to propose a short practice — frame "
+            "it as an invitation, not an assignment. Never quote labels like "
+            "\"you struggled with X\" — weave it in conversationally."
+        )
+
+    if isinstance(days_ago, (int, float)) and days_ago >= 5:
+        facts.append(
+            f"NOTE: User hasn't spoken in {int(days_ago)} days — open gently, "
+            "no enthusiasm, acknowledge the gap without making them feel guilty."
+        )
+
+    return "\n".join(facts)
+
+
 def _build_external_active_mission_block(active_mission: str, turn_index: int = 1) -> str:
     first_turn_note = (
         "The user has already heard an opening greeting that introduced this mission. "
@@ -910,9 +972,16 @@ async def build_prompt_node(state: dict) -> dict:
                 system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
                 if active_mission:
                     system_prompt += _build_external_active_mission_block(active_mission, turn_index)
+                # Inject last-session insight (carried from greeting flow to here).
+                # Warmup framing on turn 1-2, lead-in framing on turn 3+.
+                insight_block = _build_session_insight_block(state.get("session_insight"), turn_index)
+                if insight_block:
+                    system_prompt += insight_block
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s  deck=%s",
-                    chunks_used, tokens, mode, "yes" if active_mission or mission_block else "no",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  mode=%s  mission=%s  insight=%s  deck=%s",
+                    chunks_used, tokens, mode,
+                    "yes" if active_mission or mission_block else "no",
+                    "yes" if insight_block else "no",
                     deck_status,
                 )
         return {"system_prompt": system_prompt}
@@ -950,4 +1019,5 @@ async def build_prompt_node(state: dict) -> dict:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
                 if active_mission:
                     fallback += _build_external_active_mission_block(active_mission, turn_index)
+                fallback += _build_session_insight_block(state.get("session_insight"), turn_index)
         return {"system_prompt": fallback}

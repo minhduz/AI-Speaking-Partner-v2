@@ -68,29 +68,55 @@ export class CompletionService {
   // Streaming — yields text chunks
   async *stream(system: string, messages: Message[]): AsyncGenerator<string> {
     // Try Gemini streaming first
+    let geminiYieldedAny = false;
     try {
       const result = await this.geminiModel(system).generateContentStream({
         contents: this.toGeminiContents(messages),
       });
+      // Gemini SDK returns { stream, response } where `response` is a parallel
+      // Promise that resolves after the stream completes. If the stream errors
+      // (e.g., "Failed to parse stream" from Google's overload returning HTML),
+      // BOTH `stream` and `response` reject. Our try/catch handles the stream
+      // rejection, but `response` would become an unhandled rejection and
+      // crash the Node 20+ process. Attach a no-op catch immediately to silence it.
+      void result.response.catch(() => {});
+
       for await (const chunk of result.stream) {
         const text = chunk.text();
-        if (text) yield text;
+        if (text) {
+          geminiYieldedAny = true;
+          yield text;
+        }
       }
       return;
     } catch (e) {
-      console.warn('[LLMGateway] Gemini stream failed, falling back:', e.message);
+      // Mid-stream Gemini errors can leave a partial response on the client.
+      // If we already yielded text, falling back to OpenAI would produce a
+      // disjoint continuation. Better to stop cleanly than splice two voices.
+      if (geminiYieldedAny) {
+        console.warn('[LLMGateway] Gemini stream failed mid-response, NOT falling back:', e.message);
+        return;
+      }
+      console.warn('[LLMGateway] Gemini stream failed before any output, falling back to OpenAI:', e.message);
     }
 
-    // Fallback — OpenAI streaming
-    const stream = await this.openai.chat.completions.create({
-      model:      this.cfg.get('OPENAI_MODEL'),
-      max_tokens: +this.cfg.get('MAX_TOKENS'),
-      messages:   [{ role: 'system', content: system }, ...messages],
-      stream:     true,
-    });
-    for await (const chunk of stream) {
-      const text = chunk.choices[0]?.delta?.content;
-      if (text) yield text;
+    // Fallback — OpenAI streaming. Wrap in try/catch so a fallback failure
+    // (rate limit, auth, network) becomes a clean error to the controller
+    // rather than an unhandled rejection.
+    try {
+      const stream = await this.openai.chat.completions.create({
+        model:      this.cfg.get('OPENAI_MODEL'),
+        max_tokens: +this.cfg.get('MAX_TOKENS'),
+        messages:   [{ role: 'system', content: system }, ...messages],
+        stream:     true,
+      });
+      for await (const chunk of stream) {
+        const text = chunk.choices[0]?.delta?.content;
+        if (text) yield text;
+      }
+    } catch (e) {
+      console.error('[LLMGateway] OpenAI fallback also failed:', e.message);
+      throw new ServiceUnavailableException('LLM providers unavailable');
     }
   }
 }

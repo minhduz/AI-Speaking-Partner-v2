@@ -19,6 +19,7 @@ DO $$ BEGIN CREATE USER dictionary_user WITH PASSWORD 'dictionary_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 GRANT ALL ON SCHEMA speaking_app TO orchestrator_user;
+GRANT USAGE ON SCHEMA speaking_app TO memory_user;
 GRANT ALL ON SCHEMA billing      TO billing_user;
 GRANT ALL ON SCHEMA memory       TO memory_user;
 GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS speaking_app.sessions (
   is_archived              BOOLEAN   DEFAULT false,
   archived_at              TIMESTAMP,
   started_at               TIMESTAMP DEFAULT NOW(),
-  ended_at                 TIMESTAMP
+  ended_at                 TIMESTAMP,
+  breakdown                JSONB
 );
 
 CREATE TABLE IF NOT EXISTS speaking_app.turns (
@@ -208,6 +210,7 @@ ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR;
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS breakdown JSONB;
 
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
@@ -278,6 +281,8 @@ GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL TABLES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL TABLES IN SCHEMA memory       TO memory_user;
 GRANT ALL ON ALL TABLES IN SCHEMA dictionary   TO dictionary_user;
+GRANT SELECT (id) ON speaking_app.sessions TO memory_user;
+GRANT UPDATE (breakdown) ON speaking_app.sessions TO memory_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA memory       TO memory_user;

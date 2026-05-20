@@ -92,6 +92,15 @@ async def llm_tts_node(state: dict) -> dict:
         for m in state.get("recent_messages", [])
         if m.get("role") and m.get("content")
     ]
+    # Turn 1 only: the FE sends the greeting it just played as `greeting_text`.
+    # Prepend it as the AI's prior turn so the LLM sees the question it just
+    # asked. Without this, a short user reply like "good" arrives context-less
+    # and the AI either re-asks the same question or responds off-topic.
+    # `recent` is empty on turn 1 (no prior turns persisted yet), so this is
+    # the only mechanism to feed the greeting into the LLM context.
+    greeting_text = (state.get("greeting_text") or "").strip()
+    if greeting_text and not recent:
+        recent = [{"role": "assistant", "content": greeting_text}]
     # Empty transcript means an internal UI-driven turn (e.g. user clicked
     # "Let's go", Next card, or deck completed). Some LLM providers return an
     # empty stream for an empty user message, so send a harmless synthetic

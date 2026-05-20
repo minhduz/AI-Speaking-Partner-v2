@@ -8,6 +8,7 @@ import {
   type OnboardingState,
   type EndReason,
   type ExerciseDeck,
+  type SessionEvaluation,
 } from '@/services/session.service';
 import { billingService } from '@/services/billing.service';
 import { useAuthContext } from '@/contexts/auth-context';
@@ -71,12 +72,24 @@ export interface UseChatReturn {
   reviewSessionId: string | null;
   reviewHasMore: boolean;
   reviewLoading: boolean;
+  /** Breakdown of the session being reviewed in History (null = none). */
+  reviewEvaluation: SessionEvaluation | null;
   isOnboardingSession: boolean;
   onboardingState: OnboardingState | null;
   /** True while the AI closing message is playing (CLOSING_MODE). */
   isEnding: boolean;
   /** The AI closing farewell text, shown on screen while audio plays. */
   closingText: string | null;
+  /** True after the closing message: show [View evaluation] / [Exit] choices. */
+  endChoices: boolean;
+  /** The fetched end-of-session evaluation report (null until viewed/ready). */
+  evaluation: SessionEvaluation | null;
+  /** True while polling for the evaluation report. */
+  evaluationLoading: boolean;
+  /** Fetch + show the evaluation board (polls while consolidation finishes). */
+  viewEvaluation: () => Promise<void>;
+  /** Leave the ended-session flow and reset to a fresh chat. */
+  exitSession: () => void;
   /** True from the first mic tap until session ends. Drives layout switch in the UI. */
   sessionStarted: boolean;
   currentDeck: ExerciseDeck | null;
@@ -227,10 +240,18 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
   const [reviewHasMore, setReviewHasMore] = useState(false);
   const [reviewLoading, setReviewLoading] = useState(false);
+  // Breakdown for the session being reviewed in History (null = none/not built).
+  const [reviewEvaluation, setReviewEvaluation] = useState<SessionEvaluation | null>(null);
   const [isOnboardingSession, setIsOnboardingSession] = useState(false);
   const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
   const [isEnding, setIsEnding] = useState(false);
   const [closingText, setClosingText] = useState<string | null>(null);
+  // End-of-session evaluation flow: after the closing message we show two
+  // choices ([View evaluation] / [Exit]) instead of auto-clearing.
+  const [endChoices, setEndChoices] = useState(false);
+  const [evaluation, setEvaluation] = useState<SessionEvaluation | null>(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(false);
+  const endedSessionIdRef = useRef<string | null>(null);
   const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
   const [lighterMode, setLighterMode] = useState(false);
   const [sessionStarted, setSessionStarted] = useState(false);
@@ -339,6 +360,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewPageRef.current = 1;
     setMessages([]);
     setReviewHasMore(false);
+    setReviewEvaluation(null);
+    // Transcript + breakdown load in parallel. The breakdown is a single DB
+    // read (persisted at consolidation); null when the session has none
+    // (abandoned, or predates the feature).
+    void sessionService
+      .getEvaluation(sessionId)
+      .then((report) => {
+        if (reviewSessionIdRef.current === sessionId) setReviewEvaluation(report);
+      })
+      .catch(() => {});
     await loadReviewPage(sessionId, 1, false);
   }, [loadReviewPage]);
 
@@ -768,6 +799,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const processTurn = useCallback(async (transcript: string) => {
     const trimmedTranscript = transcript.trim();
     let sessionId = sessionIdRef.current;
+    // Capture FIRST-TURN-OF-SESSION before the session-start block runs.
+    // We pass the greeting text to the backend only on the turn that actually
+    // creates the session — so the AI's previous turn (the greeting it just
+    // said out loud) is preserved as turn 0 in short-term memory.
+    const isFirstTurnOfSession = !sessionId;
     if (!sessionId) {
       if (!trimmedTranscript) return;
 
@@ -816,8 +852,23 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       return [...withoutPending, ...userBubble, { role: 'ai', text: '', sentences: [], pending: true }];
     });
 
+    // First turn of session: send the greeting text we just played back to the
+    // user so the turn-agent can (a) inject it as the AI's prior message for
+    // this turn's LLM call, and (b) persist it as turn 0 in short-term memory.
+    // Without this, the AI would not know what question it just asked → would
+    // re-ask or respond out of context on the user's first reply.
+    const greetingTextForBE = isFirstTurnOfSession && _greetingTextCache && _greetingTextCache.length > 0
+      ? _greetingTextCache.join(' ').trim()
+      : undefined;
+    if (isFirstTurnOfSession) {
+      // Consume the cache — the greeting has now been bound to this session.
+      // Future "New Chat" within the same auth lifetime will re-stream a fresh
+      // greeting via runGreeting().
+      _greetingTextCache = null;
+    }
+
     try {
-      const stream = await sessionService.streamTurnText(sessionId, transcript);
+      const stream = await sessionService.streamTurnText(sessionId, transcript, greetingTextForBE);
       for await (const event of stream) {
         if (sessionIdRef.current !== sessionId) {
           segmentQueueRef.current = [];
@@ -938,6 +989,27 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setReviewHasMore(false);
   }, []);
 
+  /**
+   * Tear down the ended-session UI and return to a fresh chat. Called when the
+   * user taps "Exit", or directly on silent (idle/tab) ends.
+   */
+  const finalizeExit = useCallback(() => {
+    setEndChoices(false);
+    setEvaluation(null);
+    setEvaluationLoading(false);
+    endedSessionIdRef.current = null;
+    setIsEnding(false);
+    setClosingText(null);
+    setMessages([]);
+    setStatus('ready');
+    isEndingRef.current = false;
+    // Clear the greeting cache so the next initSession fetches a FRESH greeting
+    // (session 2+ slim variant) instead of replaying the ended session's
+    // onboarding-style greeting from cache.
+    _greetingTextCache = null;
+    void initSession();
+  }, [initSession]);
+
   const endSession = useCallback(async (reason: EndReason = 'user_clicked') => {
     // Guard: don't double-trigger
     if (isEndingRef.current) return;
@@ -1041,19 +1113,49 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
     }
 
-    // Hard-end: mark session in DB + trigger consolidation
+    // Hard-end: mark session in DB + trigger consolidation. Consolidation also
+    // builds the user-facing evaluation report (fetched later via viewEvaluation).
     if (prevSessionId) {
       await sessionService.end(prevSessionId, reason).catch(console.error);
     }
 
-    setIsEnding(false);
-    setClosingText(null);
-    setMessages([]);
-    setStatus('ready');
-    isEndingRef.current = false;
+    // Deliberate close → keep the overlay up and offer the evaluation board
+    // before leaving. Silent ends (idle/tab) skip straight to cleanup.
+    if (shouldClose && prevSessionId) {
+      endedSessionIdRef.current = prevSessionId;
+      setEndChoices(true);
+      setStatus('ready');
+      isEndingRef.current = false;
+      return;
+    }
 
-    await initSession();
-  }, [decodeMp3, initSession]);
+    finalizeExit();
+  }, [decodeMp3, finalizeExit]);
+
+  /**
+   * Fetch the evaluation report for the just-ended session, polling while
+   * consolidation finishes (BE returns null until ready, ~up to 30s).
+   */
+  const viewEvaluation = useCallback(async () => {
+    const sid = endedSessionIdRef.current;
+    if (!sid) return;
+    setEvaluationLoading(true);
+    // Consolidation (LLM extraction + embeddings) can take a while; poll up to 45s.
+    const deadline = Date.now() + 45000;
+    let report: SessionEvaluation | null = null;
+    while (Date.now() < deadline) {
+      report = await sessionService.getEvaluation(sid).catch(() => null);
+      if (report) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    setEvaluation(report);
+    setEvaluationLoading(false);
+  }, []);
+
+  /** "Exit" button — leave the evaluation flow and reset to a fresh chat. */
+  const exitSession = useCallback(() => {
+    finalizeExit();
+  }, [finalizeExit]);
 
   // Keep the ref pointing at the latest endSession so processTurn can call it
   // without adding endSession to processTurn's dependency array.
@@ -1339,10 +1441,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewSessionId,
     reviewHasMore,
     reviewLoading,
+    reviewEvaluation,
     isOnboardingSession,
     onboardingState,
     isEnding,
     closingText,
+    endChoices,
+    evaluation,
+    evaluationLoading,
+    viewEvaluation,
+    exitSession,
     sessionStarted,
     currentDeck,
     lighterMode,

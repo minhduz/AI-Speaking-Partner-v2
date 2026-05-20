@@ -61,6 +61,15 @@ async def persist_node(state: dict) -> dict:
             session_id,
         )
 
+    # Turn 1 + greeting present: record the AI's greeting as a standalone entry
+    # BEFORE the turn pair, so future turns see it in recent_messages. Memory
+    # service skips empty user_message — only the greeting is pushed.
+    # Ordering matters: greeting must hit Redis before the turn pair so the
+    # final buffer order is [greeting, user transcript, ai response].
+    greeting_text = (state.get("greeting_text") or "").strip()
+    if turn_index == 1 and greeting_text:
+        await _append_short_term(user_id, session_id, "", greeting_text)
+
     asyncio.create_task(_append_short_term(user_id, session_id, transcript, full_response))
     asyncio.create_task(_increment_billing(user_id, tokens_used))
     if turn_index == 1:
