@@ -240,7 +240,7 @@ export class TurnService {
         system_prompt += buildActiveMissionBlock(activeMission);
         console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
       } catch {
-        system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
+        system_prompt = `You are a warm, friendly AI companion. Speak only in ${user?.targetLanguage ?? 'English'} in every user-visible sentence. If the user uses their native language, understand it silently but do not mirror it. Today is ${currentDatetime}.`;
         system_prompt += buildActiveMissionBlock(activeMission);
       }
 

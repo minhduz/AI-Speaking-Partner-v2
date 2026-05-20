@@ -248,6 +248,7 @@ export class SessionService {
 
     const struggled  = insight?.struggled_with ?? null;
     const firstName  = (user?.name ?? '').trim().split(/\s+/)[0] || '';
+    const targetLang = user?.targetLanguage ?? 'English';
 
     // Derive deck completion shape — undefined if no deck this session.
     const cards   = Array.isArray(deck?.cards) ? deck.cards : [];
@@ -297,6 +298,7 @@ export class SessionService {
     // one-line sign-off that points there.
     const prompt = [
       `You are an AI speaking coach. The user just ended today's session.`,
+      `Speak ONLY in ${targetLang}. Never switch to the user's native language, even if they use it first.`,
       `Write a VERY SHORT closing message: ONE or TWO sentences, warm and natural.`,
       ``,
       `Rules:`,
@@ -305,6 +307,7 @@ export class SessionService {
       `3. NO emojis. NO generic openers like "Great job!". Start directly.`,
       `4. Never say "failed" or "incomplete" — use "paused" or "continue next time".`,
       `5. HARD LIMIT: 2 sentences. Do not exceed.`,
+      `6. If any template or example above is not in ${targetLang}, adapt the meaning into ${targetLang}; do not copy it verbatim.`,
       ``,
       deckBlock ? `Context (for tone only, do NOT recite): ${deckBlock.split('\n')[0]}` : '',
       struggled ? `(internal) struggled with: ${struggled}` : '',

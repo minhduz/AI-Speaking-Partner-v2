@@ -293,7 +293,6 @@ export class SessionController {
           '',
           `Known profile:`,
           `- Name: ${user?.name ?? 'unknown'}`,
-          `- Native language: ${user?.nativeLanguage ?? 'unknown'}`,
           `- Target language: ${targetLang}`,
           `- Self-reported level: ${user?.level ?? 'unknown'}`,
           `- Learning goal: ${user?.learningGoal ?? 'unknown'}`,
@@ -315,8 +314,9 @@ export class SessionController {
           `- Do not ask "What is your weakness?" / "What is your CEFR level?" / "Are you A1/B1/C1?".`,
           `- Do not mention IELTS unless the goal explicitly mentions exams.`,
           `- Do not mention onboarding, profiling, memory extraction, or that you're learning about them.`,
-          `- Speak primarily in ${targetLang}.`,
-          `- If the user mixes in ${user?.nativeLanguage ?? 'their native language'}, you may briefly mirror it to reduce pressure, then guide them back to ${targetLang}.`,
+          `- Speak ONLY in ${targetLang} in every user-visible sentence.`,
+          `- If the user writes or speaks in their native language, understand it silently but reply in ${targetLang}.`,
+          `- Never mirror, translate into, or continue in the user's native language.`,
           `- No emojis.`,
         ].filter(Boolean).join('\n');
       } else {
@@ -339,7 +339,7 @@ export class SessionController {
 
         systemPrompt = [
           `You are a warm AI speaking partner greeting a returning user.`,
-          `Speak in ${targetLang}.`,
+          `Speak ONLY in ${targetLang}. Never switch to the user's native language, even if they use it first.`,
           `Right now: ${formattedDatetime}.`,
           '',
           user?.name ? `User: ${user.name}` : '',
