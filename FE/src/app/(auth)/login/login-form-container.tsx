@@ -19,8 +19,8 @@ export function LoginFormContainer() {
       console.log('[LoginContainer] new user → push /register?from=google');
       router.push('/register?from=google');
     } else {
-      console.log('[LoginContainer] existing user → push /chat');
-      router.push('/chat');
+      console.log('[LoginContainer] existing user → push /home');
+      router.push('/home');
     }
   };
 

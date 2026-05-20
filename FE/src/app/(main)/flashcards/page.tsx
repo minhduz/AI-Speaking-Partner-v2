@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, type ReactElement } 
 import { httpClient } from '@/lib/http-client';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { useAuthContext } from '@/contexts/auth-context';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { motion, useMotionValue, useTransform, AnimatePresence } from 'framer-motion';
 
 interface FlashcardWord {
@@ -70,13 +70,17 @@ function pronunciationScore(recognized: string, target: string): number {
 export default function FlashcardsPage() {
   const { logout } = useAuthContext();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [groups, setGroups] = useState<FlashcardGroup[]>([]);
   const [masteredGroups, setMasteredGroups] = useState<FlashcardGroup[]>([]);
   const [reviewDueWords, setReviewDueWords] = useState<FlashcardWord[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTopic, setActiveTopic] = useState<string | null>(null);
   const [activeMasteredTopic, setActiveMasteredTopic] = useState<string | null>(null);
-  const [view, setView] = useState<'active' | 'mastered' | 'review'>('active');
+  const [view, setView] = useState<'active' | 'mastered' | 'review'>(() => {
+    const v = searchParams.get('view');
+    return v === 'review' || v === 'mastered' ? v : 'active';
+  });
   const [masteredWordIds, setMasteredWordIds] = useState<Set<string>>(new Set());
   const [showReviewBanner, setShowReviewBanner] = useState(false);
   const [selectedMasteredWord, setSelectedMasteredWord] = useState<FlashcardWord | null>(null);

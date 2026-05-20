@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  Home,
   Mic,
   LayoutGrid,
   CreditCard,
@@ -67,6 +68,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
 
   const groups = groupByDate(displayedSessions);
 
+  const isHome       = pathname?.startsWith('/home') ?? false;
   const isChat       = pathname === '/chat' || (pathname?.startsWith('/chat') ?? false);
   const isFlashcards = pathname?.startsWith('/flashcards') ?? false;
   const isBilling    = pathname?.startsWith('/billing') ?? false;
@@ -93,6 +95,17 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
 
       {/* ── Primary Nav ── */}
       <nav className="flex-1 min-h-0 space-y-1 px-2 overflow-y-auto custom-scrollbar pr-1">
+        {/* Home / Dashboard */}
+        <Link href="/home" className="block">
+          <NavLink
+            label="Home"
+            icon={<Home size={18} strokeWidth={2.5} />}
+            iconBg="#e8f9d3"
+            iconColor="#2b6c00"
+            active={isHome}
+          />
+        </Link>
+
         {/* Learn / Practice */}
         <NavLink
           label="Learn"
