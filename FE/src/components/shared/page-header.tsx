@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, Flame } from 'lucide-react';
 import { userService } from '@/services/user.service';
+import { progressService } from '@/services/progress.service';
 
 /* ── Language → ISO 3166-1 alpha-2 country code ──────────────────── */
 const LANG_CODES: Record<string, string> = {
@@ -37,30 +38,42 @@ function getLangCode(lang: string | null | undefined): string | null {
 /* ── Props ────────────────────────────────────────────────────────── */
 export interface PageHeaderProps {
   title: string;
+  mobileTitle?: string;
   /** Optional right-side slot (e.g. word count, secure QR badge) */
   rightSlot?: React.ReactNode;
   onBack?: () => void;
+  /** Hide the mobile back button — for top-level destinations like Home. */
+  hideBack?: boolean;
 }
 
 /* ── Component ────────────────────────────────────────────────────── */
-export function PageHeader({ title, rightSlot, onBack }: PageHeaderProps) {
+export function PageHeader({ title, mobileTitle, rightSlot, onBack, hideBack = false }: Readonly<PageHeaderProps>) {
   const router = useRouter();
   const [langCode, setLangCode] = useState<string | null>(null);
+  const [level,    setLevel]    = useState<string | null>(null);
   const [streak,   setStreak]   = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    // Fluency level + target language live on the user profile.
     userService.me()
       .then((u) => {
         if (cancelled) return;
         setLangCode(getLangCode(u.targetLanguage));
-        setStreak((u as unknown as Record<string, number>).streak ?? 0);
+        setLevel(u.level ?? null);
       })
       .catch(() => {
-        if (!cancelled) { setLangCode(null); setStreak(0); }
+        if (!cancelled) { setLangCode(null); setLevel(null); }
       });
+    // Streak comes from the dashboard progress endpoint — same source the
+    // Home dashboard uses, so the chip stays in sync.
+    progressService.getDashboardStats()
+      .then((s) => { if (!cancelled) setStreak(s?.current_streak ?? 0); })
+      .catch(() => { if (!cancelled) setStreak(0); });
     return () => { cancelled = true; };
   }, []);
+
+  const levelLabel = level ? level.charAt(0).toUpperCase() + level.slice(1) : null;
 
   return (
     <header
@@ -70,28 +83,37 @@ export function PageHeader({ title, rightSlot, onBack }: PageHeaderProps) {
         paddingTop: 'env(safe-area-inset-top, 0px)',
       }}
     >
-      {/* ── Back button: mobile only (PWA navigation) ── */}
-      <button
-        onClick={onBack ?? (() => router.back())}
-        aria-label="Go back"
-        className="lg:hidden shrink-0 flex items-center justify-center rounded-2xl transition-all active:scale-90"
-        style={{
-          width: 40, height: 40,
-          background: '#ffffff',
-          border: '2px solid #e2e2e2',
-          boxShadow: '0 3px 0 #e2e2e2',
-          color: '#3c3c3c',
-        }}
-      >
-        <ArrowLeft size={18} strokeWidth={2.5} />
-      </button>
+      {/* ── Back button: mobile only (PWA navigation).
+            Top-level destinations like Home pass `hideBack` so there is no
+            misleading back arrow on a tab that already lives at the root. ── */}
+      {!hideBack && (
+        <button
+          onClick={onBack ?? (() => router.back())}
+          aria-label="Go back"
+          className="lg:hidden shrink-0 flex items-center justify-center rounded-2xl transition-all active:scale-90"
+          style={{
+            width: 40, height: 40,
+            background: '#ffffff',
+            border: '2px solid #e2e2e2',
+            boxShadow: '0 3px 0 #e2e2e2',
+            color: '#3c3c3c',
+          }}
+        >
+          <ArrowLeft size={18} strokeWidth={2.5} />
+        </button>
+      )}
 
       {/* ── Title ── */}
       <h1
         className="flex-1 min-w-0 truncate text-xl sm:text-2xl font-black"
         style={{ color: '#2b6c00', letterSpacing: '-0.01em', fontFamily: 'Lexend, sans-serif' }}
       >
-        {title}
+        {mobileTitle ? (
+          <>
+            <span className="lg:hidden">{mobileTitle}</span>
+            <span className="hidden lg:inline">{title}</span>
+          </>
+        ) : title}
       </h1>
 
       {/* ── Optional right-slot (passed by each page) ── */}
@@ -124,6 +146,26 @@ export function PageHeader({ title, rightSlot, onBack }: PageHeaderProps) {
               display: 'block',
             }}
           />
+        </div>
+      )}
+
+      {/* ── Fluency level chip ── */}
+      {levelLabel && (
+        <div
+          className="shrink-0 hidden sm:flex items-center rounded-2xl px-3"
+          style={{
+            height: 40,
+            background: '#f4efff',
+            border: '2px solid #ebe0ff',
+            boxShadow: '0 3px 0 #ebe0ff',
+          }}
+        >
+          <span
+            className="text-[11px] font-extrabold uppercase tracking-widest"
+            style={{ color: '#8447ff' }}
+          >
+            {levelLabel}
+          </span>
         </div>
       )}
 

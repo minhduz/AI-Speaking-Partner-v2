@@ -65,6 +65,10 @@ export default function ChatPage() {
     reviewEvaluation,
     isOnboardingSession,
     onboardingState,
+    nextSessionMode,
+    modeSelectionLocked,
+    setNextSessionMode,
+    activeSessionMode,
     isEnding,
     closingText,
     endChoices,
@@ -98,11 +102,15 @@ export default function ChatPage() {
   const [historySessions, setHistorySessions] = useState<SessionSummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [reviewTitle, setReviewTitle] = useState<string | null>(null);
+  const [reviewSessionMode, setReviewSessionMode] = useState<SessionSummary['mode'] | null>(null);
   const [initialMicHold, setInitialMicHold] = useState(false);
   // Mobile-only breakdown sheet — the side aside is hidden below md.
   const [mobileBreakdownOpen, setMobileBreakdownOpen] = useState(false);
   useEffect(() => {
-    if (!reviewMode) setMobileBreakdownOpen(false);
+    if (!reviewMode) {
+      setMobileBreakdownOpen(false);
+      setReviewSessionMode(null);
+    }
   }, [reviewMode]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -163,6 +171,7 @@ export default function ChatPage() {
 
   const handleSessionClick = useCallback((session: SessionSummary) => {
     setReviewTitle(session.title ?? 'New conversation');
+    setReviewSessionMode(session.mode ?? null);
     enterReview(session.id);
   }, [enterReview]);
 
@@ -198,6 +207,8 @@ export default function ChatPage() {
     reviewSessionId && sessionTitleUpdate?.sessionId === reviewSessionId
       ? sessionTitleUpdate.title
       : reviewTitle;
+  const reviewPanelIsFreeTalk = reviewEvaluation?.mode === 'free_talk' || reviewSessionMode === 'free_talk';
+  const reviewPanelLabel = reviewPanelIsFreeTalk ? 'recap' : 'breakdown';
 
   // Layout switches to focused (no sidebar) only when the user has tapped mic at
   // least once — not when the session is eagerly created in the background.
@@ -215,14 +226,18 @@ export default function ChatPage() {
     currentDeck?.status === 'in_progress' ||
     aiHasTransitioned;
 
+  // Free Talk sessions never show the deck/mission card — pure conversation.
+  // Belt-and-suspenders: BE also skips deck generation when mode=free_talk, so
+  // currentDeck should be null anyway. This guard handles any race or stale state.
   const deckVisible =
+    activeSessionMode !== 'free_talk' &&
     currentDeck !== null &&
     onboardingDeckReady &&
     (currentDeck.status === 'not_started' || currentDeck.status === 'in_progress') &&
     currentDeck.cards.length > 0;
 
   // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
-  // Three phases: (1) farewell playing, (2) choices [View breakdown]/[Exit],
+  // Three phases: (1) farewell playing, (2) choices [View recap/breakdown]/[Exit],
   // (3) the evaluation board. Blocks all interaction until the user exits.
   if (isEnding) {
     // Phase 3 — evaluation board
@@ -258,7 +273,9 @@ export default function ChatPage() {
             )}
           </div>
 
-          {/* Phase 2 — choices, shown once the farewell finished playing */}
+          {/* Phase 2 — choices, shown once the farewell finished playing.
+              Free Talk uses a softer label ("View recap") since there's no
+              skill breakdown to view — just a light conversation summary. */}
           {endChoices && (
             <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
               <button
@@ -276,7 +293,9 @@ export default function ChatPage() {
                 className="vp-btn-primary h-12 px-5 text-sm disabled:opacity-60"
                 style={{ borderRadius: '16px' }}
               >
-                {evaluationLoading ? 'Loading…' : 'View breakdown'}
+                {evaluationLoading
+                  ? 'Loading…'
+                  : activeSessionMode === 'free_talk' ? 'View recap' : 'View breakdown'}
               </button>
             </div>
           )}
@@ -350,7 +369,7 @@ export default function ChatPage() {
         {/* Exercise dock — compact floating card so it never takes over the chat.
             Centered horizontally so wider phones don't leave a lopsided gap on the right. */}
         {deckVisible && (
-          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-24 z-30 w-[min(360px,calc(100vw-48px))]">
+          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-24 z-30 w-[min(360px,calc(100vw-48px))] md:left-8 md:translate-x-0 lg:left-10">
             <div className="pointer-events-auto">
               <DeckCardView
                 key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
@@ -497,6 +516,9 @@ export default function ChatPage() {
               onStartSession={handleStartMic}
               onOpenHistory={openHistory}
               insight={null /* MissionCard handles its own fetch */}
+              nextSessionMode={nextSessionMode}
+              modeSelectionLocked={modeSelectionLocked}
+              onModeChange={setNextSessionMode}
             />
           )}
 
@@ -530,11 +552,13 @@ export default function ChatPage() {
             style={{ borderColor: '#ececec', background: '#ffffff' }}
           >
             {reviewEvaluation ? (
-              <EvaluationContent evaluation={reviewEvaluation} compact />
+              reviewEvaluation.mode === 'free_talk'
+                ? <FreeTalkRecap evaluation={reviewEvaluation} />
+                : <EvaluationContent evaluation={reviewEvaluation} compact />
             ) : (
               <div className="flex h-full items-center justify-center text-center">
                 <p className="text-sm font-medium" style={{ color: '#afafaf', fontFamily: 'Lexend, sans-serif' }}>
-                  No breakdown available for this session.
+                  No {reviewPanelLabel} available for this session.
                 </p>
               </div>
             )}
@@ -558,10 +582,10 @@ export default function ChatPage() {
                 borderRadius: '999px',
                 boxShadow: '0 4px 0 #1f5100, 0 6px 16px rgba(0,0,0,0.18)',
               }}
-              aria-label="View breakdown"
+              aria-label={`View ${reviewPanelLabel}`}
             >
               <BarChart3 size={18} strokeWidth={3} />
-              View breakdown
+              View {reviewPanelLabel}
             </button>
           </div>
         )}
@@ -587,18 +611,23 @@ export default function ChatPage() {
                 <div className="flex items-center gap-2">
                   <span
                     className="flex h-9 w-9 items-center justify-center rounded-xl"
-                    style={{ background: '#e9ffd5', border: '2px solid #d7ffb8' }}
+                    style={{
+                      background: reviewPanelIsFreeTalk ? '#f4efff' : '#e9ffd5',
+                      border: `2px solid ${reviewPanelIsFreeTalk ? '#ebe0ff' : '#d7ffb8'}`,
+                    }}
                   >
-                    <BarChart3 size={18} strokeWidth={3} style={{ color: '#2b6c00' }} />
+                    <BarChart3 size={18} strokeWidth={3} style={{ color: reviewPanelIsFreeTalk ? '#8447ff' : '#2b6c00' }} />
                   </span>
-                  <p className="text-base font-black" style={{ color: '#1a1c1c' }}>Breakdown</p>
+                  <p className="text-base font-black" style={{ color: '#1a1c1c' }}>
+                    {reviewPanelIsFreeTalk ? 'Recap' : 'Breakdown'}
+                  </p>
                 </div>
                 <button
                   type="button"
                   onClick={() => setMobileBreakdownOpen(false)}
                   className="flex h-9 w-9 items-center justify-center rounded-full"
                   style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}
-                  aria-label="Close breakdown"
+                  aria-label={`Close ${reviewPanelLabel}`}
                 >
                   <X size={18} strokeWidth={3} style={{ color: '#6f7b64' }} />
                 </button>
@@ -608,11 +637,13 @@ export default function ChatPage() {
                 style={{ paddingBottom: 'calc(24px + env(safe-area-inset-bottom, 0px))' }}
               >
                 {reviewEvaluation ? (
-                  <EvaluationContent evaluation={reviewEvaluation} compact />
+                  reviewEvaluation.mode === 'free_talk'
+                    ? <FreeTalkRecap evaluation={reviewEvaluation} />
+                    : <EvaluationContent evaluation={reviewEvaluation} compact />
                 ) : (
                   <div className="flex h-40 items-center justify-center text-center">
                     <p className="text-sm font-medium" style={{ color: '#afafaf' }}>
-                      No breakdown available for this session.
+                      No {reviewPanelLabel} available for this session.
                     </p>
                   </div>
                 )}
@@ -1195,11 +1226,17 @@ function EvaluationContent({ evaluation, compact = false }: { evaluation: Sessio
 }
 
 function EvaluationBoard({ evaluation, onExit }: { evaluation: SessionEvaluation; onExit: () => void }) {
+  // Free Talk sessions get a much lighter recap — no skill_radar, no exercises
+  // (none happened), no growth_areas. Just acknowledge the chat and a couple of
+  // soft signals (duration, turn count, a quote or two).
+  const isFreeTalk = evaluation.mode === 'free_talk';
   return (
     <main className="flex flex-1 flex-col bg-[#f9f9f9]" style={{ fontFamily: 'Lexend, sans-serif' }}>
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
         <div className="mx-auto w-full max-w-5xl">
-          <EvaluationContent evaluation={evaluation} />
+          {isFreeTalk
+            ? <FreeTalkRecap evaluation={evaluation} />
+            : <EvaluationContent evaluation={evaluation} />}
         </div>
       </div>
 
@@ -1216,6 +1253,66 @@ function EvaluationBoard({ evaluation, onExit }: { evaluation: SessionEvaluation
         </div>
       </div>
     </main>
+  );
+}
+
+// ── FreeTalkRecap ──────────────────────────────────────────────────────────
+// Lightweight session recap for Free Talk mode. Intentionally NOT a "skill
+// breakdown" — there's nothing to score. Acknowledges the conversation and
+// nudges back toward Guided for users who want targeted practice.
+function FreeTalkRecap({ evaluation }: { evaluation: SessionEvaluation }) {
+  const s = evaluation.stats;
+  const turns = s?.user_turns ?? 0;
+  const minutes = s?.duration_minutes ?? null;
+  const samples = (evaluation.spoken_samples ?? []).slice(0, 3);
+  return (
+    <div className="grid gap-5" style={{ fontFamily: 'Lexend, sans-serif' }}>
+      {/* ── Hero ── */}
+      <section className="rounded-[28px] bg-white p-5 sm:p-6" style={{ border: '2px solid #ebe0ff', boxShadow: '0 4px 0 #ebe0ff' }}>
+        <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#8447ff' }}>
+          Free talk recap
+        </p>
+        <p className="mt-3 text-2xl font-black leading-tight sm:text-3xl" style={{ color: '#1a1c1c' }}>
+          {evaluation.summary && evaluation.summary.trim().length > 0
+            ? evaluation.summary
+            : 'Nice chat — thanks for stopping by.'}
+        </p>
+
+        {/* Lightweight stats — only turns + minutes; no skill scores. */}
+        <div className="mt-5 grid grid-cols-2 gap-2 sm:gap-3">
+          <div className="rounded-2xl px-2 py-3 text-center" style={{ background: '#f4efff', border: '2px solid #ebe0ff' }}>
+            <p className="text-2xl font-black" style={{ color: '#1a1c1c' }}>{turns}</p>
+            <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>Turns</p>
+          </div>
+          <div className="rounded-2xl px-2 py-3 text-center" style={{ background: '#f4efff', border: '2px solid #ebe0ff' }}>
+            <p className="text-2xl font-black" style={{ color: '#1a1c1c' }}>{minutes != null ? String(minutes) : '—'}</p>
+            <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>Minutes</p>
+          </div>
+        </div>
+      </section>
+
+      {/* ── A few things you said — optional, only if consolidation captured any. ── */}
+      {samples.length > 0 && (
+        <section className="rounded-[24px] bg-white p-4 sm:p-5" style={{ border: '2px solid #ebe0ff', boxShadow: '0 4px 0 #ebe0ff' }}>
+          <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Things you said</p>
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            {samples.map((q, i) => (
+              <p key={i} className="rounded-2xl px-3 py-2 text-sm font-medium italic leading-snug" style={{ background: '#f4efff', color: '#3c3c3c' }}>
+                “{q}”
+              </p>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── Nudge back to Guided — soft, not pushy. ── */}
+      <section className="rounded-[24px] p-4 sm:p-5" style={{ background: '#e8f9d3', border: '2px solid #d7ffb8', boxShadow: '0 4px 0 #d7ffb8' }}>
+        <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#2b6c00' }}>Want targeted practice?</p>
+        <p className="mt-1 text-sm font-bold leading-snug" style={{ color: '#1a1c1c' }}>
+          Switch to Guided Learning next time — get missions and a skill breakdown after each session.
+        </p>
+      </section>
+    </div>
   );
 }
 
@@ -1594,18 +1691,93 @@ function DeckCardActions({
   );
 }
 
+// ── ModeSwitch ─────────────────────────────────────────────────────────────────────
+// Pre-session toggle: Guided Learning (deck + missions + skill_radar eval) vs
+// Free Talk (open conversation, no deck, no eval). Sits above the greeting
+// card so the user makes the call BEFORE tapping the mic.
+function ModeSwitch({
+  value,
+  locked = false,
+  onChange,
+}: {
+  value: 'guided_learning' | 'free_talk';
+  locked?: boolean;
+  onChange: (mode: 'guided_learning' | 'free_talk') => void;
+}) {
+  const opts = [
+    {
+      key: 'guided_learning' as const,
+      label: 'Guided Learning',
+      sub: 'Missions + feedback',
+    },
+    {
+      key: 'free_talk' as const,
+      label: 'Free Talk',
+      sub: locked ? 'Unlocks after first chat' : 'Just chat, no pressure',
+    },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="Session mode"
+      className="mb-4 grid grid-cols-2 gap-2 rounded-2xl p-1"
+      style={{
+        background: '#ffffff',
+        border: '2px solid #e2e2e2',
+        boxShadow: '0 3px 0 #e2e2e2',
+        fontFamily: 'Lexend, sans-serif',
+      }}
+    >
+      {opts.map((o) => {
+        const active = o.key === value;
+        const disabled = locked && o.key === 'free_talk';
+        return (
+          <button
+            key={o.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-disabled={disabled}
+            disabled={disabled}
+            onClick={() => {
+              if (!disabled) onChange(o.key);
+            }}
+            className="flex flex-col items-start justify-center rounded-xl px-3 py-2 text-left transition-colors"
+            style={{
+              background: active ? '#dff5c5' : 'transparent',
+              border: active ? '2px solid #87fe45' : '2px solid transparent',
+              color: disabled ? '#a8afa2' : active ? '#1e5000' : '#6f7b64',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.72 : 1,
+            }}
+          >
+            <span className="text-sm font-extrabold leading-tight">{o.label}</span>
+            <span className="text-[11px] font-bold leading-tight opacity-80">{o.sub}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── HomeDashboard ─────────────────────────────────────────────────────────────────────
 function HomeDashboard({
   status,
   greetingSentences,
   onStartSession,
   onOpenHistory,
+  nextSessionMode,
+  modeSelectionLocked,
+  onModeChange,
 }: {
   status: string;
   greetingSentences: string[];
   onStartSession: () => void;
   onOpenHistory: () => void;
   insight: null;
+  nextSessionMode: 'guided_learning' | 'free_talk';
+  modeSelectionLocked: boolean;
+  onModeChange: (mode: 'guided_learning' | 'free_talk') => void;
 }) {
   const [startPressed, setStartPressed] = useState(false);
   const [startHovered, setStartHovered] = useState(false);
@@ -1616,6 +1788,10 @@ function HomeDashboard({
       style={{ fontFamily: 'Lexend, sans-serif' }}
     >
       <div className="w-full max-w-[700px]">
+        {/* Mode switch — picks what the next session will be. Locked once
+            session starts (HomeDashboard only renders pre-session). */}
+        <ModeSwitch value={nextSessionMode} locked={modeSelectionLocked} onChange={onModeChange} />
+
         <div
           className="rounded-3xl flex flex-col relative overflow-hidden p-8 sm:p-10"
           style={{

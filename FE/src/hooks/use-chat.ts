@@ -9,6 +9,7 @@ import {
   type EndReason,
   type ExerciseDeck,
   type SessionEvaluation,
+  type SessionMode,
 } from '@/services/session.service';
 import { billingService } from '@/services/billing.service';
 import { useAuthContext } from '@/contexts/auth-context';
@@ -29,7 +30,8 @@ function stripSttControlTokens(text: string): string {
 
 // Greeting text cache — survives client-side navigation but resets on full page reload.
 // Prevents re-streaming the greeting when the user navigates away and returns.
-let _greetingTextCache: string[] | null = null;
+type GreetingCache = Partial<Record<SessionMode, string[]>>;
+let _greetingTextCache: GreetingCache = {};
 
 // Single-flight lock for the greeting stream. The cache above only guards
 // AFTER a greeting finishes; without this, a route-change/remount while the
@@ -37,7 +39,7 @@ let _greetingTextCache: string[] | null = null;
 // /session/greeting/stream request → duplicate greeting. The first caller owns
 // the stream (audio + cache); any caller that mounts while a stream is in
 // flight subscribes to this promise instead of starting its own request.
-let _greetingInFlight: Promise<string[]> | null = null;
+let _greetingInFlight: { mode: SessionMode; promise: Promise<string[]> } | null = null;
 let _greetingAbort: AbortController | null = null;
 
 // Abort the in-flight greeting (if any) and clear the lock. Call this BEFORE
@@ -76,7 +78,7 @@ export function stopAllAudio(): void {
   // Logout / hard reset: abort any streaming greeting (cancels the SSE fetch)
   // before dropping the cache, so it can't repopulate the cache afterwards.
   resetGreetingFlight();
-  _greetingTextCache = null;
+  _greetingTextCache = {};
 }
 
 export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processing' | 'error';
@@ -100,6 +102,14 @@ export interface UseChatReturn {
   reviewEvaluation: SessionEvaluation | null;
   isOnboardingSession: boolean;
   onboardingState: OnboardingState | null;
+  /** Mode the user has picked on the greeting card for the NEXT session. */
+  nextSessionMode: SessionMode;
+  /** First session must be guided onboarding; mode select unlocks from session 2. */
+  modeSelectionLocked: boolean;
+  /** Update the next-session mode (pre-session toggle). Locked during a live session. */
+  setNextSessionMode: (mode: SessionMode) => void;
+  /** Effective mode of the live session — echoed from BE (onboarding can override). */
+  activeSessionMode: SessionMode | null;
   /** True while the AI closing message is playing (CLOSING_MODE). */
   isEnding: boolean;
   /** The AI closing farewell text, shown on screen while audio plays. */
@@ -268,6 +278,37 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [reviewEvaluation, setReviewEvaluation] = useState<SessionEvaluation | null>(null);
   const [isOnboardingSession, setIsOnboardingSession] = useState(false);
   const [onboardingState, setOnboardingState] = useState<OnboardingState | null>(null);
+  // Mode picked on the greeting card. Locked once the session starts; only
+  // the next session can change it. Persisted in localStorage so the
+  // selection survives reloads.
+  const [nextSessionMode, setNextSessionModeState] = useState<SessionMode>(() => {
+    if (typeof window === 'undefined') return 'guided_learning';
+    const saved = window.localStorage.getItem('speakup_next_session_mode');
+    return saved === 'free_talk' || saved === 'guided_learning' ? saved : 'guided_learning';
+  });
+  const [modeSelectionLocked, setModeSelectionLocked] = useState(true);
+  // The mode actually in effect for the live session (echoed back from BE,
+  // since onboarding can force guided_learning even if user picked free_talk).
+  const [activeSessionMode, setActiveSessionMode] = useState<SessionMode | null>(null);
+
+  // Hydrate the next-session mode from localStorage once on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const saved = window.localStorage.getItem('speakup_next_session_mode');
+    if (saved === 'free_talk' || saved === 'guided_learning') {
+      setNextSessionModeState(saved);
+    }
+  }, []);
+
+  // Public setter — also persists. Refuses to change mode while a session is
+  // already live (sessionId is set) so we don't desync FE state vs BE.
+  const setNextSessionMode = useCallback((mode: SessionMode) => {
+    if (sessionIdRef.current || modeSelectionLocked) return;
+    setNextSessionModeState(mode);
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('speakup_next_session_mode', mode);
+    }
+  }, [modeSelectionLocked]);
   const [isEnding, setIsEnding] = useState(false);
   const [closingText, setClosingText] = useState<string | null>(null);
   // End-of-session evaluation flow: after the closing message we show two
@@ -293,6 +334,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // is owned at module level and outlives a route-change unmount, so its
   // completion callbacks must not setState into an instance that's gone.
   const mountedRef = useRef(true);
+  const lastGreetingModeRef = useRef<SessionMode | null>(null);
   const isEndingRef = useRef(false);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -358,6 +400,20 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         billingService.getUsage().catch(() => null),
       ]);
 
+      const history = typeof quota?.is_first_session === 'boolean'
+        ? null
+        : await sessionService.list(1, 1).catch(() => null);
+      const firstSession = typeof quota?.is_first_session === 'boolean'
+        ? quota.is_first_session
+        : (history?.total ?? 0) === 0;
+      setModeSelectionLocked(firstSession);
+      if (firstSession) {
+        setNextSessionModeState('guided_learning');
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem('speakup_next_session_mode', 'guided_learning');
+        }
+      }
+
       const quotaLimitReached =
         !!quota &&
         !quota.is_unlimited &&
@@ -369,15 +425,22 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         usage.daily_session_limit > -1 &&
         usage.sessions_used >= usage.daily_session_limit;
 
-      if (!quotaLimitReached && !usageLimitReached) return;
+      if (!quotaLimitReached && !usageLimitReached) return quota;
 
       setBillingLimitError(new BillingLimitError(
         'SESSION_LIMIT_REACHED',
         usage?.daily_session_limit ?? quota?.daily_session_limit ?? 10,
         Math.max(usage?.sessions_used ?? 0, quota?.sessions_used ?? 0),
       ));
+      return quota;
     } catch (err) {
       console.error('[session quota]', err);
+      setModeSelectionLocked(true);
+      setNextSessionModeState('guided_learning');
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('speakup_next_session_mode', 'guided_learning');
+      }
+      return null;
     }
   }, [setBillingLimitError]);
 
@@ -552,14 +615,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   }, [appendEmptySegment, updateLastSegment, resolveSegmentIdle]);
 
   // ── Greeting flow ───────────────────────────────────────────────────────────
-  const runGreeting = useCallback(async () => {
+  const runGreeting = useCallback(async (modeOverride?: SessionMode) => {
+    const greetingMode = modeOverride ?? nextSessionMode;
+    lastGreetingModeRef.current = greetingMode;
     setStatus('greeting');
     setGreetingSentences([]);
 
     // Cache filled (possibly between initSession's check and now) → render it.
-    if (_greetingTextCache && _greetingTextCache.length > 0) {
+    const cachedGreeting = _greetingTextCache[greetingMode];
+    if (cachedGreeting && cachedGreeting.length > 0) {
       if (mountedRef.current) {
-        setGreetingSentences(_greetingTextCache);
+        setGreetingSentences(cachedGreeting);
         setStatus('ready');
       }
       return;
@@ -570,9 +636,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // second request. Audio belongs to the instance that owns the stream; the
     // remounted view shows text only (the prior AudioContext was closed on
     // unmount anyway).
-    if (_greetingInFlight) {
+    if (_greetingInFlight?.mode === greetingMode) {
       try {
-        const segments = await _greetingInFlight;
+        const segments = await _greetingInFlight.promise;
         if (mountedRef.current) {
           setGreetingSentences(segments);
           setStatus('ready');
@@ -582,6 +648,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       return;
     }
+    if (_greetingInFlight) resetGreetingFlight();
 
     // We own the stream: reset audio scheduling and start exactly one request.
     nextPlayTimeRef.current = 0;
@@ -591,7 +658,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const signal = _greetingAbort.signal;
 
     const flight = (async (): Promise<string[]> => {
-      const stream = await sessionService.streamGreetingAnon(signal);
+      const stream = await sessionService.streamGreetingAnon(signal, greetingMode);
       for await (const event of stream) {
         if (event.type === 'segment') {
           collectedSegments.push(event.text);
@@ -599,17 +666,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           void processSegmentQueue();
         } else if (event.type === 'done') {
           await waitForSegmentIdle();
-          if (collectedSegments.length > 0) _greetingTextCache = [...collectedSegments];
-          return _greetingTextCache ?? [];
+          if (collectedSegments.length > 0) _greetingTextCache[greetingMode] = [...collectedSegments];
+          return _greetingTextCache[greetingMode] ?? [];
         } else if (event.type === 'error') {
           throw new Error(event.message);
         }
       }
       await waitForSegmentIdle();
-      if (collectedSegments.length > 0) _greetingTextCache = [...collectedSegments];
-      return _greetingTextCache ?? [];
+      if (collectedSegments.length > 0) _greetingTextCache[greetingMode] = [...collectedSegments];
+      return _greetingTextCache[greetingMode] ?? [];
     })();
-    _greetingInFlight = flight;
+    _greetingInFlight = { mode: greetingMode, promise: flight };
 
     try {
       await flight;
@@ -622,12 +689,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
     } finally {
       // Only clear if a reset hasn't already replaced this flight.
-      if (_greetingInFlight === flight) {
+      if (_greetingInFlight?.promise === flight) {
         _greetingInFlight = null;
         _greetingAbort = null;
       }
     }
-  }, [enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
+  }, [enqueueSegment, nextSessionMode, processSegmentQueue, waitForSegmentIdle]);
 
   const initSession = useCallback(async () => {
     setStatus('idle');
@@ -639,15 +706,18 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
-    void checkSessionQuota();
-    if (_greetingTextCache && _greetingTextCache.length > 0) {
-      setGreetingSentences(_greetingTextCache);
+    setActiveSessionMode(null);
+    const quota = await checkSessionQuota();
+    const greetingMode = quota?.is_first_session === false ? nextSessionMode : 'guided_learning';
+    const cachedGreeting = _greetingTextCache[greetingMode];
+    if (cachedGreeting && cachedGreeting.length > 0) {
+      setGreetingSentences(cachedGreeting);
       setStatus('ready');
     } else {
       setGreetingSentences([]);
-      await runGreeting();
+      await runGreeting(greetingMode);
     }
-  }, [runGreeting, checkSessionQuota]);
+  }, [runGreeting, checkSessionQuota, nextSessionMode]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
@@ -664,6 +734,28 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void initSession();
     }
   }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
+
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+    if (!initializedRef.current) return;
+    if (initialSessionId || reviewMode || sessionIdRef.current) return;
+    if (modeSelectionLocked) return;
+    if (lastGreetingModeRef.current === null || lastGreetingModeRef.current === nextSessionMode) return;
+
+    resetGreetingFlight();
+    segmentQueueRef.current = [];
+    nextPlayTimeRef.current = 0;
+    lastScheduleRef.current = Promise.resolve();
+    isPlayingRef.current = false;
+    const ctx = sharedPlaybackCtxRef.current;
+    if (ctx && ctx.state !== 'closed') {
+      ctx.close().catch(() => {});
+    }
+    _sharedAudioCtx = null;
+    sharedPlaybackCtxRef.current = getSharedAudioCtx();
+    setGreetingSentences([]);
+    void runGreeting();
+  }, [authLoading, initialSessionId, isAuthenticated, modeSelectionLocked, nextSessionMode, reviewMode, runGreeting]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -889,6 +981,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const processTurn = useCallback(async (transcript: string) => {
     const trimmedTranscript = transcript.trim();
     let sessionId = sessionIdRef.current;
+    const requestedMode = nextSessionMode;
+    let effectiveSessionMode = activeSessionMode;
     // Capture FIRST-TURN-OF-SESSION before the session-start block runs.
     // We pass the greeting text to the backend only on the turn that actually
     // creates the session — so the AI's previous turn (the greeting it just
@@ -899,12 +993,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
       try {
         if (!sessionStartPromiseRef.current) {
+          // Snapshot the picked mode now — onboarding-first will still force
+          // guided_learning server-side; we honor whatever BE echoes back.
           sessionStartPromiseRef.current = sessionService
-            .start()
-            .then(({ session_id, is_first_session }) => {
+            .start(requestedMode)
+            .then(({ session_id, is_first_session, mode }) => {
+              const resolvedMode = mode ?? requestedMode;
               sessionIdRef.current = session_id;
               setCurrentSessionId(session_id);
               isFirstSessionRef.current = Boolean(is_first_session);
+              effectiveSessionMode = resolvedMode;
+              setActiveSessionMode(resolvedMode);
             })
             .finally(() => { sessionStartPromiseRef.current = null; });
         }
@@ -912,8 +1011,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         sessionId = sessionIdRef.current;
         if (!sessionId) return;
         setIsOnboardingSession(isFirstSessionRef.current);
-        window.setTimeout(() => { void pollDeck(); }, 600);
-        window.setTimeout(() => { void pollDeck(); }, 1800);
+        // Free Talk sessions never get a deck — skip the poll to avoid useless requests.
+        if (effectiveSessionMode !== 'free_talk') {
+          window.setTimeout(() => { void pollDeck(); }, 600);
+          window.setTimeout(() => { void pollDeck(); }, 1800);
+        }
       } catch (err) {
         setMessages((prev) => prev.filter((m) => !m.pending));
         if (err instanceof BillingLimitError) {
@@ -947,14 +1049,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // this turn's LLM call, and (b) persist it as turn 0 in short-term memory.
     // Without this, the AI would not know what question it just asked → would
     // re-ask or respond out of context on the user's first reply.
-    const greetingTextForBE = isFirstTurnOfSession && _greetingTextCache && _greetingTextCache.length > 0
-      ? _greetingTextCache.join(' ').trim()
+    const cachedGreetingForMode = _greetingTextCache[requestedMode];
+    const greetingTextForBE = isFirstTurnOfSession && cachedGreetingForMode && cachedGreetingForMode.length > 0
+      ? cachedGreetingForMode.join(' ').trim()
       : undefined;
     if (isFirstTurnOfSession) {
       // Consume the cache — the greeting has now been bound to this session.
       // Future "New Chat" within the same auth lifetime will re-stream a fresh
       // greeting via runGreeting().
-      _greetingTextCache = null;
+      delete _greetingTextCache[requestedMode];
     }
 
     try {
@@ -1029,7 +1132,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // event was dropped/raced, and catches deck-status transitions
           // (e.g. `completed` after the final card) that the eval event alone
           // doesn't carry.
-          void pollDeck();
+          if (effectiveSessionMode !== 'free_talk') void pollDeck();
           setStatus('ready');
           if (pendingAutoEndRef.current) {
             pendingAutoEndRef.current = false;
@@ -1068,7 +1171,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       setStatus('error');
     }
-  }, [enqueueSegment, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
+  }, [activeSessionMode, enqueueSegment, nextSessionMode, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -1090,6 +1193,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     endedSessionIdRef.current = null;
     setIsEnding(false);
     setClosingText(null);
+    // Clear the just-ended session's mode now that the recap is dismissed —
+    // initSession will reset state but this is the canonical place to drop
+    // any cross-flow leftovers.
+    setActiveSessionMode(null);
     setMessages([]);
     setStatus('ready');
     isEndingRef.current = false;
@@ -1099,7 +1206,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // so initSession starts a new request rather than subscribing to the
     // just-ended session's stream.
     resetGreetingFlight();
-    _greetingTextCache = null;
+    _greetingTextCache = {};
     void initSession();
   }, [initSession]);
 
@@ -1149,6 +1256,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
+    // NOTE: activeSessionMode is intentionally NOT reset here — the closing
+    // overlay and end-choices UI still need to know it (e.g. to show a Free
+    // Talk recap vs a Guided breakdown). It is cleared in exitSession() once
+    // the user dismisses the recap.
     setErrorMessage(null);
     setBillingLimitCode(null);
 
@@ -1547,8 +1658,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
-    if (_greetingTextCache && _greetingTextCache.length > 0) {
-      setGreetingSentences(_greetingTextCache);
+    const cachedGreeting = _greetingTextCache[nextSessionMode];
+    if (cachedGreeting && cachedGreeting.length > 0) {
+      setGreetingSentences(cachedGreeting);
       setStatus('ready');
       return;
     }
@@ -1575,6 +1687,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     reviewEvaluation,
     isOnboardingSession,
     onboardingState,
+    nextSessionMode,
+    modeSelectionLocked,
+    setNextSessionMode,
+    activeSessionMode,
     isEnding,
     closingText,
     endChoices,

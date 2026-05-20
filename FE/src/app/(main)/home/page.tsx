@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { httpClient } from '@/lib/http-client';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
+import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
 import { userService } from '@/services/user.service';
 import { progressService, type DashboardStats } from '@/services/progress.service';
@@ -51,6 +52,8 @@ const HEAT_SHADES = [
   { bg: '#58cc02', fg: '#ffffff' }, // most studied — boldest
 ];
 
+const WEEKDAY_LABELS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+
 function isToday(iso: string): boolean {
   const d = new Date(iso);
   const n = new Date();
@@ -73,7 +76,10 @@ export default function HomePage() {
     async function loadAll() {
       const [p, s, ins, act, arch, due] = await Promise.all([
         userService.me().catch(() => null),
-        progressService.getDashboardStats().catch(() => null),
+        progressService.getDashboardStats().catch((err) => {
+          console.error('Failed to load dashboard progress', err);
+          return null;
+        }),
         sessionService.getInsight().catch(() => null),
         httpClient.get<FlashcardGroup[]>('/api/dictionary/flashcards').catch(() => []),
         httpClient.get<FlashcardGroup[]>('/api/dictionary/flashcards/archived').catch(() => []),
@@ -120,7 +126,11 @@ export default function HomePage() {
   }, [active, archived]);
 
   const firstName = (profile?.name || profile?.email || 'there').split(/[ @]/)[0];
-  const maxWeekly = Math.max(1, ...(stats?.weekly ?? []).map((d) => d.count));
+  const todayIndex = (new Date().getDay() + 6) % 7;
+  const weekly = stats?.weekly?.length
+    ? stats.weekly
+    : WEEKDAY_LABELS.map((day, index) => ({ day, count: 0, is_today: index === todayIndex }));
+  const maxWeekly = Math.max(1, ...weekly.map((d) => d.count));
 
   return (
     <div className="flex w-full h-full">
@@ -131,20 +141,7 @@ export default function HomePage() {
         onSessionClick={(session) => router.push(`/chat?sessionId=${session.id}`)}
       />
       <main className="flex-1 flex flex-col h-full overflow-hidden" style={{ background: '#f9f9f9', fontFamily: 'Lexend, sans-serif' }}>
-        <header className="flex items-center justify-between px-10 h-20 shrink-0" style={{ background: '#f9f9f9' }}>
-          <div>
-            <h1 className="text-2xl font-black" style={{ color: '#2b6c00', letterSpacing: '-0.01em' }}>Focus Dashboard</h1>
-            {profile?.level && (
-              <p className="text-sm font-semibold" style={{ color: '#6f7b64' }}>Fluency Level: {profile.level}</p>
-            )}
-          </div>
-          {!loading && (
-            <div className="flex items-center gap-2 rounded-2xl px-4 py-2" style={{ background: '#fff', border: '2px solid #ffe0b3', boxShadow: '0 3px 0 #ffe0b3' }}>
-              <Flame size={18} fill="#ff9c27" strokeWidth={0} />
-              <span className="text-lg font-black" style={{ color: '#8c5000' }}>{stats?.current_streak ?? 0}</span>
-            </div>
-          )}
-        </header>
+        <PageHeader title="Focus Home" mobileTitle="SpeakUP" hideBack />
 
         {loading ? (
           <div className="flex-1 flex items-center justify-center">
@@ -153,8 +150,11 @@ export default function HomePage() {
             </div>
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto custom-scrollbar px-8 pb-10">
-            <div className="max-w-6xl mx-auto flex flex-col gap-5">
+          <div
+            className="flex-1 overflow-y-auto custom-scrollbar px-4 sm:px-8"
+            style={{ paddingBottom: 'max(40px, calc(96px + env(safe-area-inset-bottom, 0px)))' }}
+          >
+            <div className="max-w-6xl mx-auto flex flex-col gap-5 pt-2">
 
               {/* ── Hero ── */}
               <section className="relative overflow-hidden rounded-3xl p-8" style={{ background: '#2fb8ff', border: '2px solid #1c93d1', boxShadow: '0 5px 0 #1c93d1' }}>
@@ -162,7 +162,7 @@ export default function HomePage() {
                   <h2 className="text-4xl font-black" style={{ color: '#003b56', letterSpacing: '-0.02em' }}>Ready to Speak?</h2>
                   <p className="mt-2 text-base font-semibold" style={{ color: '#004f73' }}>
                     {insight?.next_challenge
-                      ? `${firstName}, hôm nay thử: ${insight.next_challenge}`
+                      ? `${firstName}, today try: ${insight.next_challenge}`
                       : `Start a conversation to practice your ${profile?.level ?? ''} speaking in a natural setting.`}
                   </p>
                   <div className="mt-6 flex flex-wrap gap-3">
@@ -187,20 +187,29 @@ export default function HomePage() {
               {/* ── Weekly progress + Streak ── */}
               <section className="grid grid-cols-1 lg:grid-cols-3 gap-5">
                 <div className="lg:col-span-2 rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
-                  <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Weekly Progress</p>
+                  <div className="flex items-baseline justify-between">
+                    <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Weekly Progress</p>
+                    <p className="text-[11px] font-bold" style={{ color: '#becbb1' }}>Sessions / day</p>
+                  </div>
                   <div className="mt-5 flex items-end justify-between gap-3 h-40">
-                    {(stats?.weekly ?? []).map((d) => (
-                      <div key={d.day} className="flex-1 flex flex-col items-center gap-2">
-                        <div className="w-full rounded-xl flex-1 flex items-end" style={{ background: '#f3f3f3', maxWidth: 44 }}>
-                          <div className="w-full rounded-xl transition-all"
-                            style={{
-                              height: `${Math.max(8, (d.count / maxWeekly) * 100)}%`,
-                              background: d.is_today ? '#58cc02' : d.count > 0 ? '#bdee8c' : '#e2e2e2',
-                            }} />
+                      {weekly.map((d) => (
+                        <div key={d.day} className="flex-1 flex flex-col items-center gap-1.5">
+                          <span
+                            className="text-[11px] font-extrabold tabular-nums"
+                            style={{ color: d.count > 0 ? (d.is_today ? '#2b6c00' : '#3f4a36') : '#d0d0d0' }}
+                          >
+                            {d.count > 0 ? d.count : '·'}
+                          </span>
+                          <div className="w-full rounded-xl flex-1 flex items-end" style={{ background: '#f3f3f3', maxWidth: 44 }}>
+                            <div className="w-full rounded-xl transition-all"
+                              style={{
+                                height: `${Math.max(8, (d.count / maxWeekly) * 100)}%`,
+                                background: d.is_today ? '#58cc02' : d.count > 0 ? '#bdee8c' : '#e2e2e2',
+                              }} />
+                          </div>
+                          <span className="text-[11px] font-extrabold" style={{ color: d.is_today ? '#2b6c00' : '#6f7b64' }}>{d.day}</span>
                         </div>
-                        <span className="text-[11px] font-extrabold" style={{ color: d.is_today ? '#2b6c00' : '#6f7b64' }}>{d.day}</span>
-                      </div>
-                    ))}
+                      ))}
                   </div>
                 </div>
 
@@ -244,12 +253,12 @@ export default function HomePage() {
 
                 <div className="rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
                   <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Mastery Heatmap</p>
-                  <p className="text-xs font-medium mt-1" style={{ color: '#becbb1' }}>Đậm hơn = học nhiều hơn</p>
+                  <p className="text-xs font-medium mt-1" style={{ color: '#becbb1' }}>Brighter = more practiced</p>
                   <div className="mt-4 grid grid-cols-4 gap-2.5">
                     {heat.map((t) => {
                       const shade = HEAT_SHADES[t.level];
                       return (
-                        <div key={t.name} title={`${t.name}${t.raw > 0 ? '' : ' — chưa học'}`}
+                        <div key={t.name} title={`${t.name}${t.raw > 0 ? '' : ' — not studied yet'}`}
                           className="aspect-square rounded-2xl flex flex-col items-center justify-center gap-1 px-1"
                           style={{ background: shade.bg, color: shade.fg, opacity: t.level === 0 ? 0.55 : 1 }}>
                           {t.icon}
@@ -271,10 +280,12 @@ export default function HomePage() {
                   </div>
                   <div>
                     <p className="font-black text-base" style={{ color: '#1a1c1c' }}>
-                      {reviewDueCount > 0 ? `${reviewDueCount} từ cần ôn hôm nay` : 'Không có từ nào cần ôn'}
+                      {reviewDueCount > 0
+                        ? `${reviewDueCount} ${reviewDueCount === 1 ? 'word' : 'words'} to review today`
+                        : 'No words to review'}
                     </p>
                     <p className="text-sm font-medium" style={{ color: '#6f7b64' }}>
-                      {reviewDueCount > 0 ? 'Bấm để ôn lại ngay →' : 'Tra từ mới trong chat để thêm vào đây.'}
+                      {reviewDueCount > 0 ? 'Tap to review now →' : 'Look up new words in chat to add them here.'}
                     </p>
                   </div>
                 </button>
@@ -285,23 +296,25 @@ export default function HomePage() {
                     <div className="mt-3 space-y-2">
                       {insight.struggled_with && (
                         <p className="text-sm font-semibold" style={{ color: '#1a1c1c' }}>
-                          <span style={{ color: '#ba1a1a' }}>Gặp khó:</span> {insight.struggled_with}
+                          <span style={{ color: '#ba1a1a' }}>Struggled with:</span> {insight.struggled_with}
                         </p>
                       )}
                       {insight.next_challenge && (
                         <p className="text-sm font-semibold" style={{ color: '#1a1c1c' }}>
-                          <span style={{ color: '#2b6c00' }}>Thử thách kế:</span> {insight.next_challenge}
+                          <span style={{ color: '#2b6c00' }}>Next challenge:</span> {insight.next_challenge}
                         </p>
                       )}
                       {typeof insight.last_session_days_ago === 'number' && (
                         <p className="text-xs font-medium" style={{ color: '#6f7b64' }}>
-                          Buổi học gần nhất: {insight.last_session_days_ago === 0 ? 'hôm nay' : `${insight.last_session_days_ago} ngày trước`}
+                          Last session: {insight.last_session_days_ago === 0
+                            ? 'today'
+                            : `${insight.last_session_days_ago} day${insight.last_session_days_ago === 1 ? '' : 's'} ago`}
                         </p>
                       )}
                     </div>
                   ) : (
                     <p className="mt-3 text-sm font-medium" style={{ color: '#6f7b64' }}>
-                      Hoàn thành một buổi nói chuyện để nhận nhận xét từ AI coach.
+                      Complete a speaking session to get feedback from your AI coach.
                     </p>
                   )}
                 </div>

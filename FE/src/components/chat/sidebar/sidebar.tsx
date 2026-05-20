@@ -162,7 +162,9 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
       {/* ═══════════════════════════════════════════════════════════
           MOBILE BOTTOM NAV — floating pill, design-system style
           Shown on mobile only (lg:hidden)
-          Sign-out lives in Profile page on mobile, not here.
+          5 tabs: Home, Learn, Cards, Premium, Profile.
+          Settings lives inside the Profile page on mobile.
+          Sign-out also lives in Profile, not here.
           ═══════════════════════════════════════════════════════════ */}
       <nav
         className="lg:hidden fixed bottom-0 left-0 right-0 z-50"
@@ -178,6 +180,17 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
             fontFamily: 'Lexend, sans-serif',
           }}
         >
+          {/* Home — dashboard */}
+          <Link href="/home">
+            <MobileTab
+              label="Home"
+              icon={<Home size={20} strokeWidth={2.5} />}
+              iconBg="#e8f9d3"
+              iconColor="#2b6c00"
+              active={isHome}
+            />
+          </Link>
+
           {/* Learn — primary tab with mic emphasis */}
           <MobileTab
             label="Learn"
@@ -218,17 +231,6 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
               iconBg="#d7ffb8"
               iconColor="#2b6c00"
               active={isProfile}
-            />
-          </Link>
-
-          {/* Settings */}
-          <Link href="/settings">
-            <MobileTab
-              label="Settings"
-              icon={<Settings2 size={20} strokeWidth={2.5} />}
-              iconBg="#ffe9cc"
-              iconColor="#683a00"
-              active={isSettings}
             />
           </Link>
         </div>
@@ -371,13 +373,22 @@ function PremiumButton() {
 }
 
 function SessionItem({ session, active, onClick }: { session: SessionSummary; active: boolean; onClick?: () => void }) {
+  const isFreeTalk = session.mode === 'free_talk';
   return (
     <button
       onClick={onClick}
-      className="flex flex-col w-full px-4 py-2 rounded-xl text-sm text-left transition-colors gap-0.5"
+      className="flex items-center w-full px-4 py-2 rounded-xl text-sm text-left transition-colors gap-2"
       style={active ? { background: '#f3f3f3', color: '#2b6c00', fontWeight: 700 } : { color: '#6f7b64', fontWeight: 500 }}
     >
-      <span className="truncate leading-snug">{session.title ?? 'New conversation'}</span>
+      <span className="truncate leading-snug flex-1 min-w-0">{session.title ?? 'New conversation'}</span>
+      {isFreeTalk && (
+        <span
+          className="shrink-0 text-[9px] font-extrabold uppercase tracking-wide rounded-md px-1.5 py-0.5"
+          style={{ background: '#f4efff', color: '#8447ff', border: '1px solid #ebe0ff' }}
+        >
+          Free
+        </span>
+      )}
     </button>
   );
 }

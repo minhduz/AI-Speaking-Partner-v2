@@ -100,6 +100,14 @@ export class TurnService {
     return session?.totalTokens ?? 0;
   }
 
+  async getSessionMode(sessionId: string, userId: string): Promise<'guided_learning' | 'free_talk'> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, userId },
+      select: ['mode'],
+    });
+    return session?.mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+  }
+
   /**
    * Returns true when the given session is the user's first-ever speaking session.
    * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs

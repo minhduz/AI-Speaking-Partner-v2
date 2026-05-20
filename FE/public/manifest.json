@@ -1,6 +1,6 @@
 {
-  "name": "SpeakUp – AI Speaking Partner",
-  "short_name": "SpeakUp",
+  "name": "SpeakUP – AI Speaking Partner",
+  "short_name": "SpeakUP",
   "description": "Your personal AI language coach for real speaking practice, instant feedback, and steady progress.",
   "start_url": "/chat",
   "scope": "/",
@@ -24,6 +24,13 @@
     }
   ],
   "shortcuts": [
+    {
+      "name": "Focus Dashboard",
+      "short_name": "Home",
+      "description": "See today's progress, streak and review nudges",
+      "url": "/home",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
     {
       "name": "Start Practicing",
       "short_name": "Practice",

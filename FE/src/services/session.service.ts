@@ -64,9 +64,13 @@ export interface SessionInsight {
   last_session_days_ago?: number | null;
 }
 
+export type SessionMode = 'guided_learning' | 'free_talk';
+
 export interface StartSessionResponse {
   session_id: string;
   is_first_session: boolean;
+  /** Backend echoes the effective mode (may differ from requested if onboarding-forced). */
+  mode: SessionMode;
 }
 
 export interface SessionQuota {
@@ -75,6 +79,8 @@ export interface SessionQuota {
   session_token_limit: number;
   sessions_used: number;
   can_start: boolean;
+  /** True until the user completes/starts their first guided onboarding session. */
+  is_first_session?: boolean;
 }
 
 export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
@@ -173,6 +179,8 @@ export interface SessionEvaluationDrill {
 
 export interface SessionEvaluation {
   status: 'ready';
+  /** Branches the FE: 'free_talk' → lightweight recap, 'guided_learning' → full board. */
+  mode?: SessionMode;
   quality?: 'basic' | 'rich';
   session_id: string;
   generated_at: string;
@@ -246,11 +254,12 @@ export const sessionService = {
     return data;
   },
 
-  start: async (): Promise<StartSessionResponse> => {
-    log('POST /session/start');
+  start: async (mode: SessionMode = 'guided_learning'): Promise<StartSessionResponse> => {
+    log('POST /session/start', { mode });
     const res = await fetchWithAuth(`${API_BASE}/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -272,10 +281,14 @@ export const sessionService = {
     return data as OnboardingState;
   },
 
-  streamGreetingAnon: async (signal?: AbortSignal): Promise<AsyncGenerator<GreetingEvent>> => {
+  streamGreetingAnon: async (
+    signal?: AbortSignal,
+    mode: SessionMode = 'guided_learning',
+  ): Promise<AsyncGenerator<GreetingEvent>> => {
     const dt = encodeURIComponent(new Date().toISOString());
-    log('GET /session/greeting/stream');
-    const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}`, {
+    const modeParam = mode === 'free_talk' ? '&mode=free_talk' : '';
+    log('GET /session/greeting/stream', { mode });
+    const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}${modeParam}`, {
       headers: authHeaders(),
       signal,
     });

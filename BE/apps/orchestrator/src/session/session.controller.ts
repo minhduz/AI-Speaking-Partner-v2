@@ -13,6 +13,10 @@ class EndSessionDto {
   reason?: 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
 }
 class TodayChallengeDto { @IsString() challenge: string; }
+class StartSessionDto {
+  // Optional — defaults to 'guided_learning' on the server side if missing.
+  mode?: 'guided_learning' | 'free_talk';
+}
 
 function formatDatetimeInTimezone(date: Date, timezone: string): string {
   try {
@@ -41,6 +45,70 @@ function resolveClientDatetime(queryDatetime: string | undefined, timezone: stri
     } catch { /* fall through */ }
   }
   return formatDatetimeInTimezone(new Date(), timezone);
+}
+
+// ── Free Talk greeting context helpers ─────────────────────────────────────
+function getLocalHour(timezone: string | undefined): number | null {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone ?? 'UTC',
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(new Date()).find((p) => p.type === 'hour')?.value;
+    if (!part) return null;
+    const n = Number.parseInt(part, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function partOfDayFromHour(hour: number | null): string | null {
+  if (hour == null) return null;
+  if (hour < 5)  return 'late night';
+  if (hour < 12) return 'morning';
+  if (hour < 17) return 'afternoon';
+  if (hour < 22) return 'evening';
+  return 'late night';
+}
+
+function formatDaysAgoLabel(daysAgo: number | null): string | null {
+  if (daysAgo == null) return null;
+  if (daysAgo === 0) return 'earlier today';
+  return `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
+}
+
+interface FreeTalkContext {
+  partOfDay: string | null;
+  recentTopic: string | null;
+  daysAgoLabel: string | null;
+  continuityLine: string;
+  absenceLine: string;
+}
+
+// Builds the variable parts of the Free Talk greeting prompt. Kept as a pure
+// helper so the streamGreetingForUser body stays readable and the layered
+// fallback logic (continuity → time-of-day → default) is testable in isolation.
+function buildFreeTalkContext(
+  user: { timezone?: string } | null | undefined,
+  insight: { last_topic?: unknown } | null | undefined,
+  daysAgo: number | null,
+  isAbsent5Plus: boolean,
+): FreeTalkContext {
+  const partOfDay = partOfDayFromHour(getLocalHour(user?.timezone));
+  const rawTopic = typeof insight?.last_topic === 'string' ? insight.last_topic.trim() : '';
+  const recentTopic = !isAbsent5Plus && rawTopic.length > 0 ? rawTopic : null;
+  const daysAgoLabel = formatDaysAgoLabel(daysAgo);
+
+  const continuityLine = recentTopic && daysAgo !== null && daysAgo <= 3 && daysAgoLabel
+    ? `They were talking about "${recentTopic}" ${daysAgoLabel}. You MAY reference it lightly — do not interrogate.`
+    : '';
+
+  const absenceLine = isAbsent5Plus && daysAgo !== null
+    ? `They have not spoken in ${daysAgo} days — keep it gentle, no enthusiasm, no guilt.`
+    : '';
+
+  return { partOfDay, recentTopic, daysAgoLabel, continuityLine, absenceLine };
 }
 
 // Matches one complete sentence ending in .!? followed by whitespace or EOS.
@@ -89,9 +157,13 @@ export class SessionController {
     private cfg: ConfigService,
   ) {}
 
-  // POST /session/start → { session_id }
+  // POST /session/start → { session_id, is_first_session }
+  // Body: { mode?: 'guided_learning' | 'free_talk' } — defaults to 'guided_learning'.
   @Post('start')
-  start(@Req() req) { return this.sessionService.start(req.user.id); }
+  start(@Req() req, @Body() body: StartSessionDto) {
+    const mode = body?.mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+    return this.sessionService.start(req.user.id, mode);
+  }
 
   // GET /session/quota: current daily session allowance without creating a session
   @Get('quota')
@@ -104,9 +176,16 @@ export class SessionController {
   }
 
   // GET /session/greeting/stream — pre-session greeting (no session ID needed)
+  // ?mode=free_talk swaps the prompt to a casual "friend" tone (no missions).
   @Get('greeting/stream')
-  greetingStreamAnon(@Req() req, @Res() res: Response, @Query('datetime') dt?: string) {
-    return this.streamGreetingForUser(req.user.id, res, dt);
+  greetingStreamAnon(
+    @Req() req,
+    @Res() res: Response,
+    @Query('datetime') dt?: string,
+    @Query('mode') mode?: string,
+  ) {
+    const normalizedMode = mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+    return this.streamGreetingForUser(req.user.id, res, dt, undefined, normalizedMode);
   }
 
   // GET /session/insight — proxies to memory-service for the FE mission card.
@@ -231,6 +310,7 @@ export class SessionController {
     res: Response,
     clientDatetime?: string,
     sessionId?: string,
+    mode: 'guided_learning' | 'free_talk' = 'guided_learning',
   ): Promise<void> {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -266,7 +346,11 @@ export class SessionController {
         : greetingContext;
 
       const hasInsight = insight?.has_insight === true;
+      // First-session users are force-onboarded server-side (start() ignores
+      // free_talk on first session). For a returning user picking Free Talk we
+      // skip the onboarding prompt entirely and use the free-talk greeting.
       const shouldUseOnboarding = isOnboarding && !hasInsight;
+      const isFreeTalk = mode === 'free_talk' && !shouldUseOnboarding;
       const activeMissionCandidates = [
         todayChallenge,
         typeof insight?.active_mission === 'string' ? insight.active_mission.trim() : '',
@@ -282,7 +366,34 @@ export class SessionController {
 
       let systemPrompt: string;
 
-      if (shouldUseOnboarding) {
+      if (isFreeTalk) {
+        const { partOfDay, recentTopic, daysAgoLabel, continuityLine, absenceLine } =
+          buildFreeTalkContext(user, insight, daysAgo, isAbsent5Plus);
+        systemPrompt = [
+          `You are a friendly AI conversation partner greeting someone for a Free Talk session.`,
+          `Speak ONLY in ${targetLang}. Never switch to the user's native language.`,
+          '',
+          user?.name ? `Name to use: ${user.name}` : '',
+          partOfDay ? `Local time of day: ${partOfDay}.` : '',
+          continuityLine,
+          absenceLine,
+          '',
+          `FREE TALK GREETING STYLE:`,
+          `1. Output EXACTLY ONE short sentence (≤ 14 words). No preamble, no second sentence.`,
+          `2. Tone: friend, not teacher. Casual, curious, and relaxed.`,
+          `3. Pick ONE natural opener (do NOT label which):`,
+          recentTopic && daysAgoLabel
+            ? `   • Reference the recent topic lightly ("How did the ${recentTopic} go?" / "Still thinking about ${recentTopic}?").`
+            : '',
+          partOfDay
+            ? `   • Soft hello tied to time of day ("Evening, ${user?.name ?? 'friend'} — long day?").`
+            : '',
+          `   • Simple open question ("What's on your mind?" / "Anything you want to chat about?").`,
+          `4. Do NOT mention missions, exercises, challenges, practice, lessons, breakdowns, or progress.`,
+          `5. Do NOT offer a menu of topics. Let the user lead.`,
+          `6. No emojis. No translation. No native-language fallback.`,
+        ].filter(Boolean).join('\n');
+      } else if (shouldUseOnboarding) {
         // Onboarding greeting — first speaking session ever. Conversational,
         // not survey-style. Discovers motivation/style/confidence via natural
         // dialogue; data is silently extracted by the turn-agent in parallel.
@@ -368,6 +479,7 @@ export class SessionController {
       console.log(`${logPrefix}   insight      : has=${hasInsight} daysAgo=${daysAgo ?? 'n/a'} absent5+=${isAbsent5Plus}`);
       console.log(`${logPrefix}   activeMission: ${activeMission ?? '(none)'}`);
       console.log(`${logPrefix}   onboarding   : raw=${isOnboarding} effective=${shouldUseOnboarding}`);
+      console.log(`${logPrefix}   mode         : requested=${mode} freeTalk=${isFreeTalk}`);
       console.log(`${logPrefix}   system prompt:\n${systemPrompt.split('\n').map(l => `    | ${l}`).join('\n')}`);
       console.log(`${logPrefix} ────────────────────────────────────────────────`);
 

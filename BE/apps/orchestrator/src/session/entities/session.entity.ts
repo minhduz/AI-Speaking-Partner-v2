@@ -9,7 +9,13 @@ import { User } from '../../user/entities/user.entity';
  *   abandoned – user disappeared / idle-timeout / tab close (no closing)
  *
  * end_reason values: user_clicked | voice_intent | idle_timeout | tab_close | orphan
+ *
+ * mode values:
+ *   guided_learning – default. Deck + mission + skill_radar evaluation.
+ *   free_talk       – open conversation only. No deck generation, no eval board.
  */
+export type SessionMode = 'guided_learning' | 'free_talk';
+
 @Entity({ schema: 'speaking_app', name: 'sessions' })
 export class Session {
   @PrimaryGeneratedColumn('uuid') id: string;
@@ -17,6 +23,7 @@ export class Session {
   @ManyToOne(() => User) @JoinColumn({ name: 'user_id' }) user: User;
   @Column({ nullable: true }) title: string;
   @Column({ default: 'active' }) status: string;
+  @Column({ default: 'guided_learning' }) mode: SessionMode;
   @Column({ name: 'total_tokens', default: 0 }) totalTokens: number;
   @Column({ name: 'avg_pronunciation_score', type: 'float', default: 0 }) avgPronunciationScore: number;
   @Column({ name: 'is_archived', default: false }) isArchived: boolean;

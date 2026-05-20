@@ -3,6 +3,8 @@ export interface SessionSummary {
   title: string | null;
   status: string;
   startedAt: string;
+  /** 'guided_learning' (deck + eval) or 'free_talk' (open conversation). */
+  mode?: 'guided_learning' | 'free_talk';
 }
 
 export interface Session {

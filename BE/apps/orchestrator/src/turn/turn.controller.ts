@@ -92,7 +92,7 @@ export class TurnController {
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -103,6 +103,7 @@ export class TurnController {
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
         this.turnService.getSessionInsight(req.user.id),
+        this.turnService.getSessionMode(sessionId, req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -149,6 +150,7 @@ export class TurnController {
             'X-User-Timezone':      user?.timezone ?? 'UTC',
             'X-Current-Datetime':   currentDatetime,
             'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Session-Mode':       sessionMode,
             'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
             // Compact JSON of the consolidated insight from last session.
             // Turn-agent uses this to drive practice lead-in starting turn 3+.
@@ -230,7 +232,7 @@ export class TurnController {
 
     try {
       // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight] = await Promise.all([
+      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
         this.http.axiosRef
@@ -241,6 +243,7 @@ export class TurnController {
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
         this.turnService.getSessionInsight(req.user.id),
+        this.turnService.getSessionMode(sessionId, req.user.id),
       ]);
 
       const limits = limitsRes.data;
@@ -291,6 +294,7 @@ export class TurnController {
             'X-User-Timezone':      user?.timezone ?? 'UTC',
             'X-Current-Datetime':   currentDatetime,
             'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Session-Mode':       sessionMode,
             'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
             // Compact JSON of the consolidated insight from last session.
             // Turn-agent uses this to drive practice lead-in starting turn 3+.

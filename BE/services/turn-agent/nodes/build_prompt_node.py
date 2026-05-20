@@ -329,6 +329,38 @@ SESSION MODE: REFLECTION (turns 9+)
 
 }
 
+def _build_free_talk_mode_block(state: dict) -> str:
+    target_lang = state.get("target_language", "English") or "English"
+    learning_goal = (state.get("learning_goal") or "").strip()
+    goal_line = (
+        f"- Optional learner context: their broad goal is \"{learning_goal}\". Use it for examples/advice only when relevant; never force the topic back to it.\n"
+        if learning_goal else
+        "- Optional learner context: no specific goal is required for this turn; let the user lead.\n"
+    )
+    return (
+        "\n\nSESSION MODE: FREE_TALK\n"
+        "- This is open conversation, not a guided lesson, mission, challenge, drill, or evaluation.\n"
+        "- Be a relaxed, slightly playful friend who can chat, share perspective, explain things, brainstorm, or give advice when useful.\n"
+        "- Let the user talk about anything. Follow their topic and emotional tone instead of redirecting to practice.\n"
+        "- LATEST MESSAGE WINS: if the user changes topic, follow the new topic immediately. Do not drag the conversation back to the previous greeting or previous question.\n"
+        f"{goal_line}"
+        "- ANSWER-FIRST RULE: if the user asks for advice, an explanation, an opinion, or help, give a useful answer directly before any follow-up.\n"
+        "- ENTERTAINMENT-FIRST RULE: if the user asks for a story, joke, roleplay, silly example, song lyrics, or a fun distraction, create it immediately.\n"
+        "- If the user asks you to sing, do not say you cannot sing like an AI disclaimer. Write a short playful verse/chant they can imagine aloud, then keep chatting.\n"
+        "- If the user asks for a story, tell a short entertaining story right away. Do not ask what kind of story unless the request is impossible to interpret.\n"
+        "- Do NOT bounce advice requests back with therapy-style questions like \"What usually helps you?\" unless you truly need missing facts.\n"
+        "- If the user says they are tired, stressed, bored, or annoyed, respond like a friend: validate briefly, then offer 2-4 concrete, low-effort ideas.\n"
+        "- If the user says they are bored, do not ask what helps them relax. Start something fun: a tiny story, game, weird scenario, playful take, or casual banter.\n"
+        "- Match the user's casual register. If they say \"bro\", you may use \"bro\" lightly, but do not overdo it or sound fake.\n"
+        "- It's okay to be a little cheeky and entertaining, as long as you stay helpful and kind.\n"
+        "- Corrections are light and optional: only correct if the user asks, the mistake blocks meaning, or you can do it in one tiny natural note.\n"
+        "- Do NOT push for longer answers, create productive discomfort, or steer back to active missions.\n"
+        "- Avoid stale lines like \"we were just talking about...\" unless the user explicitly asks to continue the old topic.\n"
+        "- Follow-up questions are optional. Ask at most ONE, and only after you have actually responded to what they asked.\n"
+        f"- Speak only in {target_lang} in user-visible text unless the user explicitly asks for translation or a word meaning.\n"
+        "- No EVAL block. No exercise/card/deck language.\n"
+    )
+
 
 def _build_active_mission_block(chunks: list[dict]) -> str | None:
     """
@@ -695,6 +727,8 @@ async def build_prompt_node(state: dict) -> dict:
     transcript = state.get("transcript", "")
     turn_index = int(state.get("turn_index", 1) or 1)
     is_onboarding = bool(state.get("is_onboarding", False))
+    session_mode = (state.get("session_mode") or "guided_learning").strip()
+    is_free_talk_session = session_mode == "free_talk" and not is_onboarding
     active_mission = (state.get("active_mission") or "").strip()
 
     # During the user's first speaking session ONLY, run intent extraction
@@ -742,11 +776,11 @@ async def build_prompt_node(state: dict) -> dict:
 
         # Suppress mission block whenever the deck owns the next AI turn — otherwise
         # the "Stay on this mission" instruction overrides deck-specific instructions.
-        _suppress_mission_block = not is_onboarding and (
+        _suppress_mission_block = is_free_talk_session or (not is_onboarding and (
             deck_active                                                         # card in_progress
             or (deck_status == "not_started" and turn_index >= 3)              # offer pending
             or (deck_status in ("completed", "ended_early") and not transcript) # deck ending
-        )
+        ))
         # Promote SESSION_INSIGHT only when no external active mission exists.
         mission_block = None if active_mission else _build_active_mission_block(data.get("chunks_debug", []))
         if mission_block and not _suppress_mission_block:
@@ -821,7 +855,23 @@ async def build_prompt_node(state: dict) -> dict:
                 len(learned_block), deck_status,
             )
         else:
-            if deck_active:
+            if is_free_talk_session:
+                system_prompt += _build_free_talk_mode_block(state)
+                insight = state.get("session_insight")
+                if isinstance(insight, dict) and insight.get("has_insight"):
+                    soft_context = insight.get("struggled_with") or insight.get("next_challenge")
+                    if soft_context:
+                        system_prompt += (
+                            "\nFREE TALK MEMORY NOTE:\n"
+                            f"- The user has previously worked on: {str(soft_context).strip()}.\n"
+                            "- Treat this as optional background only; do not turn it into a task.\n"
+                        )
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  FREE_TALK  insight=%s",
+                    chunks_used, tokens,
+                    "yes" if isinstance(state.get("session_insight"), dict) and state.get("session_insight", {}).get("has_insight") else "no",
+                )
+            elif deck_active:
                 # User accepted and started the deck — strict card mode
                 system_prompt += _build_card_context_block(state)
                 log.info(
@@ -1021,7 +1071,9 @@ async def build_prompt_node(state: dict) -> dict:
             elif deck_status == "not_started" and turn_index >= 3:
                 fallback += _build_card_soft_offer_block(state)
         else:
-            if deck_active:
+            if is_free_talk_session:
+                fallback += _build_free_talk_mode_block(state)
+            elif deck_active:
                 fallback += _build_card_context_block(state)
             elif deck_status == "not_started" and turn_index >= 3:
                 fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]

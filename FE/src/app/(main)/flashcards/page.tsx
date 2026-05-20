@@ -161,15 +161,15 @@ export default function FlashcardsPage() {
             <div className="flex items-center gap-3">
               <span style={{ fontSize: 22 }}>🔔</span>
               <p className="text-sm font-bold" style={{ color: '#683a00' }}>
-                Bạn có <strong>{reviewDueWords.length}</strong> từ cần ôn lại hôm nay — muốn ôn không?
+                You have <strong>{reviewDueWords.length}</strong> {reviewDueWords.length === 1 ? 'word' : 'words'} to review today — ready to start?
               </p>
             </div>
             <div className="flex gap-2 shrink-0">
               <button onClick={() => setView('review')} className="px-4 py-2 rounded-xl text-sm font-extrabold transition active:translate-y-0.5" style={{ background: '#ffd900', color: '#683a00', boxShadow: '0 2px 0 #c9a800' }}>
-                Ôn ngay
+                Review now
               </button>
               <button onClick={() => setShowReviewBanner(false)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ color: '#6f7b64' }}>
-                Bỏ qua
+                Skip
               </button>
             </div>
           </div>

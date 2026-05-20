@@ -1,10 +1,11 @@
-const CACHE_NAME = 'speakup-v3';
+const CACHE_NAME = 'speakup-v5';
 
 // App shell — pre-cached on install
 const SHELL_ASSETS = [
   '/',
   '/login',
   '/register',
+  '/home',
   '/chat',
   '/flashcards',
   '/profile',

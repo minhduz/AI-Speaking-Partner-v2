@@ -5,6 +5,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Session } from './entities/session.entity';
+import { Turn } from '../turn/entities/turn.entity';
 import { UserService } from '../user/user.service';
 
 /**
@@ -28,6 +29,7 @@ function mapSessionReasonToDeckEnd(
 export class SessionService {
   constructor(
     @InjectRepository(Session) private repo: Repository<Session>,
+    @InjectRepository(Turn) private turnRepo: Repository<Turn>,
     private http: HttpService,
     private cfg: ConfigService,
     private userService: UserService,
@@ -74,6 +76,7 @@ export class SessionService {
       session_token_limit: limits.session_token_limit,
       sessions_used: sessionsUsed,
       can_start: limits.is_unlimited || sessionsUsed < limits.daily_session_limit,
+      is_first_session: await this.isFirstSession(userId),
     };
   }
 
@@ -117,7 +120,7 @@ export class SessionService {
     return earlier === 0;
   }
 
-  async start(userId: string) {
+  async start(userId: string, mode: 'guided_learning' | 'free_talk' = 'guided_learning') {
     const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
     const quota = await this.getQuota(userId);
 
@@ -153,9 +156,6 @@ export class SessionService {
       }
     }
 
-    const session = this.repo.create({ userId, status: 'active' });
-    await this.repo.save(session);
-
     // First-session detection: preserve refresh/orphan behavior. If the only
     // prior row was an active orphan and no session has ever ended, this is still
     // the first real speaking session.
@@ -166,15 +166,31 @@ export class SessionService {
         && (onlySessionBeforeStart?.totalTokens ?? 0) === 0
       );
 
+    // Onboarding gate: the very first session MUST run guided onboarding so we
+    // can build a user profile (level, weak areas, preferred topics). Free Talk
+    // before any guided exposure leaves the AI guessing tone/level — bad UX.
+    const effectiveMode: 'guided_learning' | 'free_talk' =
+      isFirstSession ? 'guided_learning' : mode;
+    if (isFirstSession && mode === 'free_talk') {
+      console.log(`[Session] user=${userId} requested free_talk on first session → forcing guided_learning for onboarding`);
+    }
+
+    const session = this.repo.create({ userId, status: 'active', mode: effectiveMode });
+    await this.repo.save(session);
+
     // Fire-and-forget: record session start in billing analytics
     firstValueFrom(
       this.http.post(`${billingUrl}/internal/usage/increment-session`, { user_id: userId }),
     ).catch((err) => console.error('[Session] failed to increment session count in billing:', err?.message));
 
-    // Fire-and-forget deck generation after session is created
-    this.generateDeckAfterStart(userId, session.id, isFirstSession).catch(console.error);
+    // Deck generation only applies to guided learning. Free Talk skips entirely.
+    if (effectiveMode === 'guided_learning') {
+      this.generateDeckAfterStart(userId, session.id, isFirstSession).catch(console.error);
+    } else {
+      console.log(`[Session] mode=free_talk session=${session.id} → skipping deck generation`);
+    }
 
-    return { session_id: session.id, is_first_session: isFirstSession };
+    return { session_id: session.id, is_first_session: isFirstSession, mode: effectiveMode };
   }
 
   /**
@@ -240,15 +256,53 @@ export class SessionService {
     // Fetch context in parallel — saves 2-4s vs sequential calls. The closing
     // is now short (detail lives in the evaluation board), so we no longer pull
     // the recent-context snippet here.
-    const [insight, deck, user] = await Promise.all([
+    const [insight, deck, user, sessionRow] = await Promise.all([
       this.getSessionInsight(userId),
       this.getDeck(sessionId).catch(() => null),
       this.userService.findById(userId).catch(() => null),
+      this.repo.findOne({ where: { id: sessionId }, select: ['id', 'mode'] }).catch(() => null),
     ]);
 
     const struggled  = insight?.struggled_with ?? null;
     const firstName  = (user?.name ?? '').trim().split(/\s+/)[0] || '';
     const targetLang = user?.targetLanguage ?? 'English';
+    const sessionMode = sessionRow?.mode ?? 'guided_learning';
+
+    // Free Talk closing — no deck, no evaluation board. Just a warm sign-off.
+    // Different prompt entirely: don't point to a non-existent breakdown.
+    if (sessionMode === 'free_talk') {
+      const freeTalkPrompt = [
+        `You are an AI speaking partner. The user just ended a Free Talk session.`,
+        `Speak ONLY in ${targetLang}. Never switch to the user's native language.`,
+        `Write a VERY SHORT sign-off: ONE sentence, warm and casual — like a friend ending a call.`,
+        ``,
+        `Rules:`,
+        `1. NO emojis. NO "great session" / "great job" — this wasn't a lesson.`,
+        `2. NO mention of breakdowns, evaluations, exercises, or "let's practice X next time".`,
+        `3. Sound natural, not coachy. e.g. "Nice chatting${firstName ? ', ' + firstName : ''}. Talk soon."`,
+        `4. HARD LIMIT: 1 sentence, ≤ 14 words.`,
+      ].filter(Boolean).join('\n');
+
+      try {
+        const llmRes = await this.http.axiosRef.post(`${this.cfg.get('LLM_GATEWAY_URL')}/complete`, {
+          system: freeTalkPrompt,
+          messages: [{ role: 'user', content: 'Generate the closing message now.' }],
+        });
+        const text: string = llmRes.data?.response_text?.trim() ?? '';
+        if (!text) return { text: '', audio_b64: null };
+        let audio_b64: string | null = null;
+        try {
+          const ttsRes = await this.http.axiosRef.post(`${this.cfg.get('SPEECH_SERVICE_URL')}/tts`, { text });
+          audio_b64 = ttsRes.data?.audio_b64 ?? null;
+        } catch (ttsErr: any) {
+          console.error('[Session][closing][free_talk] TTS failed:', ttsErr?.message);
+        }
+        return { text, audio_b64 };
+      } catch (err: any) {
+        console.error('[Session][closing][free_talk] LLM failed:', err?.message);
+        return { text: '', audio_b64: null };
+      }
+    }
 
     // Derive deck completion shape — undefined if no deck this session.
     const cards   = Array.isArray(deck?.cards) ? deck.cards : [];
@@ -760,12 +814,53 @@ export class SessionService {
     try {
       const session = await this.repo.findOne({
         where: { id: sessionId, userId },
-        select: ['id', 'breakdown'],
+        select: ['id', 'breakdown', 'mode', 'startedAt', 'endedAt'],
       });
-      if (!session || !session.breakdown) {
+      if (!session) return { status: 'pending', session_id: sessionId };
+      // Free Talk sessions never get a full breakdown — surface a lightweight
+      // "free_talk" marker so the FE can render its Free Talk recap card
+      // instead of polling forever for a skill_radar that will never arrive.
+      if (session.mode === 'free_talk') {
+        const turns = await this.turnRepo.find({
+          where: { sessionId, userId },
+          order: { turnIndex: 'ASC' },
+          select: ['id', 'turnIndex', 'data', 'createdAt'],
+        });
+        const fallbackEnd = turns.at(-1)?.createdAt ?? session.endedAt ?? new Date();
+        const durationMs = session.startedAt
+          ? Math.max(0, fallbackEnd.getTime() - session.startedAt.getTime())
+          : 0;
+        const minutes = durationMs > 0 ? Math.max(1, Math.round(durationMs / 60000)) : null;
+        const spokenSamples = turns
+          .map((t) => (typeof t.data?.transcript === 'string' ? t.data.transcript.trim() : ''))
+          .filter(Boolean)
+          .slice(0, 3);
+        return {
+          status: 'ready',
+          mode: 'free_talk',
+          session_id: sessionId,
+          generated_at: new Date().toISOString(),
+          summary: 'You kept it casual and open-ended.',
+          highlights: [],
+          growth_areas: [],
+          next_focus: '',
+          energy: 'free_talk',
+          cards: [],
+          spoken_samples: spokenSamples,
+          stats: {
+            user_turns: turns.length,
+            cards_completed: 0,
+            cards_total: 0,
+            cards_skipped: 0,
+            duration_minutes: minutes,
+          },
+          ...(session.breakdown ?? {}),
+        };
+      }
+      if (!session.breakdown) {
         return { status: 'pending', session_id: sessionId };
       }
-      return session.breakdown;
+      return { ...session.breakdown, mode: session.mode };
     } catch (err: any) {
       console.error(`[Session] getEvaluation failed session=${sessionId}:`, err?.message);
       return { status: 'pending', session_id: sessionId };
@@ -833,7 +928,7 @@ export class SessionService {
       order: { startedAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
-      select: ['id', 'title', 'status', 'startedAt'],
+      select: ['id', 'title', 'status', 'startedAt', 'mode'],
     });
     return { items, total, page, limit, hasMore: (page - 1) * limit + items.length < total };
   }

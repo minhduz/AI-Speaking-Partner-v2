@@ -271,11 +271,27 @@ CREATE TABLE IF NOT EXISTS dictionary.user_history (
   interval_days     FLOAT     NOT NULL DEFAULT 1,
   last_reviewed_at  TIMESTAMP,
   next_review_at    TIMESTAMP,
+  is_archived        BOOLEAN   NOT NULL DEFAULT false,
+  archived_at        TIMESTAMP,
   created_at        TIMESTAMP DEFAULT NOW()
 );
 
+-- Idempotent dictionary flashcard migrations for existing databases.
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS context_sentence TEXT;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS status           VARCHAR NOT NULL DEFAULT 'new';
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS review_count     INT     NOT NULL DEFAULT 0;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS mastery_score    FLOAT   NOT NULL DEFAULT 0;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS interval_days    FLOAT   NOT NULL DEFAULT 1;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS last_reviewed_at TIMESTAMP;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS next_review_at   TIMESTAMP;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS is_archived      BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS archived_at      TIMESTAMP;
+
 CREATE INDEX IF NOT EXISTS idx_dictionary_cache_word ON dictionary.cache(word);
 CREATE INDEX IF NOT EXISTS idx_dictionary_history_user ON dictionary.user_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_user_status ON dictionary.user_history(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_next_review ON dictionary.user_history(next_review_at);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_archived ON dictionary.user_history(user_id, is_archived);
 
 -- Transfer ownership so orchestrator_user can run ALTER TABLE migrations
 ALTER TABLE speaking_app.users    OWNER TO orchestrator_user;
