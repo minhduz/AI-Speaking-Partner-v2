@@ -211,34 +211,59 @@ export default function FlashcardsPage() {
 
                 {view === 'active' && (
                   <>
-                    <div className="rounded-3xl p-6" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
-                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Current topic</p>
-                      <div className="relative mt-3">
-                        <select value={effectiveTopic || ''} onChange={(e) => setActiveTopic(e.target.value)}
-                          className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-4 pr-11 text-base font-black transition"
-                          style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}>
-                          {nonEmptyGroups.map((group) => {
-                            const count = group.words.filter(w => !masteredWordIds.has(w.id)).length;
-                            return <option key={group.topic} value={group.topic}>{group.topic} • {count} words</option>;
-                          })}
-                        </select>
-                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-                        </div>
+                    {/* Topic list */}
+                    <div className="rounded-3xl flex-1 min-h-0 flex flex-col" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+                      <div className="px-5 pt-5 pb-3 shrink-0 flex items-center justify-between">
+                        <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Topics</p>
+                        <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full" style={{ background: '#f3f3f3', color: '#6f7b64' }}>{nonEmptyGroups.length}</span>
                       </div>
-                    </div>
-                    <div className="rounded-3xl p-6 flex-1 min-h-0" style={{ background: '#dceeff', border: '2px solid #c8e6ff', boxShadow: '0 4px 0 #c8e6ff' }}>
-                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#004666' }}>Study plan</p>
-                      <h2 className="text-3xl font-black mt-2" style={{ color: '#004666' }}>{activeWords.length} cards</h2>
-                      <p className="text-sm font-semibold mt-2" style={{ color: '#004666' }}>Swipe left when learned, swipe right to review later.</p>
-                      <div className="mt-5 grid grid-cols-2 gap-3">
-                        <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
-                          <p className="text-2xl font-black" style={{ color: '#2b6c00' }}>{learnedCountFromLearned(activeGroup?.words ?? [], masteredWordIds)}</p>
-                          <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>this session</p>
+                      <div className="flex-1 overflow-y-auto min-h-0 px-3 pb-3 space-y-1.5">
+                        {nonEmptyGroups.map((group, idx) => {
+                          const count = group.words.filter(w => !masteredWordIds.has(w.id)).length;
+                          const isActive = group.topic === effectiveTopic;
+                          const topicColors = [
+                            { bg: '#e8f5e9', accent: '#2b6c00', badge: '#c8f0a8', badgeText: '#1e5000' },
+                            { bg: '#dceeff', accent: '#004666', badge: '#b8dcff', badgeText: '#003050' },
+                            { bg: '#fff3e0', accent: '#683a00', badge: '#ffe0b2', badgeText: '#4e2800' },
+                            { bg: '#f3e5f5', accent: '#6a1b9a', badge: '#e1bee7', badgeText: '#4a0072' },
+                            { bg: '#fce4ec', accent: '#880e4f', badge: '#f8bbd0', badgeText: '#560027' },
+                            { bg: '#e0f7fa', accent: '#006064', badge: '#b2ebf2', badgeText: '#004044' },
+                          ];
+                          const color = topicColors[idx % topicColors.length];
+                          return (
+                            <button
+                              key={group.topic}
+                              onClick={() => setActiveTopic(group.topic)}
+                              className="w-full text-left rounded-2xl px-4 py-3 flex items-center gap-3 transition-all active:scale-[0.98]"
+                              style={isActive
+                                ? { background: color.bg, border: `2px solid ${color.badge}`, boxShadow: `0 2px 0 ${color.badge}` }
+                                : { background: '#f9f9f9', border: '2px solid transparent' }
+                              }
+                            >
+                              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 text-base font-black"
+                                style={{ background: isActive ? color.badge : '#e8e8e8', color: isActive ? color.badgeText : '#6f7b64' }}>
+                                {group.topic.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-black text-sm truncate" style={{ color: isActive ? color.accent : '#1a1c1c' }}>{group.topic}</p>
+                              </div>
+                              <span className="shrink-0 text-xs font-extrabold px-2 py-1 rounded-full"
+                                style={{ background: isActive ? color.badge : '#e8e8e8', color: isActive ? color.badgeText : '#6f7b64' }}>
+                                {count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {/* Stats bar */}
+                      <div className="mx-3 mb-3 rounded-2xl px-4 py-3 grid grid-cols-2 gap-3 shrink-0" style={{ background: '#f3f3f3' }}>
+                        <div>
+                          <p className="text-xl font-black" style={{ color: '#2b6c00' }}>{learnedCountFromLearned(activeGroup?.words ?? [], masteredWordIds)}</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#6f7b64' }}>learned today</p>
                         </div>
-                        <div className="rounded-2xl p-4" style={{ background: '#ffffff' }}>
-                          <p className="text-2xl font-black" style={{ color: '#683a00' }}>{groups.length}</p>
-                          <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>topics</p>
+                        <div>
+                          <p className="text-xl font-black" style={{ color: '#004666' }}>{activeWords.length}</p>
+                          <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#6f7b64' }}>cards left</p>
                         </div>
                       </div>
                     </div>
@@ -246,43 +271,62 @@ export default function FlashcardsPage() {
                 )}
 
                 {view === 'mastered' && (
-                  <div className="rounded-3xl p-6 flex-1 min-h-0 flex flex-col gap-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
-                    <div>
-                      <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Archive</p>
-                      <p className="text-2xl font-black mt-1" style={{ color: '#1a1c1c' }}>{totalMastered} words archived</p>
+                  <div className="rounded-3xl flex-1 min-h-0 flex flex-col" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+                    {/* Header */}
+                    <div className="px-5 pt-5 pb-3 shrink-0">
+                      <div className="flex items-center justify-between">
+                        <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Archive</p>
+                        <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full" style={{ background: '#d7ffb8', color: '#2b6c00' }}>{totalMastered} words</span>
+                      </div>
                     </div>
+                    {/* Topic chips */}
                     {masteredGroups.length > 0 && (
-                      <div className="relative">
-                        <select value={activeMasteredTopic || ''} onChange={(e) => { setActiveMasteredTopic(e.target.value); setSelectedMasteredWord(null); }}
-                          className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-3 pr-11 text-sm font-black transition"
-                          style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}>
-                          {masteredGroups.map((g) => (
-                            <option key={g.topic} value={g.topic}>{g.topic} • {g.words.length}</option>
-                          ))}
-                        </select>
-                        <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4" style={{ color: '#6f7b64' }}>
-                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
-                        </div>
+                      <div className="px-4 pb-3 shrink-0 flex flex-wrap gap-2">
+                        {masteredGroups.map((g) => {
+                          const isActive = activeMasteredTopic === g.topic;
+                          return (
+                            <button
+                              key={g.topic}
+                              onClick={() => { setActiveMasteredTopic(g.topic); setSelectedMasteredWord(null); }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-extrabold transition-all active:scale-95"
+                              style={isActive
+                                ? { background: '#d7ffb8', color: '#1e5000', border: '2px solid #58cc02' }
+                                : { background: '#f3f3f3', color: '#6f7b64', border: '2px solid transparent' }
+                              }
+                            >
+                              {g.topic}
+                              <span className="font-black" style={{ opacity: 0.7 }}>{g.words.length}</span>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
-                    <div className="flex-1 overflow-y-auto min-h-0 space-y-2">
+                    {/* Word list */}
+                    <div className="flex-1 overflow-y-auto min-h-0 px-3 pb-3 space-y-1.5">
                       {(activeMasteredGroup?.words ?? []).map(w => {
                         const isSelected = selectedMasteredWord?.id === w.id;
                         return (
                           <button
                             key={w.id}
                             onClick={() => setSelectedMasteredWord(isSelected ? null : w)}
-                            className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between transition-all"
+                            className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between transition-all active:scale-[0.98]"
                             style={{
                               background: isSelected ? '#d7ffb8' : '#f9f9f9',
-                              border: isSelected ? '2px solid #58cc02' : '2px solid #e2e2e2',
+                              border: isSelected ? '2px solid #58cc02' : '2px solid transparent',
+                              boxShadow: isSelected ? '0 2px 0 #c8f0a8' : 'none',
                             }}
                           >
-                            <div>
-                              <p className="font-black text-sm" style={{ color: '#1a1c1c' }}>{w.word}</p>
-                              <p className="text-xs font-medium" style={{ color: '#6f7b64' }}>{w.translation}</p>
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-8 h-8 rounded-xl shrink-0 flex items-center justify-center text-xs font-black"
+                                style={{ background: isSelected ? '#c8f0a8' : '#e8e8e8', color: isSelected ? '#1e5000' : '#6f7b64' }}>
+                                {w.word.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="font-black text-sm truncate" style={{ color: '#1a1c1c' }}>{w.word}</p>
+                                <p className="text-xs font-medium truncate" style={{ color: '#6f7b64' }}>{w.translation}</p>
+                              </div>
                             </div>
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6f7b64" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                            <svg className="shrink-0 ml-2" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={isSelected ? '#2b6c00' : '#6f7b64'} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                           </button>
                         );
                       })}
