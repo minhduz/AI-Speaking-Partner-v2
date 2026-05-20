@@ -50,6 +50,14 @@ function getCurrentDatetime(timezone: string, date: Date = new Date()): string {
   }
 }
 
+function logDeckContext(route: string, sessionId: string, deck: any): void {
+  if (!deck || deck.status === 'none') return;
+  const card = deck.total_cards > 0 ? `${deck.current_card_index + 1}/${deck.total_cards}` : '0/0';
+  console.log(
+    `[Turn] deck ${route} session=${sessionId} status=${deck.status} reason=${deck.end_reason || '-'} active=${deck.active ? 'true' : 'false'} card=${card}`,
+  );
+}
+
 @Controller('turn')
 @UseGuards(JwtAuthGuard)
 export class TurnController {
@@ -122,6 +130,7 @@ export class TurnController {
       // turn — otherwise a short user reply to the greeting's question would
       // arrive without context and the AI would re-ask or respond off-topic.
       const greetingText = typeof body.greeting_text === 'string' ? body.greeting_text.trim() : '';
+      logDeckContext('stream-text', sessionId, deck);
 
       const upstream = await this.http.axiosRef.post(
         `${this.cfg.get('TURN_AGENT_URL')}/turn/stream-text`,
@@ -263,6 +272,7 @@ export class TurnController {
         new Blob([file.buffer as any], { type: file.mimetype || 'audio/webm' }),
         'audio.webm',
       );
+      logDeckContext('stream-audio', sessionId, deck);
 
       const upstream = await this.http.axiosRef.post(
         `${this.cfg.get('TURN_AGENT_URL')}/turn/stream`,
