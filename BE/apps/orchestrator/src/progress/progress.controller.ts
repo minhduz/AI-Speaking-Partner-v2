@@ -14,4 +14,7 @@ export class ProgressController {
   sessions(@Req() req, @Query('page') page = '1', @Query('limit') limit = '20') {
     return this.progress.getSessionBreakdown(req.user.id, +page, +limit);
   }
+
+  @Get('dashboard')
+  dashboard(@Req() req) { return this.progress.getDashboard(req.user.id); }
 }

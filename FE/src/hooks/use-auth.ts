@@ -19,7 +19,7 @@ export function useAuth() {
     try {
       const { access_token } = await authService.login(credentials);
       login(access_token);
-      router.push('/chat');
+      router.push('/home');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -57,8 +57,8 @@ export function useAuth() {
         console.log('[handleGoogleAuth] calling onRedirect');
         onRedirect();
       } else if (!isNewUser) {
-        console.log('[handleGoogleAuth] existing user → push /chat');
-        router.push('/chat');
+        console.log('[handleGoogleAuth] existing user → push /home');
+        router.push('/home');
       } else {
         console.log('[handleGoogleAuth] new user, no onRedirect → letting caller handle');
       }

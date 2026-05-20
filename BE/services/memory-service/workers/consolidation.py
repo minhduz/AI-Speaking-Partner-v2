@@ -476,9 +476,22 @@ async def _build_and_persist_breakdown(
     Build the visible coaching report independently from memory consolidation.
 
     This task is intentionally started as soon as we have messages + deck data.
-    If the LLM pass fails or takes too long, persist the basic deterministic
-    report so the frontend does not poll forever.
+    Persist a useful deterministic report first so the frontend does not poll
+    forever, then overwrite it with the richer LLM report when ready.
     """
+    fallback_report = session_evaluation.build_report(
+        session_insight=None,
+        raw_deck=raw_deck,
+        messages=messages,
+        session_start_utc=session_start_utc,
+        session_id=session_id,
+    )
+    await _persist_session_breakdown(
+        user_id=user_id,
+        session_id=session_id,
+        report=fallback_report,
+    )
+
     try:
         report = await asyncio.wait_for(
             session_evaluation.build_rich_report(
@@ -488,23 +501,17 @@ async def _build_and_persist_breakdown(
                 session_start_utc=session_start_utc,
                 session_id=session_id,
             ),
-            timeout=14,
+            timeout=45,
         )
     except Exception as report_err:
         log.error(
-            "step 2.5 — rich session breakdown FAILED, persisting fallback  user=%s  session=%s: %s",
+            "step 2.5 — rich session breakdown FAILED, keeping fallback  user=%s  session=%s: %s",
             user_id,
             session_id,
             report_err,
             exc_info=True,
         )
-        report = session_evaluation.build_report(
-            session_insight=None,
-            raw_deck=raw_deck,
-            messages=messages,
-            session_start_utc=session_start_utc,
-            session_id=session_id,
-        )
+        return
 
     try:
         await database.execute(
@@ -522,6 +529,30 @@ async def _build_and_persist_breakdown(
     except Exception as persist_err:
         log.error(
             "step 2.5 — session breakdown persist FAILED  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            persist_err,
+            exc_info=True,
+        )
+
+
+async def _persist_session_breakdown(*, user_id: str, session_id: str, report: dict):
+    try:
+        await database.execute(
+            "UPDATE speaking_app.sessions SET breakdown = $1::jsonb WHERE id = $2",
+            json.dumps(report, ensure_ascii=False, default=str),
+            session_id,
+        )
+        log.info(
+            "step 2.5 - session breakdown persisted  session=%s  quality=%s  corrections=%d  radar=%d",
+            session_id,
+            report.get("quality", "unknown"),
+            len(report.get("corrections", [])),
+            len(report.get("skill_radar", [])),
+        )
+    except Exception as persist_err:
+        log.error(
+            "step 2.5 - session breakdown persist FAILED  user=%s  session=%s: %s",
             user_id,
             session_id,
             persist_err,

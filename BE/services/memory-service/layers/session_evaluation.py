@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -81,10 +82,10 @@ def build_report(
         "energy": energy,
         "cards": cards_out,
         "spoken_samples": spoken_samples,
-        "corrections": [],
-        "skill_radar": [],
-        "recurring_pattern": None,
-        "next_drill": None,
+        "corrections": _heuristic_corrections(user_msgs),
+        "skill_radar": _fallback_skill_radar(user_msgs, cards_out),
+        "recurring_pattern": _fallback_recurring_pattern(user_msgs, cards_out, struggled),
+        "next_drill": _fallback_next_drill(next_chall, raw_deck, user_msgs),
         "stats": {
             "user_turns": len(user_msgs),
             "cards_completed": cards_completed,
@@ -159,7 +160,9 @@ async def build_rich_report(
                     "}\n\n"
                     "Rules:\n"
                     "- Make corrections from the learner's real utterances only. Do not invent mistakes.\n"
-                    "- Include at most 3 corrections. Prefer high-impact grammar, word choice, or naturalness fixes.\n"
+                    "- Include 2-3 corrections or natural phrasing upgrades when possible. "
+                    "Prefer high-impact grammar, word choice, or naturalness fixes.\n"
+                    "- If there are no clear mistakes, turn real learner sentences into more natural versions.\n"
                     "- `you_said` should quote or lightly clean the learner's original words.\n"
                     "- `try_this` should be a natural corrected sentence.\n"
                     "- `why` should explain the rule in one short learner-friendly sentence.\n"
@@ -174,7 +177,7 @@ async def build_rich_report(
             {"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)},
         ],
         response_format={"type": "json_object"},
-        max_tokens=1100,
+        max_tokens=1800,
     )
 
     usage = getattr(res, "usage", None)
@@ -201,6 +204,180 @@ async def build_rich_report(
         "generated_at": datetime.now(timezone.utc).isoformat(),
     })
     return enriched
+
+
+def _heuristic_corrections(user_msgs: list[str]) -> list[dict]:
+    """
+    Tiny deterministic safety net for common, high-confidence learner patterns.
+
+    The rich LLM report should normally produce corrections. This fallback only
+    touches exact phrases so we do not invent edits for sentences we cannot
+    judge reliably.
+    """
+    patterns: list[tuple[re.Pattern[str], str, str]] = [
+        (
+            re.compile(r"\bit is most popular language\b", re.IGNORECASE),
+            "it is the most popular language",
+            "Use 'the most' before a superlative adjective.",
+        ),
+        (
+            re.compile(r"\bthe most country\b", re.IGNORECASE),
+            "more countries",
+            "Use plural 'countries' when you mean many places.",
+        ),
+        (
+            re.compile(r"\bmore countries i can\b", re.IGNORECASE),
+            "more countries where I can",
+            "Use 'where' to connect a place with what you can do there.",
+        ),
+        (
+            re.compile(r"\bi can learn it so go to\b", re.IGNORECASE),
+            "I can learn it so I can go to",
+            "Repeat the subject when a new clause starts.",
+        ),
+        (
+            re.compile(r"\btry to talk with\b", re.IGNORECASE),
+            "try talking with",
+            "After 'try', the -ing form sounds more natural for an experiment or practice attempt.",
+        ),
+        (
+            re.compile(r"\bi am go to\b", re.IGNORECASE),
+            "I am going to",
+            "Use 'am going to' for a planned future action.",
+        ),
+    ]
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for msg in user_msgs:
+        for sentence in _split_sentences(msg):
+            try_this = sentence
+            reasons: list[str] = []
+            for pattern, replacement, why in patterns:
+                if not pattern.search(try_this):
+                    continue
+                try_this = pattern.sub(replacement, try_this, count=1)
+                reasons.append(why)
+            if reasons:
+                you_said = _text(sentence, max_len=220)
+                try_this = _text(_capitalize_like_sentence(try_this), max_len=220)
+                why = " ".join(reasons[:2])
+                key = f"{you_said}|{try_this}".lower()
+                if you_said and try_this and key not in seen:
+                    seen.add(key)
+                    out.append({"you_said": you_said, "try_this": try_this, "why": why})
+            if len(out) >= 3:
+                return out
+    return out
+
+
+def _fallback_skill_radar(user_msgs: list[str], cards: list[dict]) -> list[dict]:
+    user_turns = len(user_msgs)
+    words = [w for msg in user_msgs for w in re.findall(r"[A-Za-z']+", msg)]
+    unique_words = len({w.lower() for w in words})
+    completed_cards = sum(1 for c in cards if c.get("result") == "passed" or c.get("status") == "completed")
+    total_cards = len(cards)
+    corrections = _heuristic_corrections(user_msgs)
+
+    fluency_level = "Strong" if user_turns >= 6 else "Okay" if user_turns >= 2 else "Needs work"
+    grammar_level = "Needs work" if len(corrections) >= 2 else "Okay"
+    vocab_level = "Strong" if unique_words >= 55 else "Okay" if unique_words >= 20 else "Needs work"
+    confidence_level = "Strong" if total_cards and completed_cards == total_cards else "Okay" if user_turns >= 2 else "Needs work"
+
+    return [
+        {
+            "skill": "Fluency",
+            "level": fluency_level,
+            "evidence": f"You produced {user_turns} learner turn(s), enough to keep the session moving.",
+        },
+        {
+            "skill": "Grammar",
+            "level": grammar_level,
+            "evidence": (
+                "A few sentence-level patterns need cleanup."
+                if corrections else "No repeated grammar issue was detected by the fallback checker."
+            ),
+        },
+        {
+            "skill": "Vocabulary",
+            "level": vocab_level,
+            "evidence": f"You used about {unique_words} distinct transcript words in this session.",
+        },
+        {
+            "skill": "Pronunciation",
+            "level": "Okay",
+            "evidence": "Fallback report only has transcript text, so pronunciation evidence is limited.",
+        },
+        {
+            "skill": "Conversation confidence",
+            "level": confidence_level,
+            "evidence": (
+                f"You completed {completed_cards} of {total_cards} exercise(s)."
+                if total_cards else "You stayed engaged through the speaking turns."
+            ),
+        },
+    ]
+
+
+def _fallback_recurring_pattern(user_msgs: list[str], cards: list[dict], struggled: str) -> dict | None:
+    if struggled:
+        return {
+            "title": "Main focus area",
+            "evidence": struggled,
+            "practice_tip": "Repeat one answer from today and add one clearer reason or example.",
+        }
+
+    corrections = _heuristic_corrections(user_msgs)
+    if corrections:
+        return {
+            "title": "Small grammar details",
+            "evidence": corrections[0]["why"],
+            "practice_tip": "Pick one corrected sentence and say it three times with a different ending.",
+        }
+
+    if user_msgs:
+        avg_words = sum(len(re.findall(r"[A-Za-z']+", msg)) for msg in user_msgs) / max(1, len(user_msgs))
+        if avg_words < 10:
+            return {
+                "title": "Short answers",
+                "evidence": "Several learner turns were brief, so the next gain is extending ideas.",
+                "practice_tip": "Use a simple chain: answer, because, example.",
+            }
+
+    if cards:
+        return {
+            "title": "Expand completed answers",
+            "evidence": "The exercises were completed, so the next step is adding more detail naturally.",
+            "practice_tip": "After each answer, add one reason and one real-life example.",
+        }
+    return None
+
+
+def _fallback_next_drill(next_focus: str, raw_deck: dict | None, user_msgs: list[str]) -> dict | None:
+    title = next_focus or (raw_deck or {}).get("mission") or "Make one answer more natural"
+    if not title and not user_msgs:
+        return None
+    return {
+        "title": _text(title, max_len=120) or "Make one answer more natural",
+        "steps": [
+            "Choose one sentence from Things you said.",
+            "Say it again with one clearer reason.",
+            "Say it a third time with one real example.",
+        ],
+        "success_criteria": "You can answer in 2-3 connected sentences without switching languages.",
+    }
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p.strip() for p in parts if p.strip()] or ([text.strip()] if text.strip() else [])
+
+
+def _capitalize_like_sentence(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return text
+    return text[0].upper() + text[1:]
 
 
 def _card_stats(raw_deck: dict | None) -> tuple[list[dict], int, int, int, str | None]:

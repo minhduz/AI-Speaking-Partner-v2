@@ -11,7 +11,7 @@ const NATIVE_LANG_TO_CODE: Record<string, string> = {
 const DICT_LANG_KEY = 'dict_target_lang';
 const DICT_USER_SET_KEY = 'dict_user_set'; // true only when user explicitly changed the language
 
-export function useDictionary(sessionTopic?: string) {
+export function useDictionary() {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [data, setData] = useState<DictionaryData | null>(null);
@@ -72,17 +72,13 @@ export function useDictionary(sessionTopic?: string) {
   const close = useCallback(() => setIsOpen(false), []);
 
   const addFlashcard = useCallback(async (cacheId: string) => {
-    const topic = sessionTopic || data?.topic || 'Uncategorized';
     try {
-      await httpClient.post('/api/dictionary/flashcards', {
-        cacheId,
-        contextSentence: topic,
-      });
+      await httpClient.post('/api/dictionary/flashcards', { cacheId });
     } catch (err) {
       console.error('Failed to add flashcard', err);
       throw err;
     }
-  }, [sessionTopic, data]);
+  }, []);
 
   return {
     isOpen,

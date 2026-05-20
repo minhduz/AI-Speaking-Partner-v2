@@ -858,11 +858,12 @@ async def build_prompt_node(state: dict) -> dict:
                 if deck_end_reason == "user_chose_free_talk":
                     system_prompt += (
                         "\n\nFREE TALK: The user declined the exercise and wants to chat freely. "
-                        "In ONE warm sentence, acknowledge that's fine, then ask ONE question: "
-                        "would they like to continue with the topic you were just discussing, or switch to something new? "
-                        "For example: 'No problem! Would you like to keep talking about [topic from conversation], "
-                        "or is there something else you'd like to chat about?' "
-                        "Replace [topic] with the actual subject from the recent conversation. "
+                        "Start with a warm, brief acknowledgement like 'No problem at all!' or 'Of course!', "
+                        "then ask ONE question about what they'd like to talk about. "
+                        "If there is a clear topic in the recent conversation, ask: "
+                        "'Would you like to keep talking about [that topic], or is there something else you'd like to chat about?' "
+                        "If there is no clear topic yet, just ask: 'What would you like to talk about?' "
+                        "Keep it to ONE or TWO short sentences total. "
                         "Do NOT mention the exercise again. Do NOT output an EVAL block."
                     )
                 elif deck_end_reason == "user_wants_to_end":

@@ -31,6 +31,27 @@ function stripSttControlTokens(text: string): string {
 // Prevents re-streaming the greeting when the user navigates away and returns.
 let _greetingTextCache: string[] | null = null;
 
+// Single-flight lock for the greeting stream. The cache above only guards
+// AFTER a greeting finishes; without this, a route-change/remount while the
+// greeting is still streaming (cache still null) would fire a second
+// /session/greeting/stream request → duplicate greeting. The first caller owns
+// the stream (audio + cache); any caller that mounts while a stream is in
+// flight subscribes to this promise instead of starting its own request.
+let _greetingInFlight: Promise<string[]> | null = null;
+let _greetingAbort: AbortController | null = null;
+
+// Abort the in-flight greeting (if any) and clear the lock. Call this BEFORE
+// clearing _greetingTextCache + re-initing (logout / end-session reset), so the
+// next runGreeting starts a FRESH request instead of subscribing to the stream
+// we're trying to discard.
+function resetGreetingFlight(): void {
+  if (_greetingAbort) {
+    _greetingAbort.abort();
+    _greetingAbort = null;
+  }
+  _greetingInFlight = null;
+}
+
 const TURN_PLAYBACK_RATE = 1.15;
 // Fallback reveal pace when audio is unavailable (suspended ctx / decode failure).
 const FALLBACK_REVEAL_MS_PER_WORD = 220;
@@ -52,6 +73,9 @@ export function stopAllAudio(): void {
     _sharedAudioCtx.close();
   }
   _sharedAudioCtx = null;
+  // Logout / hard reset: abort any streaming greeting (cancels the SSE fetch)
+  // before dropping the cache, so it can't repopulate the cache afterwards.
+  resetGreetingFlight();
   _greetingTextCache = null;
 }
 
@@ -265,6 +289,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const initializedRef = useRef(false);
+  // Tracks whether THIS component instance is still mounted. The greeting stream
+  // is owned at module level and outlives a route-change unmount, so its
+  // completion callbacks must not setState into an instance that's gone.
+  const mountedRef = useRef(true);
   const isEndingRef = useRef(false);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -364,12 +392,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Transcript + breakdown load in parallel. The breakdown is a single DB
     // read (persisted at consolidation); null when the session has none
     // (abandoned, or predates the feature).
-    void sessionService
-      .getEvaluation(sessionId)
-      .then((report) => {
-        if (reviewSessionIdRef.current === sessionId) setReviewEvaluation(report);
-      })
-      .catch(() => {});
+    void (async () => {
+      const deadline = Date.now() + 30000;
+      let bestReport: SessionEvaluation | null = null;
+      while (Date.now() < deadline) {
+        const report = await sessionService.getEvaluation(sessionId).catch(() => null);
+        if (report) {
+          bestReport = report;
+          if (report.quality !== 'basic') break;
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (reviewSessionIdRef.current === sessionId) setReviewEvaluation(bestReport);
+    })();
     await loadReviewPage(sessionId, 1, false);
   }, [loadReviewPage]);
 
@@ -520,11 +555,43 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const runGreeting = useCallback(async () => {
     setStatus('greeting');
     setGreetingSentences([]);
+
+    // Cache filled (possibly between initSession's check and now) → render it.
+    if (_greetingTextCache && _greetingTextCache.length > 0) {
+      if (mountedRef.current) {
+        setGreetingSentences(_greetingTextCache);
+        setStatus('ready');
+      }
+      return;
+    }
+
+    // Another instance is already streaming the greeting (route-change remount
+    // during stream). Subscribe to its result and render the text — don't fire a
+    // second request. Audio belongs to the instance that owns the stream; the
+    // remounted view shows text only (the prior AudioContext was closed on
+    // unmount anyway).
+    if (_greetingInFlight) {
+      try {
+        const segments = await _greetingInFlight;
+        if (mountedRef.current) {
+          setGreetingSentences(segments);
+          setStatus('ready');
+        }
+      } catch {
+        if (mountedRef.current) setStatus('ready');
+      }
+      return;
+    }
+
+    // We own the stream: reset audio scheduling and start exactly one request.
     nextPlayTimeRef.current = 0;
     lastScheduleRef.current = Promise.resolve();
     const collectedSegments: string[] = [];
-    try {
-      const stream = await sessionService.streamGreetingAnon();
+    _greetingAbort = new AbortController();
+    const signal = _greetingAbort.signal;
+
+    const flight = (async (): Promise<string[]> => {
+      const stream = await sessionService.streamGreetingAnon(signal);
       for await (const event of stream) {
         if (event.type === 'segment') {
           collectedSegments.push(event.text);
@@ -533,17 +600,32 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         } else if (event.type === 'done') {
           await waitForSegmentIdle();
           if (collectedSegments.length > 0) _greetingTextCache = [...collectedSegments];
-          setStatus('ready');
-          return;
+          return _greetingTextCache ?? [];
         } else if (event.type === 'error') {
           throw new Error(event.message);
         }
       }
       await waitForSegmentIdle();
+      if (collectedSegments.length > 0) _greetingTextCache = [...collectedSegments];
+      return _greetingTextCache ?? [];
+    })();
+    _greetingInFlight = flight;
+
+    try {
+      await flight;
+      if (mountedRef.current) setStatus('ready');
     } catch (err) {
-      console.error('[greeting]', err);
+      // Aborted on purpose (logout / end-session reset) — stay silent.
+      if ((err as { name?: string })?.name !== 'AbortError') {
+        console.error('[greeting]', err);
+        if (mountedRef.current) setStatus('ready');
+      }
     } finally {
-      setStatus('ready');
+      // Only clear if a reset hasn't already replaced this flight.
+      if (_greetingInFlight === flight) {
+        _greetingInFlight = null;
+        _greetingAbort = null;
+      }
     }
   }, [enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
 
@@ -582,6 +664,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void initSession();
     }
   }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   useEffect(() => {
     const ctx = getSharedAudioCtx();
@@ -667,6 +754,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       // when the interval fires while advanceDeckCard's PUT is still in flight,
       // causing the auto-advance useEffect to re-trigger for an already-passed card.
       setCurrentDeck((prev) => {
+        // Don't restore a deck the user already dismissed (e.g. chose free-talk / end).
+        // If currentDeck is null and the fetched deck is ended/abandoned, keep it null.
+        if (!prev && deck && (deck.status === 'ended_early' || deck.status === 'abandoned')) return prev;
         if (prev && deck && deck.current_card_index < prev.current_card_index) return prev;
         return deck;
       });
@@ -1005,7 +1095,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     isEndingRef.current = false;
     // Clear the greeting cache so the next initSession fetches a FRESH greeting
     // (session 2+ slim variant) instead of replaying the ended session's
-    // onboarding-style greeting from cache.
+    // onboarding-style greeting from cache. Abort any in-flight greeting FIRST
+    // so initSession starts a new request rather than subscribing to the
+    // just-ended session's stream.
+    resetGreetingFlight();
     _greetingTextCache = null;
     void initSession();
   }, [initSession]);
@@ -1140,12 +1233,28 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const sid = endedSessionIdRef.current;
     if (!sid) return;
     setEvaluationLoading(true);
-    // Consolidation (LLM extraction + embeddings) can take a while; poll up to 45s.
-    const deadline = Date.now() + 45000;
+    // The backend writes a useful basic report first, then may overwrite it
+    // with quality="rich"; keep polling briefly so users see the richer coach
+    // feedback instead of stopping at the fallback.
+    const deadline = Date.now() + 60000;
+    const fallbackVisibleAt = Date.now() + 12000;
     let report: SessionEvaluation | null = null;
+    let showedFallback = false;
     while (Date.now() < deadline) {
-      report = await sessionService.getEvaluation(sid).catch(() => null);
-      if (report) break;
+      const nextReport = await sessionService.getEvaluation(sid).catch(() => null);
+      if (nextReport) {
+        report = nextReport;
+        if (nextReport.quality !== 'basic') {
+          setEvaluation(nextReport);
+          setEvaluationLoading(false);
+          return;
+        }
+        if (!showedFallback && Date.now() >= fallbackVisibleAt) {
+          setEvaluation(nextReport);
+          setEvaluationLoading(false);
+          showedFallback = true;
+        }
+      }
       await new Promise((r) => setTimeout(r, 2000));
     }
     setEvaluation(report);
@@ -1221,11 +1330,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
     try {
-      await sessionService.rejectDeckChallenge(sessionId);
+      const deck = await sessionService.rejectDeckChallenge(sessionId);
+      if (!deck || deck.status !== 'ended_early') {
+        throw new Error(`Deck was not ended for free chat (status=${deck?.status ?? 'none'})`);
+      }
       setCurrentDeck(null);
       void processTurn('');
     } catch (err) {
       console.error('[rejectDeckChallenge]', err);
+      setBillingLimitCode(null);
+      setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
+      setStatus('error');
     }
   }, [processTurn]);
 
@@ -1233,11 +1348,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
     try {
-      await sessionService.rejectDeckWithMode(sessionId, 'user_chose_free_talk');
+      const deck = await sessionService.rejectDeckWithMode(sessionId, 'user_chose_free_talk');
+      if (!deck || deck.status !== 'ended_early' || deck.end_reason !== 'user_chose_free_talk') {
+        throw new Error(
+          `Deck did not switch to free talk (status=${deck?.status ?? 'none'}, reason=${deck?.end_reason ?? 'none'})`,
+        );
+      }
       setCurrentDeck(null);
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckFreeTalk]', err);
+      setBillingLimitCode(null);
+      setErrorMessage(err instanceof Error ? err.message : 'Could not switch to free talk');
+      setStatus('error');
     }
   }, [processTurn]);
 
@@ -1245,11 +1368,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
     try {
-      await sessionService.rejectDeckWithMode(sessionId, 'user_wants_to_end');
+      const deck = await sessionService.rejectDeckWithMode(sessionId, 'user_wants_to_end');
+      if (!deck || deck.status !== 'ended_early' || deck.end_reason !== 'user_wants_to_end') {
+        throw new Error(
+          `Deck did not switch to soft end (status=${deck?.status ?? 'none'}, reason=${deck?.end_reason ?? 'none'})`,
+        );
+      }
       setCurrentDeck(null);
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckEnd]', err);
+      setBillingLimitCode(null);
+      setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
+      setStatus('error');
     }
   }, [processTurn]);
 

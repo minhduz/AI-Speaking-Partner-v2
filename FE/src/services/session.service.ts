@@ -272,11 +272,12 @@ export const sessionService = {
     return data as OnboardingState;
   },
 
-  streamGreetingAnon: async (): Promise<AsyncGenerator<GreetingEvent>> => {
+  streamGreetingAnon: async (signal?: AbortSignal): Promise<AsyncGenerator<GreetingEvent>> => {
     const dt = encodeURIComponent(new Date().toISOString());
     log('GET /session/greeting/stream');
     const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}`, {
       headers: authHeaders(),
+      signal,
     });
     if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
@@ -509,20 +510,26 @@ export const sessionService = {
     });
   },
 
-  rejectDeckChallenge: async (sessionId: string): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+  rejectDeckChallenge: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ end_reason: 'user_clicked_end' }),
     });
+    if (!res.ok) throw new Error(`Failed to reject deck: ${res.status}`);
+    const data = await res.json().catch(() => null);
+    return data && data.status !== 'none' ? data as ExerciseDeck : null;
   },
 
-  rejectDeckWithMode: async (sessionId: string, endReason: 'user_chose_free_talk' | 'user_wants_to_end'): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+  rejectDeckWithMode: async (sessionId: string, endReason: 'user_chose_free_talk' | 'user_wants_to_end'): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ end_reason: endReason }),
     });
+    if (!res.ok) throw new Error(`Failed to end deck with ${endReason}: ${res.status}`);
+    const data = await res.json().catch(() => null);
+    return data && data.status !== 'none' ? data as ExerciseDeck : null;
   },
 
   regenerateDeck: async (sessionId: string, topic: string): Promise<void> => {

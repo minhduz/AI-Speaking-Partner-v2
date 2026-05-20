@@ -103,10 +103,20 @@ async def llm_tts_node(state: dict) -> dict:
         recent = [{"role": "assistant", "content": greeting_text}]
     # Empty transcript means an internal UI-driven turn (e.g. user clicked
     # "Let's go", Next card, or deck completed). Some LLM providers return an
-    # empty stream for an empty user message, so send a harmless synthetic
+    # empty stream for an empty user message, so send a context-specific synthetic
     # instruction to let the system prompt drive the response. Keep
     # state['transcript'] unchanged so card intro/eval logic still sees it empty.
-    llm_user_content = state["transcript"].strip() or "Continue."
+    _deck_end_reason = (state.get("deck_end_reason") or "").strip()
+    _deck_status = (state.get("deck_status") or "").strip()
+    if not state["transcript"].strip() and _deck_status == "ended_early":
+        if _deck_end_reason == "user_chose_free_talk":
+            llm_user_content = "[User declined the exercise — they want to chat freely]"
+        elif _deck_end_reason == "user_wants_to_end":
+            llm_user_content = "[User declined the exercise — they may want to end the session]"
+        else:
+            llm_user_content = "[User skipped through the exercises]"
+    else:
+        llm_user_content = state["transcript"].strip() or "Continue."
     messages_for_llm = recent + [{"role": "user", "content": llm_user_content}]
 
     # Producer puts (segment_text, synth_task) tuples onto the queue in order.

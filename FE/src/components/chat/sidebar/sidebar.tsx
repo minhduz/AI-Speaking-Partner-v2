@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
+  Home,
   Mic,
   LayoutGrid,
   CreditCard,
@@ -67,6 +68,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
 
   const groups = groupByDate(displayedSessions);
 
+  const isHome       = pathname?.startsWith('/home') ?? false;
   const isChat       = pathname === '/chat' || (pathname?.startsWith('/chat') ?? false);
   const isFlashcards = pathname?.startsWith('/flashcards') ?? false;
   const isBilling    = pathname?.startsWith('/billing') ?? false;
@@ -91,7 +93,10 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
         </div>
 
         {/* Primary Nav */}
-        <nav className="flex-1 min-h-0 space-y-1 px-2 overflow-y-auto pr-1">
+        <nav className="flex-1 min-h-0 space-y-1 px-2 overflow-y-auto custom-scrollbar pr-1">
+          <Link href="/home" className="block">
+            <NavLink label="Home" icon={<Home size={18} strokeWidth={2.5} />} iconBg="#e8f9d3" iconColor="#2b6c00" active={isHome} />
+          </Link>
           <NavLink label="Learn" icon={<Mic size={18} strokeWidth={2.5} />} iconBg="#dff5c5" iconColor="#2b6c00" active={isChat} onClick={onNewChat} />
           <Link href="/flashcards" className="block">
             <NavLink label="Flashcards" icon={<LayoutGrid size={18} strokeWidth={2.5} />} iconBg="#fff4cc" iconColor="#8c6e00" active={isFlashcards} />

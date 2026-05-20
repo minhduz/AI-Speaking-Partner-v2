@@ -188,6 +188,22 @@ export class DictionaryService {
     }
   }
 
+  private static readonly ALLOWED_TOPICS = [
+    'Daily Life',
+    'Work & Business',
+    'Travel',
+    'Food & Dining',
+    'Emotions',
+    'Technology',
+    'Education',
+    'Health',
+    'Relationships',
+    'Culture',
+    'Slang & Idioms',
+    'Academic',
+    'Uncategorized',
+  ];
+
   private async fetchAiContext(word: string, contextSentence?: string, targetLang = 'en', wordLang = 'en'): Promise<any> {
     const llmUrl = this.configService.get<string>('LLM_GATEWAY_URL');
     if (!llmUrl || !contextSentence) return null;
@@ -195,12 +211,13 @@ export class DictionaryService {
     const langNames: Record<string, string> = { vi: 'Vietnamese', ja: 'Japanese', ko: 'Korean', zh: 'Chinese', fr: 'French', es: 'Spanish', en: 'English', ru: 'Russian', ar: 'Arabic', hi: 'Hindi' };
     const nativeLangName = langNames[targetLang] || 'English';
     const wordLangName = langNames[wordLang] || 'English';
+    const topicList = DictionaryService.ALLOWED_TOPICS.join(', ');
 
     const systemPrompt = `You are a helpful dictionary assistant. The word "${word}" is a ${wordLangName} word.
 Provide exactly 2 natural example sentences using "${word}" in ${wordLangName}.
 If ${nativeLangName} is not ${wordLangName}, add a ${nativeLangName} translation in parentheses after each sentence.
 Also provide 3 synonyms in ${wordLangName} (translated to ${nativeLangName} if different).
-Classify the word into a broad topic category (e.g., "Emotions", "Technology", "Food & Dining", "Business").
+Classify the word into exactly one of these topic categories: ${topicList}.
 Return ONLY valid JSON: { "examples": ["example 1", "example 2"], "synonyms": ["syn1", "syn2", "syn3"], "topic": "Category Name" }`;
 
     try {
@@ -313,41 +330,140 @@ Return ONLY valid JSON: { "examples": ["example 1", "example 2"], "synonyms": ["
     const allTopSynonyms = meanings.flatMap((m) => m.synonyms || []);
     const uniqueSynonyms = [...new Set([...(aiResult?.synonyms || []), ...allTopSynonyms])].slice(0, 8);
 
-    return { word, phonetic, meanings, synonyms: uniqueSynonyms, topic: aiResult?.topic || 'Uncategorized' };
+    const rawTopic = aiResult?.topic as string | undefined;
+    const topic = rawTopic && DictionaryService.ALLOWED_TOPICS.includes(rawTopic) ? rawTopic : 'Uncategorized';
+    return { word, phonetic, meanings, synonyms: uniqueSynonyms, topic };
+  }
+
+  private buildWordDto(item: any): any {
+    const data = item.wordCache.data;
+    return {
+      id: item.id,
+      word: data.word,
+      translation: data.translation || data.meanings?.[0]?.definitions?.[0] || '',
+      phonetic: data.phonetic,
+      examples: data.meanings?.[0]?.examples || [],
+      status: item.status,
+      reviewCount: item.reviewCount,
+      masteryScore: item.masteryScore,
+      nextReviewAt: item.nextReviewAt,
+      lastReviewedAt: item.lastReviewedAt,
+      createdAt: item.createdAt,
+    };
+  }
+
+  private resolveTopic(data: any): string {
+    const raw = data.topic as string | undefined;
+    return raw && DictionaryService.ALLOWED_TOPICS.includes(raw) ? raw : 'Uncategorized';
+  }
+
+  private computeReview(item: any, result: 'easy' | 'again' | 'hard') {
+    const now = new Date();
+    let { intervalDays, masteryScore, reviewCount } = item;
+
+    reviewCount += 1;
+    if (result === 'again') {
+      intervalDays = 1;
+      masteryScore = Math.max(0, masteryScore - 0.15);
+    } else if (result === 'hard') {
+      intervalDays = Math.max(1, intervalDays * 1.2);
+      masteryScore = Math.min(1, masteryScore + 0.05);
+    } else {
+      intervalDays = intervalDays < 1 ? 4 : intervalDays * 2.5;
+      masteryScore = Math.min(1, masteryScore + 0.2);
+    }
+
+    let status: string;
+    if (masteryScore >= 0.8 && reviewCount >= 3) {
+      status = 'mastered';
+    } else if (reviewCount <= 2) {
+      status = 'learning';
+    } else {
+      status = 'reviewing';
+    }
+    if (result === 'again') status = 'learning';
+
+    const nextReviewAt = new Date(now.getTime() + intervalDays * 24 * 60 * 60 * 1000);
+    return { intervalDays, masteryScore, reviewCount, status, lastReviewedAt: now, nextReviewAt };
   }
 
   async getFlashcards(userId: string): Promise<any[]> {
-    const history = await this.historyRepo.find({
-      where: { userId },
-      relations: ['wordCache'],
-      order: { createdAt: 'DESC' },
-    });
+    const now = new Date();
+    const history = await this.historyRepo
+      .createQueryBuilder('h')
+      .leftJoinAndSelect('h.wordCache', 'wc')
+      .where('h.user_id = :userId', { userId })
+      .andWhere('h.status != :mastered', { mastered: 'mastered' })
+      .andWhere('(h.next_review_at IS NULL OR h.next_review_at <= :now)', { now })
+      .orderBy('h.created_at', 'DESC')
+      .getMany();
 
     const grouped: Record<string, any[]> = {};
     for (const item of history) {
-      if (!item.wordCache) continue;
-      const data = item.wordCache.data;
-      if (!data) continue;
-      
-      const topic = item.contextSentence || data.topic || 'Uncategorized';
+      if (!item.wordCache?.data) continue;
+      const topic = this.resolveTopic(item.wordCache.data);
       if (!grouped[topic]) grouped[topic] = [];
-      
-      if (!grouped[topic].find(w => w.word === data.word)) {
-        grouped[topic].push({
-          id: item.id,
-          word: data.word,
-          translation: data.translation || data.meanings?.[0]?.definitions?.[0] || '',
-          phonetic: data.phonetic,
-          examples: data.meanings?.[0]?.examples || [],
-          createdAt: item.createdAt,
-        });
+      if (!grouped[topic].find(w => w.word === item.wordCache.data.word)) {
+        grouped[topic].push(this.buildWordDto(item));
       }
     }
 
-    return Object.keys(grouped).map((topic) => ({
-      topic,
-      words: grouped[topic],
-    }));
+    return Object.keys(grouped).map((topic) => ({ topic, words: grouped[topic] }));
+  }
+
+  async getArchivedFlashcards(userId: string): Promise<any[]> {
+    const now = new Date();
+    // Words that have been studied: either scheduled in future OR mastered
+    const history = await this.historyRepo
+      .createQueryBuilder('h')
+      .leftJoinAndSelect('h.wordCache', 'wc')
+      .where('h.user_id = :userId', { userId })
+      .andWhere('h.status != :new', { new: 'new' })
+      .andWhere('(h.next_review_at > :now OR h.status = :mastered)', { now, mastered: 'mastered' })
+      .orderBy('h.last_reviewed_at', 'DESC')
+      .getMany();
+
+    const grouped: Record<string, any[]> = {};
+    for (const item of history) {
+      if (!item.wordCache?.data) continue;
+      const topic = this.resolveTopic(item.wordCache.data);
+      if (!grouped[topic]) grouped[topic] = [];
+      grouped[topic].push(this.buildWordDto(item));
+    }
+
+    return Object.keys(grouped).map((topic) => ({ topic, words: grouped[topic] }));
+  }
+
+  async getReviewDue(userId: string): Promise<any[]> {
+    const now = new Date();
+    const history = await this.historyRepo
+      .createQueryBuilder('h')
+      .leftJoinAndSelect('h.wordCache', 'wc')
+      .where('h.user_id = :userId', { userId })
+      .andWhere('h.status != :mastered', { mastered: 'mastered' })
+      .andWhere('h.status != :new', { new: 'new' })
+      .andWhere('h.next_review_at IS NOT NULL')
+      .andWhere('h.next_review_at <= :now', { now })
+      .orderBy('h.next_review_at', 'ASC')
+      .getMany();
+
+    return history
+      .filter(item => item.wordCache?.data)
+      .map(item => this.buildWordDto(item));
+  }
+
+  async reviewFlashcard(historyId: string, userId: string, result: 'easy' | 'again' | 'hard'): Promise<{ success: boolean; status: string; nextReviewAt: Date }> {
+    const item = await this.historyRepo.findOne({ where: { id: historyId, userId } });
+    if (!item) return { success: false, status: '', nextReviewAt: null };
+
+    const updates = this.computeReview(item, result);
+    try {
+      await this.historyRepo.update({ id: historyId, userId }, updates);
+      return { success: true, status: updates.status, nextReviewAt: updates.nextReviewAt };
+    } catch (e) {
+      this.logger.error(`Failed to review flashcard ${historyId}`, e);
+      return { success: false, status: '', nextReviewAt: null };
+    }
   }
 
   async addFlashcard(userId: string, cacheId: string, contextSentence?: string): Promise<boolean> {
@@ -358,9 +474,14 @@ Return ONLY valid JSON: { "examples": ["example 1", "example 2"], "synonyms": ["
     const cacheEntry = await this.cacheRepo.findOne({ where: { id: cacheId } });
     if (!cacheEntry) return false;
 
-    // Prevent duplicates
+    // If word already exists but is scheduled for the future, reset so it appears immediately
     const existing = await this.historyRepo.findOne({ where: { userId, wordId: cacheId } });
-    if (existing) return true;
+    if (existing) {
+      if (existing.nextReviewAt && existing.nextReviewAt > new Date()) {
+        await this.historyRepo.update({ id: existing.id }, { nextReviewAt: null });
+      }
+      return true;
+    }
 
     try {
       await this.historyRepo.save({

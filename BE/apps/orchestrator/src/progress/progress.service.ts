@@ -57,6 +57,59 @@ export class ProgressService {
     };
   }
 
+  /**
+   * Dashboard stats for the Home page: current streak + this-week activity.
+   * Counts every session the user started (any status) so "studied today" is
+   * reflected immediately, not only after a session is consciously ended.
+   */
+  async getDashboard(userId: string) {
+    const since = new Date();
+    since.setDate(since.getDate() - 60);
+
+    const rows = await this.sessionRepo.find({
+      where: { userId, startedAt: MoreThanOrEqual(since) },
+      select: ['startedAt'],
+      order: { startedAt: 'DESC' },
+    });
+
+    // Local-day key (server timezone). Good enough for MVP streak display.
+    const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    const studiedDays = new Set(rows.map((r) => dayKey(new Date(r.startedAt))));
+
+    // Streak: consecutive days up to today. Grace — if nothing today yet, count
+    // from yesterday so the streak doesn't break until a full day is missed.
+    const cursor = new Date();
+    let currentStreak = 0;
+    if (!studiedDays.has(dayKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+    while (studiedDays.has(dayKey(cursor))) {
+      currentStreak++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    // Weekly: Mon→Sun of the current week with per-day session counts.
+    const labels = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+    const now = new Date();
+    const mondayOffset = (now.getDay() + 6) % 7; // 0 = Monday
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+
+    const countOnDay = (d: Date) =>
+      rows.filter((r) => dayKey(new Date(r.startedAt)) === dayKey(d)).length;
+
+    const weekly = labels.map((day, i) => {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      return { day, count: countOnDay(d), is_today: dayKey(d) === dayKey(now) };
+    });
+
+    return {
+      current_streak: currentStreak,
+      weekly,
+      sessions_today: countOnDay(now),
+    };
+  }
+
   async getSessionBreakdown(userId: string, page = 1, limit = 20) {
     const [sessions, total] = await this.sessionRepo.findAndCount({
       where: { userId, status: 'ended' },

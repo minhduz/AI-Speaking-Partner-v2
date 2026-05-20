@@ -111,7 +111,7 @@ export default function ChatPage() {
   const prevSessionId = useRef<string | null>(null);
   const [sidebarRefreshKey, setSidebarRefreshKey] = useState(0);
 
-  const wordDictionary = useDictionary(sessionTitleUpdate?.title);
+  const wordDictionary = useDictionary();
   const [dictAnchor, setDictAnchor] = useState<{ top: number; left: number } | null>(null);
 
   useEffect(() => {
@@ -1386,26 +1386,29 @@ function DeckCardView({
 }) {
   const [showRejectOptions, setShowRejectOptions] = useState(false);
 
-  // In lighter mode: auto-advance as soon as any result arrives (no retry).
-  // Normal non-onboarding mode: auto-advance only when AI sets next_action = 'next_card'.
-  // Onboarding diagnostic: never auto-advance — wait for the user to press Next/Skip
-  // so the first-session flow feels deliberate and conversational.
+  // Auto-advance policy:
+  //  • Lighter (quick) mode: no manual controls — advance once any result lands.
+  //  • Onboarding final card: auto-finalize so the AI can wrap up session 1.
+  //  • Everything else (onboarding mid-deck AND normal session 2+ practice):
+  //    wait for the user to tap Next/Skip. The AI explicitly invites
+  //    "Tap Next when you're ready", so auto-advancing here would skip the
+  //    user's turn to choose (the session 2+ bug we hit before).
   const card = deck.cards[deck.current_card_index];
   const isOnboarding = deck.session_type === 'onboarding_diagnostic';
   useEffect(() => {
     if (!card?.result) return;
 
-    // Final onboarding card: briefly show completion state, then finalize the deck
-    // so the AI can give the first-session wrap-up without another user click.
     if (isOnboarding && card.next_action === 'finish_session') {
       const t = setTimeout(() => onNext(), 1600);
       return () => clearTimeout(t);
     }
-
     if (isOnboarding) return;
-    if (!isLighter && card.next_action !== 'next_card') return;
-    const t = setTimeout(() => onNext(), 2000);
-    return () => clearTimeout(t);
+
+    if (isLighter) {
+      const t = setTimeout(() => onNext(), 2000);
+      return () => clearTimeout(t);
+    }
+    // Normal practice: do nothing — wait for the user's Next/Skip tap.
   }, [card, card?.result, card?.next_action, isLighter, isOnboarding, onNext]);
 
   if (!card) return null;
