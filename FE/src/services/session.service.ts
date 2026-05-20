@@ -435,6 +435,22 @@ export const sessionService = {
     });
   },
 
+  rejectDeckWithMode: async (sessionId: string, endReason: 'user_chose_free_talk' | 'user_wants_to_end'): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ end_reason: endReason }),
+    });
+  },
+
+  regenerateDeck: async (sessionId: string, topic: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/regenerate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic }),
+    });
+  },
+
   /**
    * Fire-and-forget beacon for tab close / page unload.
    * keepalive:true keeps the request alive after page is gone.

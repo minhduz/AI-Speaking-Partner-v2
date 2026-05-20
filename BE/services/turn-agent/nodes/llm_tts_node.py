@@ -20,12 +20,19 @@ _TTS_MAX_CHARS = 80
 # Sentinel marking the start of the deck-eval JSON block emitted by the LLM at the
 # end of its response when a deck is active. Held back from TTS so the user never
 # hears "EVAL passed true ...".
-# Matches both "EVAL:{" and "EVAL {" (LLM sometimes omits the colon).
-_EVAL_RE = re.compile(r"EVAL\s*:\s*\{|EVAL\s+\{")
+# Matches all observed variants the LLM produces:
+#   EVAL:{    EVAL: {    EVAL {         ← standard JSON form
+#   EVALUATION:  EVALUATION: {          ← LLM sometimes writes the full word
+_EVAL_RE = re.compile(r"EVAL(?:UATION)?\s*:\s*\{|EVAL(?:UATION)?\s+\{|EVALUATION\s*:")
 
 # Sentinel the LLM emits after its farewell when it decides the session should end.
 # Stripped from TTS and converted to a session_ended SSE event.
 _SESSION_END_MARKER = "SESSION_END"
+
+# Sentinel the LLM emits when user picks a new topic during continuation offer.
+# Format: DECK_NEW_TOPIC:{"topic":"..."} — stripped from TTS, triggers deck regeneration.
+_DECK_NEW_TOPIC_RE = re.compile(r"DECK_NEW_TOPIC\s*:\s*\{")
+
 
 
 def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, str]:
@@ -67,6 +74,8 @@ async def llm_tts_node(state: dict) -> dict:
     full_response = ""
     eval_buffer = ""
     eval_started = False
+    deck_new_topic_buffer = ""
+    deck_new_topic_started = False
 
     system = state["system_prompt"]
     summary = state.get("conversation_summary", "")
@@ -101,7 +110,8 @@ async def llm_tts_node(state: dict) -> dict:
 
     session_end_seen = False
 
-    async with aiohttp.ClientSession() as sess:
+    timeout = aiohttp.ClientTimeout(total=120, connect=10, sock_read=60)
+    async with aiohttp.ClientSession(timeout=timeout) as sess:
 
         async def synthesize(text: str) -> str:
             """POST /tts → returns MP3 base64. Empty string on failure."""
@@ -132,79 +142,104 @@ async def llm_tts_node(state: dict) -> dict:
             holdback whenever no marker has been seen yet.
             """
             nonlocal full_response, eval_buffer, eval_started, session_end_seen
+            nonlocal deck_new_topic_buffer, deck_new_topic_started
             tts_buffer = ""
-            # Retain enough chars to catch either marker split across chunks.
-            holdback = max(len("EVAL:{"), len(_SESSION_END_MARKER)) - 1
+            # Retain enough chars to catch any marker split across chunks.
+            holdback = max(len("EVAL:{"), len(_SESSION_END_MARKER), len("DECK_NEW_TOPIC:{")) - 1
             try:
                 async with sess.post(
                     f"{settings.llm_gateway_url}/stream",
                     json={"system": system, "messages": messages_for_llm},
                 ) as resp:
                     resp.raise_for_status()
-                    async for chunk_bytes in resp.content.iter_chunked(256):
-                        text = chunk_bytes.decode("utf-8", errors="replace")
-                        if not text:
-                            continue
-                        full_response += text
+                    try:
+                        async for chunk_bytes in resp.content.iter_chunked(256):
+                            text = chunk_bytes.decode("utf-8", errors="replace")
+                            if not text:
+                                continue
+                            full_response += text
 
-                        if eval_started:
-                            # Stream is past the marker — everything goes to the eval buffer.
-                            eval_buffer += text
-                            continue
+                            if eval_started:
+                                eval_buffer += text
+                                continue
 
-                        tts_buffer += text
+                            if deck_new_topic_started:
+                                deck_new_topic_buffer += text
+                                continue
 
-                        # SESSION_END is a control marker, not spoken content. It can
-                        # appear before or after EVAL; strip it before any TTS split.
-                        session_idx = tts_buffer.find(_SESSION_END_MARKER)
-                        if session_idx >= 0:
-                            session_end_seen = True
-                            tts_buffer = (
-                                tts_buffer[:session_idx].rstrip()
-                                + " "
-                                + tts_buffer[session_idx + len(_SESSION_END_MARKER):].lstrip()
-                            ).strip()
+                            tts_buffer += text
 
-                        eval_match = _EVAL_RE.search(tts_buffer)
-                        if eval_match:
-                            # Split at the marker: prefix → TTS (flush all), rest → eval.
-                            # Preserve the opening "{" that the regex consumed.
-                            eval_buffer = "{" + tts_buffer[eval_match.end():]
-                            tts_buffer = tts_buffer[:eval_match.start()].rstrip()
-                            eval_started = True
+                            # SESSION_END is a control marker, not spoken content. It can
+                            # appear before or after EVAL; strip it before any TTS split.
+                            session_idx = tts_buffer.find(_SESSION_END_MARKER)
+                            if session_idx >= 0:
+                                session_end_seen = True
+                                tts_buffer = (
+                                    tts_buffer[:session_idx].rstrip()
+                                    + " "
+                                    + tts_buffer[session_idx + len(_SESSION_END_MARKER):].lstrip()
+                                ).strip()
 
-                            # Flush remaining TTS-eligible text now that the boundary is known.
-                            while True:
-                                segment, tts_buffer = _split_tts_segment(tts_buffer)
-                                if not segment:
-                                    break
-                                task = asyncio.create_task(synthesize(segment))
-                                await seg_queue.put((segment, task))
-                            segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
-                            if segment:
-                                task = asyncio.create_task(synthesize(segment))
-                                await seg_queue.put((segment, task))
-                            continue
+                            eval_match = _EVAL_RE.search(tts_buffer)
+                            if eval_match:
+                                # Split at the marker: prefix → TTS (flush all), rest → eval.
+                                # Preserve the opening "{" that the regex consumed.
+                                eval_buffer = "{" + tts_buffer[eval_match.end():]
+                                tts_buffer = tts_buffer[:eval_match.start()].rstrip()
+                                eval_started = True
 
-                        # No marker yet — only segment from the safe portion, keeping a
-                        # holdback at the tail in case the marker spans the next chunk.
-                        if len(tts_buffer) > holdback:
-                            safe = tts_buffer[:-holdback] if holdback else tts_buffer
-                            pinned = tts_buffer[-holdback:] if holdback else ""
-                            while True:
-                                segment, safe = _split_tts_segment(safe)
-                                if not segment:
-                                    break
-                                task = asyncio.create_task(synthesize(segment))
-                                await seg_queue.put((segment, task))
-                            tts_buffer = safe + pinned
+                                # Flush remaining TTS-eligible text now that the boundary is known.
+                                while True:
+                                    segment, tts_buffer = _split_tts_segment(tts_buffer)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
+                                if segment:
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                continue
 
-                # Stream ended. Flush whatever is left in tts_buffer (no marker found,
-                # or the pinned holdback after the marker was already handled).
-                segment, _ = _split_tts_segment(tts_buffer, force=True)
-                if segment:
-                    task = asyncio.create_task(synthesize(segment))
-                    await seg_queue.put((segment, task))
+                            dnt_match = _DECK_NEW_TOPIC_RE.search(tts_buffer)
+                            if dnt_match:
+                                deck_new_topic_buffer = "{" + tts_buffer[dnt_match.end():]
+                                tts_buffer = tts_buffer[:dnt_match.start()].rstrip()
+                                deck_new_topic_started = True
+
+                                while True:
+                                    segment, tts_buffer = _split_tts_segment(tts_buffer)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
+                                if segment:
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                continue
+
+                            # No marker yet — only segment from the safe portion, keeping a
+                            # holdback at the tail in case the marker spans the next chunk.
+                            if len(tts_buffer) > holdback:
+                                safe = tts_buffer[:-holdback] if holdback else tts_buffer
+                                pinned = tts_buffer[-holdback:] if holdback else ""
+                                while True:
+                                    segment, safe = _split_tts_segment(safe)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                tts_buffer = safe + pinned
+                    except aiohttp.ClientPayloadError as e:
+                        log.warning("[llm_tts] LLM stream cut short (%s) — flushing partial response", e)
+
+                    # Stream ended. Flush whatever is left in tts_buffer (no marker found,
+                    # or the pinned holdback after the marker was already handled).
+                    segment, _ = _split_tts_segment(tts_buffer, force=True)
+                    if segment:
+                        task = asyncio.create_task(synthesize(segment))
+                        await seg_queue.put((segment, task))
             finally:
                 await seg_queue.put(None)
 
@@ -237,6 +272,14 @@ async def llm_tts_node(state: dict) -> dict:
         if session_end_seen:
             writer({"type": "session_ended"})
             log.info("[llm_tts] session_ended signal emitted  session=%s", state.get("session_id"))
+
+        if deck_new_topic_started:
+            parsed_topic = _parse_deck_new_topic(deck_new_topic_buffer)
+            if parsed_topic:
+                writer({"type": "deck_new_topic", "topic": parsed_topic})
+                log.info("[llm_tts] deck_new_topic emitted  topic=%r  session=%s", parsed_topic, state.get("session_id"))
+            else:
+                log.warning("[llm_tts] DECK_NEW_TOPIC block present but failed to parse  raw=%r", deck_new_topic_buffer[:200])
 
         # ── Phase 5 — Deck evaluation handling ────────────────────────────
         # When a deck is active, the LLM appends `EVAL:{...json...}` at the very end
@@ -332,10 +375,14 @@ async def llm_tts_node(state: dict) -> dict:
     if eval_match_strip:
         spoken_response = spoken_response[:eval_match_strip.start()].rstrip()
 
-    # Strip SESSION_END from persisted text. The SSE event is emitted during
-    # stream processing before TTS segmentation so the marker is never spoken.
+    # Strip SESSION_END from persisted text.
     if _SESSION_END_MARKER in spoken_response:
         spoken_response = spoken_response.replace(_SESSION_END_MARKER, "").rstrip()
+
+    # Strip DECK_NEW_TOPIC block from persisted text.
+    dnt_strip = _DECK_NEW_TOPIC_RE.search(spoken_response)
+    if dnt_strip:
+        spoken_response = spoken_response[:dnt_strip.start()].rstrip()
 
     return {"full_response": spoken_response, "tokens_used": tokens_used}
 
@@ -377,3 +424,37 @@ def _parse_eval_block(raw: str) -> dict | None:
     if not isinstance(parsed, dict) or "passed" not in parsed:
         return None
     return parsed
+
+
+def _parse_deck_new_topic(raw: str) -> str | None:
+    """
+    Parse the JSON object the LLM emits after `DECK_NEW_TOPIC:`.
+    Returns the topic string, or None if the block is malformed.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        return None
+    try:
+        parsed = json.loads(text[start:end])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    topic = (parsed.get("topic") or "").strip()
+    return topic or None

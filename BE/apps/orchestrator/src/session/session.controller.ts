@@ -233,6 +233,13 @@ export class SessionController {
     return this.sessionService.endDeck(sessionId, body?.end_reason ?? 'user_clicked_end');
   }
 
+  // PUT /session/:id/deck/regenerate — generate a fresh deck for a user-supplied topic
+  @Put(':id/deck/regenerate')
+  @HttpCode(200)
+  regenerateDeck(@Param('id') sessionId: string, @Body() body: { topic: string }, @Req() req) {
+    return this.sessionService.regenerateDeckFromTopic(req.user.id, sessionId, body.topic ?? '');
+  }
+
   private async streamGreetingForUser(
     userId: string,
     res: Response,

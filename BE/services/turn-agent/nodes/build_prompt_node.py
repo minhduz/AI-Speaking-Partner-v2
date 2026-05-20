@@ -459,10 +459,11 @@ def _build_card_context_block(state: dict) -> str:
         + (
             "\nDo NOT output an EVAL block this turn — the user has not attempted the task yet.\n"
             if not transcript else
-            "\nAFTER RESPONDING, output a JSON evaluation block on a new line at the very end:\n"
-            'EVAL:{"passed":bool,"feedback":"short coaching note",'
-            '"retryRecommended":bool,"nextAction":"retry|next_card|finish_session",'
-            '"detectedIssues":["string"]}\n'
+            "\nAFTER RESPONDING, append EXACTLY this JSON on a new line — no prose, no markdown fences:\n"
+            'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"next_card","detectedIssues":[]}\n'
+            'If the user failed: EVAL:{"passed":false,"feedback":"one coaching sentence","retryRecommended":true,"nextAction":"retry","detectedIssues":["confusion"]}\n'
+            'RULES: "passed" must be true or false. "nextAction" must be exactly "retry", "next_card", or "finish_session".\n'
+            'CRITICAL: the block MUST start with exactly EVAL:{ — do NOT write EVALUATION: or any other format.\n'
             + (
                 "This is the LAST card. If passed=true, set nextAction=\"finish_session\".\n"
                 if card_index + 1 >= card_total else
@@ -531,14 +532,15 @@ def _build_card_soft_offer_block(state: dict) -> str:
         f"Task: {card_task}\n"
         "\nCHALLENGE OFFER RULES — read carefully:\n"
         "1. This challenge is 100% OPTIONAL. Never force or repeat it.\n"
-        "2. First respond naturally to what the user just said.\n"
-        "3. If the moment feels right, offer it in ONE casual sentence — e.g.:\n"
-        '   "I have a quick practice ready if you feel like it — want to try?"\n'
-        "4. If the user says YES or engages with the task → guide them and evaluate.\n"
-        "5. If the user says NO, ignores it, changes topic, or seems uninterested → DROP IT.\n"
+        "2. If the moment feels right, offer it in ONE casual sentence. "
+        "Before that, you may acknowledge what the user said in ONE short sentence — "
+        "but do NOT ask a follow-up question. A question would force the user to answer BEFORE the offer.\n"
+        '   Example: "That sounds like solid practice. I also have a quick exercise ready if you feel like it — want to try?"\n'
+        "3. If the user says YES or engages with the task → guide them and evaluate.\n"
+        "4. If the user says NO, ignores it, changes topic, or seems uninterested → DROP IT.\n"
         "   Do NOT redirect, do NOT mention it again. Continue on whatever topic they prefer.\n"
-        "6. If user seems tired, low-energy, or mentions being busy → skip the offer entirely.\n"
-        "7. NEVER open your response by pitching the challenge. Warm up first.\n"
+        "5. If user seems tired, low-energy, or mentions being busy → skip the offer entirely.\n"
+        "6. NEVER open your response by pitching the challenge. Warm up first.\n"
         "\nEVAL: Only output EVAL:{...} if the user actually attempted the card task.\n"
         "Do NOT output EVAL if the user is warming up, chatting, or declined.\n"
     )
@@ -559,16 +561,36 @@ def _build_card_hard_offer_block(state: dict) -> str:
         f"Title: {card_title}\n"
         f"Task: {card_task}\n"
         "\nOFFER RULES:\n"
-        "1. First respond naturally to what the user just said (1-2 sentences max).\n"
+        "1. You may acknowledge what the user said in ONE short sentence — "
+        "but do NOT ask a follow-up question. A question forces the user to choose between answering it "
+        "or answering the challenge offer, creating confusion.\n"
         "2. Then YOU MUST offer the challenge in ONE short sentence — e.g.:\n"
         '   "I\'ve got a quick practice ready for you — want to give it a try?"\n'
-        '   or: "Actually, I\'ve got a short exercise that fits perfectly — feel like trying it?"\n'
+        '   or: "I\'ve got a short exercise that fits perfectly — feel like trying it?"\n'
         '   or: "Let\'s try a quick real practice — ready for it?"\n'
         "3. The user can say YES or NO — both are fine. But you MUST offer it this turn.\n"
         "4. If the user says YES → guide them through the task and evaluate.\n"
         "5. If the user says NO → drop it completely and continue the conversation.\n"
         "\nEVAL: Only output EVAL:{...} if the user actually attempted the card task.\n"
         "Do NOT output EVAL if the user declined.\n"
+    )
+
+
+def _build_continuation_offer_block(state: dict) -> str:
+    """
+    Injected when a continuation deck is not_started (user skipped cards last session).
+    AI offers to retry the old exercises OR do exercises based on this session's topic.
+    """
+    card_total = int(state.get("card_total") or 0)
+    return (
+        f"\n\nCONTINUATION OFFER: Last session the user left {card_total} exercise(s) unfinished. "
+        "In 1-2 warm sentences, mention this and offer two options:\n"
+        "Option A — retry the skipped exercises from last time.\n"
+        "Option B — do exercises based on what you've been chatting about in THIS session.\n"
+        "Keep it light — don't make them feel bad about skipping.\n"
+        "Example: \"By the way, last time we had a couple of exercises you didn't get to — "
+        "want to pick those back up, or shall I put together some practice based on what we've been talking about today?\"\n"
+        "Do NOT start the exercise yet. Do NOT output an EVAL block."
     )
 
 
@@ -645,16 +667,16 @@ async def build_prompt_node(state: dict) -> dict:
         deck_active = bool(state.get("deck_active", False))
         deck_status = (state.get("deck_status") or "none").strip()
 
-        # Suppress mission block when we're about to present a deck challenge offer —
-        # the "Stay on this mission" instruction conflicts with the offer and wins.
-        _deck_offer_pending = (
-            not is_onboarding
-            and deck_status == "not_started"
-            and turn_index >= 3
+        # Suppress mission block whenever the deck owns the next AI turn — otherwise
+        # the "Stay on this mission" instruction overrides deck-specific instructions.
+        _suppress_mission_block = not is_onboarding and (
+            deck_active                                                         # card in_progress
+            or (deck_status == "not_started" and turn_index >= 3)              # offer pending
+            or (deck_status in ("completed", "ended_early") and not transcript) # deck ending
         )
         # Promote SESSION_INSIGHT only when no external active mission exists.
         mission_block = None if active_mission else _build_active_mission_block(data.get("chunks_debug", []))
-        if mission_block and not _deck_offer_pending:
+        if mission_block and not _suppress_mission_block:
             system_prompt += mission_block
 
         if is_onboarding:
@@ -736,35 +758,136 @@ async def build_prompt_node(state: dict) -> dict:
                     state.get("card_type", ""),
                 )
             elif deck_status == "completed" and not transcript:
-                # All cards done — AI pivots to free chat.
-                mode = get_session_mode(turn_index)
-                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                # Deck session done — check in on difficulty, open free chat.
+                # Do NOT inject SESSION_MODE_INSTRUCTIONS here — REFLECTION mode's
+                # "note one specific thing they did well" causes the AI to over-praise
+                # as if the user aced every card, even when they skipped some.
                 system_prompt += (
-                    "\n\nDECK FINISHED: The exercise session is now complete. "
-                    "In 1-2 warm sentences, acknowledge the effort and naturally open up free conversation. "
-                    "Do NOT mention or ask about the exercise topics anymore. "
+                    "\n\nDECK FINISHED: The user has just wrapped up the exercise session "
+                    "(they may have skipped some cards — do NOT assume they completed everything perfectly). "
+                    "In 1-2 warm, neutral sentences: acknowledge the session without over-praising, "
+                    "then ask ONE question — was there anything in those exercises they found tricky "
+                    "or want to talk through? "
+                    "Example: 'Nice work today! Was there anything in those exercises you found tricky, "
+                    "or would you like to keep chatting about something else?' "
+                    "Do NOT say things like 'you explained everything so well' or 'you absorbed so much' "
+                    "— you do not know which cards they actually did. Keep it simple and open. "
+                    "Do NOT list or repeat the card tasks. "
+                    "If the user says they want to end → include SESSION_END at the very end of your response. "
                     "Do NOT output an EVAL block."
                 )
                 log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(completed→free_chat)",
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(completed→check_in)",
                     chunks_used, tokens,
                 )
             elif deck_status == "ended_early" and not transcript:
-                # User skipped — pivot to free chat and let them decide whether to stay.
+                deck_end_reason = (state.get("deck_end_reason") or "").strip()
+                if deck_end_reason == "user_chose_free_talk":
+                    system_prompt += (
+                        "\n\nFREE TALK: The user declined the exercise and wants to chat freely. "
+                        "In ONE warm sentence, acknowledge that's fine, then ask ONE question: "
+                        "would they like to continue with the topic you were just discussing, or switch to something new? "
+                        "For example: 'No problem! Would you like to keep talking about [topic from conversation], "
+                        "or is there something else you'd like to chat about?' "
+                        "Replace [topic] with the actual subject from the recent conversation. "
+                        "Do NOT mention the exercise again. Do NOT output an EVAL block."
+                    )
+                elif deck_end_reason == "user_wants_to_end":
+                    # Do NOT add SESSION_MODE_INSTRUCTIONS — this needs a clear pivot.
+                    system_prompt += (
+                        "\n\nSOFT END: The user declined the exercise and may want to end the session. "
+                        "In 1-2 warm sentences: acknowledge that's totally fine, then offer a clear choice — "
+                        "e.g. 'Would you like to keep chatting about something else, or shall we wrap up for today?' "
+                        "Do NOT continue the previous topic. Do NOT say goodbye yet. "
+                        "If the user says they want to end → include SESSION_END at the very end of your response. "
+                        "Do NOT output an EVAL block."
+                    )
+                else:
+                    # User skipped through all cards — empathize, invite reflection, offer choice.
+                    system_prompt += (
+                        "\n\nDECK SKIPPED: The user skipped through all the exercise cards. "
+                        "In 1-2 warm sentences: acknowledge that's totally fine, then ask ONE question that does two things — "
+                        "invites them to share what they found difficult (if anything), AND offers the option to talk about "
+                        "a different topic or wrap up. "
+                        "Example: 'No problem! Was there anything in those exercises you found tricky or want to talk through? "
+                        "Or would you rather chat about something else — or even call it a day?' "
+                        "Do NOT list or repeat the card tasks. Do NOT mention the exercises further after this. "
+                        "If the user says they want to end → include SESSION_END at the very end of your response. "
+                        "Do NOT output an EVAL block."
+                    )
+                log.info(
+                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→%s)",
+                    chunks_used, tokens, deck_end_reason or "generic",
+                )
+            elif deck_status == "ended_early" and transcript:
+                # User is responding after deck ended early.
+                # Only user_wants_to_end needs special handling — the AI just asked
+                # "continue or end?" and the user is answering. Inject guidance so
+                # the AI knows to include SESSION_END if they pick end.
+                deck_end_reason_resp = (state.get("deck_end_reason") or "").strip()
                 mode = get_session_mode(turn_index)
                 system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
-                system_prompt += (
-                    "\n\nDECK SKIPPED: The user skipped the exercise. "
-                    "In 1-2 warm sentences, acknowledge that's totally fine. "
-                    "Then ask ONE open question to keep the conversation going — e.g. about their day, "
-                    "something they mentioned earlier, or what else is on their mind. "
-                    "Do NOT mention the exercise again. Do NOT output an EVAL block. "
-                    "Do NOT say goodbye or imply the session is ending."
-                )
-                log.info(
-                    "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→free_chat)",
-                    chunks_used, tokens,
-                )
+                if deck_end_reason_resp == "user_wants_to_end":
+                    system_prompt += (
+                        "\n\nSOFT END RESPONSE: You previously asked the user whether they want "
+                        "to keep chatting or end the session. They just replied. Act accordingly:\n"
+                        "- If they want to CONTINUE → respond naturally and start fresh conversation. "
+                        "Ask ONE open question on any topic they prefer. Do NOT mention the exercise.\n"
+                        "- If they want to END → give ONE warm farewell sentence, then append SESSION_END "
+                        "on the same line.\n"
+                        "  Example: 'Sounds good — take care, see you next time! SESSION_END'\n"
+                        "  The system strips SESSION_END before TTS — the user will never hear it.\n"
+                        "Do NOT output an EVAL block."
+                    )
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→soft_end_response)",
+                        chunks_used, tokens,
+                    )
+                else:
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(ended_early→response)  mode=%s",
+                        chunks_used, tokens, mode,
+                    )
+
+            elif deck_status == "not_started" and state.get("deck_is_continuation") and turn_index >= 3:
+                # Continuation deck: AI offers to retry the skipped cards or switch topics
+                mode = get_session_mode(turn_index)
+                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                if not transcript:
+                    system_prompt += _build_continuation_offer_block(state)
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(continuation_offer)  mode=%s",
+                        chunks_used, tokens, mode,
+                    )
+                else:
+                    # User replied to continuation offer — handle their choice.
+                    # For "new topic": AI infers topic from THIS session's conversation
+                    # (recent_messages) — no need to ask the user again.
+                    system_prompt += (
+                        "\n\nCONTINUATION RESPONSE: You just asked the user whether they want "
+                        "to retry their skipped exercises from last session or do exercises based "
+                        "on this session's conversation. They just replied. Act on their choice:\n"
+                        "- If they want to RETRY (e.g. 'yes', 'sure', 'let's do it', 'old ones') → "
+                        "acknowledge warmly in 1 sentence and say you'll start the first exercise. "
+                        "Do NOT describe the exercise — the UI will show the card.\n"
+                        "- If they want exercises based on THIS session (e.g. 'no', 'new', "
+                        "'today's topic', 'what we talked about') → "
+                        "look at the conversation so far and identify the main topic you've been discussing. "
+                        "In 1 warm sentence, confirm you'll make exercises about that topic. "
+                        "Then at the very end of your response append on its own line:\n"
+                        "DECK_NEW_TOPIC:{\"topic\":\"<the topic from this session's conversation>\"}\n"
+                        "  The topic should be a short phrase (3-6 words) extracted from the conversation, "
+                        "e.g. 'explaining your startup idea', 'job interview in English', 'traveling abroad'.\n"
+                        "  Do NOT ask the user what topic — extract it yourself from the conversation.\n"
+                        "- If they want to SKIP altogether (no exercises today) → "
+                        "respond naturally and start free chat. Do NOT emit DECK_NEW_TOPIC.\n"
+                        "Do NOT output an EVAL block."
+                    )
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  DECK(continuation_response)  mode=%s",
+                        chunks_used, tokens, mode,
+                    )
+
             elif deck_status == "not_started" and turn_index >= 3:
                 # Turn 3-4: soft optional offer; turn 5+: AI must offer the challenge
                 mode = get_session_mode(turn_index)

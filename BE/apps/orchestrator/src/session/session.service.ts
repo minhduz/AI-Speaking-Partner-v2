@@ -423,6 +423,15 @@ export class SessionService {
     await this.generateDeck(userId, sessionId, user, insight, activeMission, isFirstSession);
   }
 
+  async regenerateDeckFromTopic(userId: string, sessionId: string, topic: string): Promise<void> {
+    const [user, insight] = await Promise.all([
+      this.userService.findById(userId).catch(() => null),
+      this.getSessionInsight(userId),
+    ]);
+    const mission = topic.trim();
+    await this.generateDeck(userId, sessionId, user, { ...insight, recommended_next_mode: null }, mission, false);
+  }
+
   async getSessionType(
     userId: string,
     isOnboarding: boolean,
@@ -474,19 +483,44 @@ export class SessionService {
     console.log(`[Deck]   missionSrc  : ${missionSource}`);
 
     let cards: any[];
+    let isContinuation = false;
 
     if (sessionType === 'onboarding_diagnostic') {
       cards = this.buildOnboardingCards(user);
+    } else if (
+      insight?.recommended_next_mode === 'resume_deck' &&
+      Array.isArray(insight?.unfinished_deck_cards) &&
+      insight.unfinished_deck_cards.length > 0
+    ) {
+      // Continuation deck: rebuild cards from the unfinished cards of the last session.
+      // Reset each card to not_started so the user can retry them.
+      cards = insight.unfinished_deck_cards.map((c: any, i: number) => ({
+        id:                       `card-${i + 1}`,
+        type:                     c.type ?? 'real_situation',
+        title:                    c.title,
+        task:                     c.task,
+        success_criteria:         c.success_criteria ?? [],
+        expected_duration_seconds: c.expected_duration_seconds ?? 60,
+        retry_allowed:            true,
+        status:                   'not_started',
+        attempts:                 0,
+        result:                   null,
+        feedback:                 null,
+        ui_hint:                  null,
+      }));
+      mission       = (insight.deck_mission || mission).trim();
+      missionSource = 'continuation';
+      reason        = 'Resuming exercises you skipped in your last session';
+      isContinuation = true;
+      console.log(`[Deck]   continuation: ${cards.length} unfinished cards from last session`);
     } else {
       // Lighter deck for low energy or if memory recommends it
       const isLightDeck =
         insight?.energy_signal === 'low' ||
         insight?.recommended_next_mode === 'lighter_deck';
-      const cardTypes = isLightDeck
-        ? ['simple_explanation', 'weakness_drill', 'real_situation']
-        : ['simple_explanation', 'weakness_drill', 'real_situation', 'final_boss'];
+      const numCards = isLightDeck ? 3 : 4;
 
-      cards = await this.generateCardsWithLLM(sessionType, mission, insight, user, cardTypes, llmUrl);
+      cards = await this.generateCardsWithLLM(sessionType, mission, insight, user, numCards, llmUrl);
     }
 
     const deck = {
@@ -500,6 +534,7 @@ export class SessionService {
       current_card_index:  0,
       cards,
       end_reason:          null,
+      is_continuation:     isContinuation,
     };
 
     try {
@@ -551,55 +586,71 @@ export class SessionService {
     mission: string,
     insight: any,
     user: any,
-    cardTypes: string[],
+    numCards: number,
     llmUrl: string,
   ): Promise<any[]> {
-    const typeDescriptions: Record<string, string> = {
-      simple_explanation: 'warm-up, simple and achievable, builds momentum (30-45 sec)',
-      weakness_drill:     'targets specific weakness from last session (45-60 sec)',
-      real_situation:     'applies the skill in a real, natural context (60 sec)',
-      final_boss:         'extended 60-second synthesizing response (60-90 sec)',
-    };
+    const cardPool = [
+      { type: 'simple_explanation', desc: 'Warm-up: ask user to explain a basic concept from the mission simply (30-45 sec)' },
+      { type: 'opinion',            desc: 'Ask user to state and briefly support an opinion on the mission topic (45 sec)' },
+      { type: 'storytelling',       desc: 'Ask user to share a short personal story or anecdote related to the mission (45 sec)' },
+      { type: 'comparison',         desc: 'Ask user to compare two things, approaches, or ideas from the mission (45-60 sec)' },
+      { type: 'roleplay',           desc: 'Set up a realistic dialogue scenario; user plays one role and must respond naturally (60 sec)' },
+      { type: 'real_situation',     desc: 'Give a specific real-life context; user responds as themselves (60 sec)' },
+      { type: 'weakness_drill',     desc: 'Targeted drill on a specific weakness from last session or common sticking point (45-60 sec)' },
+      { type: 'scenario_response',  desc: 'Surprise the user with an unexpected question or situation and ask them to respond on the spot (45 sec)' },
+      { type: 'paraphrase',         desc: 'Give user a sentence or idea; ask them to say the same thing in a completely different way (30-45 sec)' },
+      { type: 'vocabulary_in_context', desc: 'Give 3 specific words or phrases; user must use all 3 naturally in connected sentences (45 sec)' },
+      { type: 'final_boss',         desc: 'Extended free speech: user synthesizes everything practiced today — must say "speak for 60 seconds" (60-90 sec). ALWAYS the last card.' },
+    ];
+
+    const poolDesc = cardPool.map(c => `- ${c.type}: ${c.desc}`).join('\n');
 
     const contextLines = [
-      insight?.struggled_with    ? `Struggled with last session: ${insight.struggled_with}`    : '',
-      insight?.improved_vs_before ? `Improved on: ${insight.improved_vs_before}`               : '',
-      insight?.energy_signal     ? `Energy level: ${insight.energy_signal}`                    : '',
+      insight?.struggled_with     ? `Struggled with last session: ${insight.struggled_with}`    : '',
+      insight?.improved_vs_before ? `Improved on: ${insight.improved_vs_before}`                : '',
+      insight?.energy_signal      ? `Energy level: ${insight.energy_signal}`                    : '',
     ].filter(Boolean).join('\n');
-
-    const typesList = cardTypes
-      .map((t, i) => `${i + 1}. ${t} — ${typeDescriptions[t] ?? t}`)
-      .join('\n');
 
     const systemPrompt = [
       `You are an exercise deck planner for a language coaching app.`,
-      `Generate exactly ${cardTypes.length} speaking exercise cards.`,
+      `Choose and generate exactly ${numCards} speaking exercise cards from the pool below.`,
       ``,
       `Session type: ${sessionType}`,
       `Mission: "${mission}"`,
       `User level: ${user?.level ?? 'beginner'}`,
       `Target language: ${user?.targetLanguage ?? 'English'}`,
       `Native language: ${user?.nativeLanguage ?? 'Vietnamese'}`,
-      contextLines ? `Context:\n${contextLines}` : '',
+      contextLines ? `Context from last session:\n${contextLines}` : '',
       ``,
-      `Generate cards in this exact order:`,
-      typesList,
+      `CARD TYPE POOL — choose the best combination for this mission:`,
+      poolDesc,
       ``,
-      `Rules:`,
-      `- Each task: 1-2 clear sentences, specific to the mission — not generic.`,
-      `- Final boss task must explicitly ask user to speak for 60 seconds.`,
+      `SELECTION RULES:`,
+      `- Card 1: must be a gentle warm-up (simple_explanation, opinion, or storytelling).`,
+      `- Card ${numCards} (last): MUST be final_boss.`,
+      `- Middle cards: pick whichever types fit best — vary them, do NOT default to the same pattern each time.`,
+      `- Do NOT repeat types unless the pool has no other fit.`,
+      `- Match the type to the mission theme: roleplay fits job/social scenarios, storytelling fits personal growth, comparison fits cultural topics, vocabulary_in_context fits language-focused missions, scenario_response fits quick-thinking practice, etc.`,
+      ``,
+      `CONTENT RULES:`,
+      `- Each task: 1-2 clear sentences, specific to the mission — no generic filler.`,
+      `- final_boss task must explicitly say "speak for 60 seconds".`,
       `- Success criteria: 2-3 short measurable statements. Be forgiving — clear meaning counts.`,
       `- Title: 4 words max.`,
       ``,
-      `Return ONLY a valid JSON array, no markdown:`,
-      `[{"id":"card-1","type":"<type>","title":"<title>","task":"<task>","success_criteria":["<c1>","<c2>"],"expected_duration_seconds":<n>,"retry_allowed":true,"status":"not_started","attempts":0,"result":null,"feedback":null,"ui_hint":null}]`,
+      `Return ONLY a valid JSON array, no markdown fences:`,
+      `[{"id":"card-1","type":"<chosen_type>","title":"<title>","task":"<task>","success_criteria":["<c1>","<c2>"],"expected_duration_seconds":<n>,"retry_allowed":true,"status":"not_started","attempts":0,"result":null,"feedback":null,"ui_hint":null}]`,
     ].filter((s) => s !== '').join('\n');
+
+    const fallbackTypes = numCards === 3
+      ? ['simple_explanation', 'real_situation', 'final_boss']
+      : ['simple_explanation', 'weakness_drill', 'real_situation', 'final_boss'];
 
     try {
       const res = await firstValueFrom(
         this.http.post(`${llmUrl}/complete`, {
           system: systemPrompt,
-          messages: [{ role: 'user', content: `Generate ${cardTypes.length} exercise cards for mission: "${mission}"` }],
+          messages: [{ role: 'user', content: `Generate ${numCards} exercise cards for mission: "${mission}"` }],
         }),
       );
       let text: string = res.data?.response_text ?? res.data?.text ?? '';
@@ -609,22 +660,22 @@ export class SessionService {
         if (match) {
           const parsed = JSON.parse(match[0]);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            console.log(`[Deck] LLM generated ${parsed.length} cards for session type=${sessionType}`);
+            console.log(`[Deck] LLM generated ${parsed.length} cards  types=${parsed.map((c: any) => c.type).join(',')}  session=${sessionType}`);
             return parsed.map((card: any, i: number) => ({
-              id:                       card.id ?? `card-${i + 1}`,
-              type:                     card.type ?? cardTypes[i],
-              title:                    card.title ?? 'Exercise',
-              task:                     card.task ?? 'Practice speaking clearly.',
-              success_criteria:         Array.isArray(card.success_criteria) ? card.success_criteria
-                                      : Array.isArray(card.successCriteria)  ? card.successCriteria
-                                      : ['meaning is clear'],
+              id:                        card.id ?? `card-${i + 1}`,
+              type:                      card.type ?? fallbackTypes[i] ?? 'simple_explanation',
+              title:                     card.title ?? 'Exercise',
+              task:                      card.task ?? 'Practice speaking clearly.',
+              success_criteria:          Array.isArray(card.success_criteria) ? card.success_criteria
+                                       : Array.isArray(card.successCriteria)  ? card.successCriteria
+                                       : ['meaning is clear'],
               expected_duration_seconds: card.expected_duration_seconds ?? card.expectedDurationSeconds ?? 60,
-              retry_allowed:            card.retry_allowed ?? card.retryAllowed ?? true,
-              status:                   'not_started',
-              attempts:                 0,
-              result:                   null,
-              feedback:                 null,
-              ui_hint:                  card.ui_hint ?? card.uiHint ?? null,
+              retry_allowed:             card.retry_allowed ?? card.retryAllowed ?? true,
+              status:                    'not_started',
+              attempts:                  0,
+              result:                    null,
+              feedback:                  null,
+              ui_hint:                   card.ui_hint ?? card.uiHint ?? null,
             }));
           }
         }
@@ -634,7 +685,7 @@ export class SessionService {
     }
 
     console.log(`[Deck] using fallback cards for mission="${mission.slice(0, 50)}"`);
-    return this.buildFallbackCards(mission, cardTypes);
+    return this.buildFallbackCards(mission, fallbackTypes);
   }
 
   private buildFallbackCards(mission: string, cardTypes: string[]): any[] {

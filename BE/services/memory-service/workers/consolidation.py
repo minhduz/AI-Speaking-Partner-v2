@@ -33,15 +33,28 @@ def _build_deck_context(deck: dict | None) -> dict | None:
         }
         for c in cards
     ]
+    # Cards that weren't completed — useful for next-session continuation offer.
+    unfinished = [
+        {
+            "title":            c.get("title"),
+            "type":             c.get("type"),
+            "task":             c.get("task"),
+            "success_criteria": c.get("success_criteria"),
+            "expected_duration_seconds": c.get("expected_duration_seconds", 60),
+        }
+        for c in cards
+        if c.get("status") in ("skipped", "not_started") and c.get("title")
+    ]
     return {
-        "session_type":    deck.get("session_type"),
-        "mission":         deck.get("mission"),
-        "deck_status":     deck.get("status"),
-        "end_reason":      deck.get("end_reason"),
-        "completed_cards": completed,
-        "skipped_cards":   skipped,
-        "total_cards":     len(cards),
-        "card_results":    card_results,
+        "session_type":       deck.get("session_type"),
+        "mission":            deck.get("mission"),
+        "deck_status":        deck.get("status"),
+        "end_reason":         deck.get("end_reason"),
+        "completed_cards":    completed,
+        "skipped_cards":      skipped,
+        "total_cards":        len(cards),
+        "card_results":       card_results,
+        "unfinished_cards":   unfinished,
     }
 
 
@@ -197,6 +210,19 @@ async def run_consolidation(user_id: str, session_id: str):
         log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts, session_insight=%s",
                  len(raw_facts), len(raw_st_facts), "yes" if session_insight else "no")
 
+        # Inject unfinished deck info deterministically — no LLM needed.
+        # If the deck ended early with cards still not done, store them so the
+        # next session can offer to retry them (deck continuation feature).
+        if deck_context and session_insight is not None:
+            unfinished = deck_context.get("unfinished_cards", [])
+            if unfinished and deck_context.get("deck_status") == "ended_early":
+                session_insight["unfinished_deck_cards"] = unfinished
+                session_insight["deck_mission"] = deck_context.get("mission")
+                log.info(
+                    "step 3 — injected unfinished_deck_cards=%d  mission=%r",
+                    len(unfinished), deck_context.get("mission"),
+                )
+
         # 3b. If this user has an onboarding state in Redis, this is their first
         # speaking session. Fold the extracted onboarding signals into the
         # session_insight so the next session's greeting can reference them.
@@ -319,6 +345,9 @@ async def run_consolidation(user_id: str, session_id: str):
                 "speaking_style",
                 "emotional_energy",
                 "recommended_next_session",
+                # Deck continuation fields (deterministically injected above)
+                "unfinished_deck_cards",
+                "deck_mission",
             )
             if session_insight and _has_insight_content(session_insight):
                 insight_payload = {

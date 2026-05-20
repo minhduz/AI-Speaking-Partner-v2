@@ -28,6 +28,8 @@ class TurnState(TypedDict):
     # Exercise deck card context (populated from X-Deck-* headers)
     deck_active: bool
     deck_status: str          # not_started | in_progress | completed | ended_early | abandoned | none
+    deck_end_reason: str      # user_chose_free_talk | user_wants_to_end | user_clicked_end | completed_deck | ""
+    deck_is_continuation: bool
     card_index: int
     card_total: int
     card_type: str

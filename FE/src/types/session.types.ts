@@ -67,6 +67,7 @@ export type TurnEvent =
   | DeckEvalEvent
   | { type: 'title'; text: string }
   | { type: 'session_ended' }
+  | { type: 'deck_new_topic'; topic: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string; limit?: number; used?: number };
 

@@ -72,6 +72,8 @@ export default function ChatPage() {
     skipDeckCard,
     acceptDeckChallenge,
     rejectDeckChallenge,
+    chooseDeckFreeTalk,
+    chooseDeckEnd,
     enterLighterMode,
     completeLighterDeck,
     startMic,
@@ -267,10 +269,12 @@ export default function ChatPage() {
                 key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
                 deck={currentDeck!}
                 isLighter={lighterMode}
+                isProcessing={status === 'processing'}
                 onAccept={() => void acceptDeckChallenge()}
                 onReject={() => void rejectDeckChallenge()}
+                onFreeTalk={() => void chooseDeckFreeTalk()}
                 onLighterMode={() => void enterLighterMode()}
-                onEndSession={() => void endSession('user_clicked')}
+                onEnd={() => void chooseDeckEnd()}
                 onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                 onSkip={() => void skipDeckCard()}
               />
@@ -678,19 +682,23 @@ function ThinkingDots() {
 function DeckCardView({
   deck,
   isLighter,
+  isProcessing,
   onAccept,
   onReject,
+  onFreeTalk,
   onLighterMode,
-  onEndSession,
+  onEnd,
   onNext,
   onSkip,
 }: {
   deck: ExerciseDeck;
   isLighter: boolean;
+  isProcessing: boolean;
   onAccept: () => void;
   onReject: () => void;
+  onFreeTalk: () => void;
   onLighterMode: () => void;
-  onEndSession: () => void;
+  onEnd: () => void;
   onNext: () => void;
   onSkip: () => void;
 }) {
@@ -798,9 +806,9 @@ function DeckCardView({
         <div className="grid gap-2 pt-1">
           <p className="text-[11px] font-bold text-center" style={{ color: '#6f7b64' }}>What would you prefer?</p>
           <div className="grid grid-cols-3 gap-2">
-            <button onClick={onReject} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>Free talk</button>
+            <button onClick={onFreeTalk} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>Free talk</button>
             <button onClick={onLighterMode} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#ebe0ff] active:translate-y-0.5" style={{ background: '#f4efff', color: '#8447ff', border: '2px solid #ebe0ff' }}>Quick</button>
-            <button onClick={onEndSession} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>End</button>
+            <button onClick={onEnd} className="rounded-xl px-2 py-2 text-[11px] font-extrabold transition hover:bg-[#f3f3f3] active:translate-y-0.5" style={{ background: '#f9f9f9', color: '#6f7b64', border: '2px solid #e2e2e2' }}>End</button>
           </div>
         </div>
       )}
@@ -810,6 +818,7 @@ function DeckCardView({
           card={card}
           isLighter={isLighter}
           isOnboarding={isOnboarding}
+          isProcessing={isProcessing}
           onNext={onNext}
           onSkip={onSkip}
         />
@@ -822,12 +831,14 @@ function DeckCardActions({
   card,
   isLighter,
   isOnboarding,
+  isProcessing,
   onNext,
   onSkip,
 }: {
   card: DeckCard;
   isLighter: boolean;
   isOnboarding: boolean;
+  isProcessing: boolean;
   onNext: () => void;
   onSkip: () => void;
 }) {
@@ -847,7 +858,8 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onSkip}
-          className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors"
+          disabled={isProcessing}
+          className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none"
         >
           Skip
         </button>

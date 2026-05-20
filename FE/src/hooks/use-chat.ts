@@ -85,6 +85,8 @@ export interface UseChatReturn {
   skipDeckCard: () => Promise<void>;
   acceptDeckChallenge: () => Promise<void>;
   rejectDeckChallenge: () => Promise<void>;
+  chooseDeckFreeTalk: () => Promise<void>;
+  chooseDeckEnd: () => Promise<void>;
   enterLighterMode: () => Promise<void>;
   completeLighterDeck: () => Promise<void>;
   startMic: () => void;
@@ -853,6 +855,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // then run the normal closing overlay flow via voice_intent.
           pendingAutoEndRef.current = true;
           pendingAutoEndReasonRef.current = 'voice_intent';
+        } else if (event.type === 'deck_new_topic') {
+          // User chose a new topic during continuation offer — regenerate the deck.
+          const topic = event.topic;
+          if (sessionId && topic) {
+            try {
+              await sessionService.regenerateDeck(sessionId, topic);
+              void pollDeck();
+            } catch (err) {
+              console.error('[deck_new_topic] regenerate failed', err);
+            }
+          }
         } else if (event.type === 'done') {
           // Wait for all segments to finish revealing before flipping pending → false.
           // The bubble was already rendered via `sentences[]`, so no layout change.
@@ -1076,10 +1089,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       setCurrentDeck(deck);
       if (deck) {
         if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
+          // Mid-deck skip: AI introduces the next card's task.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Last card skipped — AI asks if user wants to keep chatting or stop.
-          // Do NOT auto-end here; let the user decide via voice or End button.
+          // Last card skipped: AI asks what was difficult or if user wants another topic.
           void processTurn('');
         }
       }
@@ -1108,14 +1121,37 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     try {
       await sessionService.rejectDeckChallenge(sessionId);
       setCurrentDeck(null);
-      // Trigger AI turn so it acknowledges the rejection and asks what user prefers
       void processTurn('');
     } catch (err) {
       console.error('[rejectDeckChallenge]', err);
     }
   }, [processTurn]);
 
-  /** Accept the deck and switch to lighter UI mode (1 card, no criteria, no retry). */
+  const chooseDeckFreeTalk = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.rejectDeckWithMode(sessionId, 'user_chose_free_talk');
+      setCurrentDeck(null);
+      void processTurn('');
+    } catch (err) {
+      console.error('[chooseDeckFreeTalk]', err);
+    }
+  }, [processTurn]);
+
+  const chooseDeckEnd = useCallback(async () => {
+    const sessionId = sessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      await sessionService.rejectDeckWithMode(sessionId, 'user_wants_to_end');
+      setCurrentDeck(null);
+      void processTurn('');
+    } catch (err) {
+      console.error('[chooseDeckEnd]', err);
+    }
+  }, [processTurn]);
+
+  /** Accept the deck in lighter mode — AI immediately presents the card task. */
   const enterLighterMode = useCallback(async () => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
@@ -1124,10 +1160,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       const deck = await sessionService.getDeck(sessionId);
       setCurrentDeck(deck);
       setLighterMode(true);
+      void processTurn('');
     } catch (err) {
       console.error('[enterLighterMode]', err);
     }
-  }, []);
+  }, [processTurn]);
 
   /** Force-complete the deck after the quick-task card finishes, then pivot to free chat. */
   const completeLighterDeck = useCallback(async () => {
@@ -1313,6 +1350,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     skipDeckCard,
     acceptDeckChallenge,
     rejectDeckChallenge,
+    chooseDeckFreeTalk,
+    chooseDeckEnd,
     enterLighterMode,
     completeLighterDeck,
     startMic,

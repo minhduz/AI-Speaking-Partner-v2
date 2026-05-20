@@ -9,6 +9,7 @@ const NATIVE_LANG_TO_CODE: Record<string, string> = {
   russian: 'ru', arabic: 'ar', hindi: 'hi',
 };
 const DICT_LANG_KEY = 'dict_target_lang';
+const DICT_USER_SET_KEY = 'dict_user_set'; // true only when user explicitly changed the language
 
 export function useDictionary(sessionTopic?: string) {
   const [isOpen, setIsOpen] = useState(false);
@@ -16,18 +17,20 @@ export function useDictionary(sessionTopic?: string) {
   const [data, setData] = useState<DictionaryData | null>(null);
   const [error, setError] = useState<string | undefined>();
   const [targetLang, setTargetLang] = useState<string>(() =>
-    (typeof window !== 'undefined' ? localStorage.getItem(DICT_LANG_KEY) : null) ?? 'vi'
+    (typeof window !== 'undefined' ? localStorage.getItem(DICT_LANG_KEY) : null) ?? ''
   );
   const [lookupKey, setLookupKey] = useState(0);
   const currentWordRef = useRef('');
 
-  // If no saved preference, init from user's nativeLanguage once
+  // Always sync from profile on mount unless the user has explicitly chosen a language.
+  // This handles stale localStorage values (e.g. 'vi' left over from a previous account).
   useEffect(() => {
-    if (localStorage.getItem(DICT_LANG_KEY)) return;
+    if (localStorage.getItem(DICT_USER_SET_KEY) === 'true') return;
     userService.me().then((profile) => {
       const code = NATIVE_LANG_TO_CODE[profile.nativeLanguage?.toLowerCase()] ?? 'vi';
       setTargetLang(code);
-    }).catch(() => {});
+      localStorage.setItem(DICT_LANG_KEY, code);
+    }).catch(() => { if (!localStorage.getItem(DICT_LANG_KEY)) setTargetLang('vi'); });
   }, []);
 
   const fetchWord = useCallback(async (word: string, lang: string) => {
@@ -54,12 +57,13 @@ export function useDictionary(sessionTopic?: string) {
 
   const translate = useCallback((text: string) => {
     currentWordRef.current = text;
-    fetchWord(text, targetLang);
+    fetchWord(text, targetLang || 'vi');
   }, [fetchWord, targetLang]);
 
   const changeLanguage = useCallback((lang: string) => {
     setTargetLang(lang);
     localStorage.setItem(DICT_LANG_KEY, lang);
+    localStorage.setItem(DICT_USER_SET_KEY, 'true');
     if (currentWordRef.current) {
       fetchWord(currentWordRef.current, lang);
     }

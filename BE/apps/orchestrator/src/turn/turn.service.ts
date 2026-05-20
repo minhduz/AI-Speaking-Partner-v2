@@ -132,11 +132,13 @@ export class TurnService {
   async getDeckInfo(sessionId: string): Promise<{
     active: boolean;
     status: string;
+    end_reason: string;
     current_card_index: number;
     total_cards: number;
     current_card: any | null;
+    is_continuation: boolean;
   }> {
-    const empty = { active: false, status: 'none', current_card_index: 0, total_cards: 0, current_card: null };
+    const empty = { active: false, status: 'none', end_reason: '', current_card_index: 0, total_cards: 0, current_card: null, is_continuation: false };
     const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
     try {
       const { data } = await firstValueFrom<any>(
@@ -149,9 +151,11 @@ export class TurnService {
       return {
         active:              isActive,
         status:              data.status ?? 'none',
+        end_reason:          data.end_reason ?? '',
         current_card_index:  idx,
         total_cards:         cards.length,
         current_card:        cards[idx] ?? null,
+        is_continuation:     Boolean(data.is_continuation),
       };
     } catch (err: any) {
       console.error(`[Turn] getDeckInfo failed session=${sessionId}:`, err?.message);
