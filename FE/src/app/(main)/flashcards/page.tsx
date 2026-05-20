@@ -79,6 +79,7 @@ export default function FlashcardsPage() {
   const [view, setView] = useState<'active' | 'mastered' | 'review'>('active');
   const [masteredWordIds, setMasteredWordIds] = useState<Set<string>>(new Set());
   const [showReviewBanner, setShowReviewBanner] = useState(false);
+  const [selectedMasteredWord, setSelectedMasteredWord] = useState<FlashcardWord | null>(null);
 
   useEffect(() => {
     async function loadAll() {
@@ -103,8 +104,18 @@ export default function FlashcardsPage() {
     loadAll();
   }, []);
 
-  const handleWordMastered = useCallback((wordId: string) => {
+  const handleWordMastered = useCallback((wordId: string, word: FlashcardWord, topic: string) => {
     setMasteredWordIds(prev => new Set(prev).add(wordId));
+    // Optimistically add the word to masteredGroups so Archive tab updates immediately
+    setMasteredGroups(prev => {
+      const existing = prev.find(g => g.topic === topic);
+      if (existing) {
+        if (existing.words.some(w => w.id === wordId)) return prev;
+        return prev.map(g => g.topic === topic ? { ...g, words: [...g.words, { ...word, status: 'mastered' }] } : g);
+      }
+      return [...prev, { topic, words: [{ ...word, status: 'mastered' }] }];
+    });
+    setActiveMasteredTopic(prev => prev ?? topic);
   }, []);
 
   // Only topics that still have unswiped words
@@ -242,7 +253,7 @@ export default function FlashcardsPage() {
                     </div>
                     {masteredGroups.length > 0 && (
                       <div className="relative">
-                        <select value={activeMasteredTopic || ''} onChange={(e) => setActiveMasteredTopic(e.target.value)}
+                        <select value={activeMasteredTopic || ''} onChange={(e) => { setActiveMasteredTopic(e.target.value); setSelectedMasteredWord(null); }}
                           className="w-full appearance-none outline-none cursor-pointer rounded-2xl px-4 py-3 pr-11 text-sm font-black transition"
                           style={{ background: '#f3f3f3', color: '#1a1c1c', border: '2px solid #e2e2e2' }}>
                           {masteredGroups.map((g) => (
@@ -255,19 +266,26 @@ export default function FlashcardsPage() {
                       </div>
                     )}
                     <div className="flex-1 overflow-y-auto min-h-0 space-y-2">
-                      {(activeMasteredGroup?.words ?? []).map(w => (
-                        <div key={w.id} className="rounded-2xl px-4 py-3 flex items-center justify-between" style={{ background: '#f9f9f9', border: '1px solid #e2e2e2' }}>
-                          <div>
-                            <p className="font-black text-sm" style={{ color: '#1a1c1c' }}>{w.word}</p>
-                            <p className="text-xs font-medium" style={{ color: '#6f7b64' }}>{w.translation}</p>
-                          </div>
-                          {w.lastReviewedAt && (
-                            <p className="text-[10px] font-bold" style={{ color: '#6f7b64' }}>
-                              {new Date(w.lastReviewedAt).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                      {(activeMasteredGroup?.words ?? []).map(w => {
+                        const isSelected = selectedMasteredWord?.id === w.id;
+                        return (
+                          <button
+                            key={w.id}
+                            onClick={() => setSelectedMasteredWord(isSelected ? null : w)}
+                            className="w-full text-left rounded-2xl px-4 py-3 flex items-center justify-between transition-all"
+                            style={{
+                              background: isSelected ? '#d7ffb8' : '#f9f9f9',
+                              border: isSelected ? '2px solid #58cc02' : '2px solid #e2e2e2',
+                            }}
+                          >
+                            <div>
+                              <p className="font-black text-sm" style={{ color: '#1a1c1c' }}>{w.word}</p>
+                              <p className="text-xs font-medium" style={{ color: '#6f7b64' }}>{w.translation}</p>
+                            </div>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#6f7b64" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m9 18 6-6-6-6" /></svg>
+                          </button>
+                        );
+                      })}
                       {masteredGroups.length === 0 && (
                         <p className="text-sm font-medium text-center pt-4" style={{ color: '#6f7b64' }}>No archived words yet.</p>
                       )}
@@ -293,15 +311,19 @@ export default function FlashcardsPage() {
                   <FlashcardDeck key="review" topic="Review" words={reviewDueWords} onWordMastered={handleWordMastered} />
                 )}
                 {view === 'mastered' && (
-                  <div className="flex-1 h-full flex items-center justify-center">
-                    <div className="text-center px-8">
-                      <div className="w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-4" style={{ background: '#d7ffb8', color: '#2b6c00' }}>
-                        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                  selectedMasteredWord ? (
+                    <MasteredWordDetail word={selectedMasteredWord} onClose={() => setSelectedMasteredWord(null)} />
+                  ) : (
+                    <div className="flex-1 h-full flex items-center justify-center">
+                      <div className="text-center px-8">
+                        <div className="w-20 h-20 mx-auto rounded-3xl flex items-center justify-center mb-4" style={{ background: '#d7ffb8', color: '#2b6c00' }}>
+                          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                        </div>
+                        <p className="text-lg font-black" style={{ color: '#1a1c1c' }}>Your archived words</p>
+                        <p className="text-sm font-medium mt-1" style={{ color: '#6f7b64' }}>Select a word on the left to see its details.</p>
                       </div>
-                      <p className="text-lg font-black" style={{ color: '#1a1c1c' }}>Your archived words</p>
-                      <p className="text-sm font-medium mt-1" style={{ color: '#6f7b64' }}>Select a topic on the left to browse your archive.</p>
                     </div>
-                  </div>
+                  )
                 )}
               </section>
             </div>
@@ -316,9 +338,108 @@ function learnedCountFromLearned(words: FlashcardWord[], learnedWordIds: Set<str
   return words.filter(w => learnedWordIds.has(w.id)).length;
 }
 
+// ── MasteredWordDetail ──────────────────────────────────────────────────────
+
+function MasteredWordDetail({ word, onClose }: { word: FlashcardWord; onClose: () => void }) {
+  const speak = () => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return;
+    const utt = new SpeechSynthesisUtterance(word.word);
+    utt.lang = 'en-US';
+    utt.rate = 0.85;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utt);
+  };
+
+  return (
+    <div className="h-full flex flex-col overflow-y-auto p-8 gap-6">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4 shrink-0">
+        <div className="flex-1">
+          <div className="flex items-center gap-3">
+            <h2 className="text-4xl font-black" style={{ color: '#1a1c1c' }}>{word.word}</h2>
+            <button
+              onClick={speak}
+              className="w-10 h-10 rounded-xl flex items-center justify-center transition-all active:scale-95"
+              style={{ background: '#dceeff', color: '#004666' }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              </svg>
+            </button>
+          </div>
+          {word.phonetic && (
+            <p className="mt-1 text-lg font-mono tracking-widest px-3 py-1 rounded-xl inline-block" style={{ color: '#004666', background: '#dceeff' }}>
+              {word.phonetic}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-all hover:opacity-70"
+          style={{ background: '#f3f3f3', color: '#6f7b64' }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+        </button>
+      </div>
+
+      {/* Translation */}
+      <div className="rounded-3xl p-6 shrink-0" style={{ background: '#d7ffb8', border: '2px solid #b8f08c' }}>
+        <p className="text-[11px] font-extrabold uppercase tracking-widest mb-1" style={{ color: '#2b6c00' }}>Translation</p>
+        <p className="text-2xl font-black" style={{ color: '#1e5000' }}>{word.translation}</p>
+      </div>
+
+      {/* Examples */}
+      {word.examples && word.examples.length > 0 && (
+        <div className="shrink-0">
+          <p className="text-[11px] font-extrabold uppercase tracking-widest mb-3" style={{ color: '#6f7b64' }}>Examples</p>
+          <div className="space-y-3">
+            {word.examples.map((ex, i) => (
+              <div key={i} className="rounded-2xl px-5 py-4" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
+                <p className="text-sm font-semibold leading-relaxed" style={{ color: '#1a1c1c' }}>
+                  {ex.replace(/<[^>]*>?/gm, '')}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 gap-3 shrink-0">
+        {word.reviewCount !== undefined && (
+          <div className="rounded-2xl p-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+            <p className="text-2xl font-black" style={{ color: '#1a1c1c' }}>{word.reviewCount}</p>
+            <p className="text-xs font-bold mt-0.5" style={{ color: '#6f7b64' }}>Times reviewed</p>
+          </div>
+        )}
+        {word.masteryScore !== undefined && (
+          <div className="rounded-2xl p-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+            <p className="text-2xl font-black" style={{ color: '#58cc02' }}>{Math.round(word.masteryScore * 100)}%</p>
+            <p className="text-xs font-bold mt-0.5" style={{ color: '#6f7b64' }}>Mastery score</p>
+          </div>
+        )}
+        {word.lastReviewedAt && (
+          <div className="rounded-2xl p-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+            <p className="text-base font-black" style={{ color: '#1a1c1c' }}>{new Date(word.lastReviewedAt).toLocaleDateString()}</p>
+            <p className="text-xs font-bold mt-0.5" style={{ color: '#6f7b64' }}>Last reviewed</p>
+          </div>
+        )}
+        {word.createdAt && (
+          <div className="rounded-2xl p-4" style={{ background: '#ffffff', border: '2px solid #e2e2e2' }}>
+            <p className="text-base font-black" style={{ color: '#1a1c1c' }}>{new Date(word.createdAt).toLocaleDateString()}</p>
+            <p className="text-xs font-bold mt-0.5" style={{ color: '#6f7b64' }}>Date saved</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── FlashcardDeck ──────────────────────────────────────────────────────────
 
-function FlashcardDeck({ topic, words, onWordMastered }: { topic: string; words: FlashcardWord[]; onWordMastered: (wordId: string) => void }) {
+function FlashcardDeck({ topic, words, onWordMastered }: { topic: string; words: FlashcardWord[]; onWordMastered: (wordId: string, word: FlashcardWord, topic: string) => void }) {
   const [studyMode, setStudyMode] = useState<StudyMode>('flash');
   const [practiceKey, setPracticeKey] = useState(0);
   const [deck, setDeck] = useState<FlashcardWord[]>(words.map(w => ({ ...w, uniqueKey: w.id })));
@@ -328,7 +449,7 @@ function FlashcardDeck({ topic, words, onWordMastered }: { topic: string; words:
     const word = deck[index];
     setDeck(prev => prev.filter((_, i) => i !== index));
     setLearnedCount(c => c + 1);
-    onWordMastered(word.id);
+    onWordMastered(word.id, word, topic);
     httpClient.patch(`/api/dictionary/flashcards/${word.id}/review`, { result: 'easy' }).catch(() => {});
   };
 

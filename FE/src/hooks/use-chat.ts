@@ -667,6 +667,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       // when the interval fires while advanceDeckCard's PUT is still in flight,
       // causing the auto-advance useEffect to re-trigger for an already-passed card.
       setCurrentDeck((prev) => {
+        // Don't restore a deck the user already dismissed (e.g. chose free-talk / end).
+        // If currentDeck is null and the fetched deck is ended/abandoned, keep it null.
+        if (!prev && deck && (deck.status === 'ended_early' || deck.status === 'abandoned')) return prev;
         if (prev && deck && deck.current_card_index < prev.current_card_index) return prev;
         return deck;
       });
