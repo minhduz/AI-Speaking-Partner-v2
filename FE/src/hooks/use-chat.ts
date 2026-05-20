@@ -12,6 +12,7 @@ import {
   type SessionMode,
 } from '@/services/session.service';
 import { billingService } from '@/services/billing.service';
+import { userService } from '@/services/user.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
 
@@ -54,9 +55,17 @@ function resetGreetingFlight(): void {
   _greetingInFlight = null;
 }
 
-const TURN_PLAYBACK_RATE = 1.15;
 // Fallback reveal pace when audio is unavailable (suspended ctx / decode failure).
 const FALLBACK_REVEAL_MS_PER_WORD = 220;
+
+// Speech rate applied to scheduled TTS playback. The Soniox TTS API has no
+// speed parameter, so the user's "Speech speed" setting is enforced client-side
+// via Web Audio's playbackRate. Held at module scope so the settings panel can
+// push live updates without needing to re-render the chat tree.
+let _userSpeechRate = 1.0;
+export function setUserSpeechRate(rate: number): void {
+  _userSpeechRate = Math.max(0.75, Math.min(1.5, rate));
+}
 
 // Module-level singleton so the AudioContext is created exactly once and is
 // available synchronously (before any React effect runs) on the client side.
@@ -546,7 +555,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // by the processor to align word reveal with the actual audio start time.
   const enqueueSegment = useCallback((b64: string, text: string, isGreeting: boolean) => {
     const ctx = sharedPlaybackCtxRef.current ?? getSharedAudioCtx();
-    const playbackRate = isGreeting ? 1 : TURN_PLAYBACK_RATE;
+    const playbackRate = _userSpeechRate;
 
     // Decode runs in parallel for all segments; scheduling chains off the
     // previous segment's schedule so the audio timeline stays ordered.
@@ -723,6 +732,14 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (authLoading || !isAuthenticated) return;
     if (initializedRef.current) return;
     initializedRef.current = true;
+    // Prime the user's speech rate before any TTS playback so the first greeting
+    // already respects it. Runs in parallel with greeting/review init — even if
+    // the profile lands after the first segment is decoded, scheduling reads the
+    // module-level value at createBufferSource time, so subsequent segments still
+    // pick up the correct rate.
+    void userService.me()
+      .then((u) => setUserSpeechRate(u.speechRate ?? 1.0))
+      .catch(() => {});
     // Direct call — initializedRef already guarantees single-run.
     // The earlier Promise.resolve().then(...) + cancelled pattern could race with
     // the cleanup fired when deps change (e.g. authLoading flipping false), leaving

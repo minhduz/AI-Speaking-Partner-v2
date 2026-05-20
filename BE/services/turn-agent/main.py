@@ -2,6 +2,13 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from urllib.parse import unquote
+
+# Load .env into os.environ before anything else so LangSmith picks up
+# LANGSMITH_* vars when running locally (uvicorn). In docker these are already
+# injected via compose `env_file`, so this is a no-op there.
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from db import database

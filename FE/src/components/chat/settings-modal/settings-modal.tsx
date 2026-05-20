@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { userService } from '@/services/user.service';
+import { setUserSpeechRate } from '@/hooks/use-chat';
 import {
   VOICE_OPTIONS,
   STYLE_OPTIONS,
@@ -96,6 +97,9 @@ export function SettingsPanel() {
     try {
       const { audio_b64 } = await userService.previewVoice(id, speechRate);
       const audio = new Audio(`data:audio/mpeg;base64,${audio_b64}`);
+      // Soniox returns audio at native rate regardless of speech_rate, so the
+      // slider is enforced here via HTMLAudioElement.playbackRate.
+      audio.playbackRate = speechRate;
       audioRef.current = audio;
       audio.onended = () => setPreviewState(null);
       audio.onerror = () => setPreviewState(null);
@@ -120,6 +124,8 @@ export function SettingsPanel() {
         await userService.updateSettings(patch);
         setInitialSettings({ voiceId, speechRate, conversationStyle: style });
       }
+      // Push the new rate to live chat playback immediately (no reload needed).
+      setUserSpeechRate(speechRate);
       setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
