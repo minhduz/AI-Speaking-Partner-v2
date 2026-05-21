@@ -1,5 +1,5 @@
 {
-  "name": "SpeakUP – AI Speaking Partner",
+  "name": "SpeakUP - AI Speaking Partner",
   "short_name": "SpeakUP",
   "description": "Your personal AI language coach for real speaking practice, instant feedback, and steady progress.",
   "start_url": "/chat",
@@ -11,13 +11,19 @@
   "categories": ["education", "productivity"],
   "icons": [
     {
-      "src": "/icon-192.png",
+      "src": "/favicon-96x96.png",
+      "sizes": "96x96",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/web-app-manifest-192x192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512.png",
+      "src": "/web-app-manifest-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
@@ -29,21 +35,21 @@
       "short_name": "Home",
       "description": "See today's progress, streak and review nudges",
       "url": "/home",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "icons": [{ "src": "/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png" }]
     },
     {
       "name": "Start Practicing",
       "short_name": "Practice",
       "description": "Jump into a speaking session",
       "url": "/chat",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "icons": [{ "src": "/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png" }]
     },
     {
       "name": "Flashcards",
       "short_name": "Flashcards",
       "description": "Review your vocabulary",
       "url": "/flashcards",
-      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+      "icons": [{ "src": "/web-app-manifest-192x192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]
 }

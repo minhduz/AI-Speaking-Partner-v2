@@ -8,9 +8,19 @@ const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin']
 const lexend = Lexend({ variable: '--font-lexend', subsets: ['latin'], weight: ['300', '400', '500', '600', '700', '800'] });
 
 export const metadata: Metadata = {
+  applicationName: 'SpeakUP',
   title: 'SpeakUP - AI Speaking Partner',
   description: 'Your personal AI language coach for real speaking practice, instant feedback, and steady progress.',
   manifest: '/manifest.json',
+  icons: {
+    icon: [
+      { url: '/favicon.ico', sizes: 'any' },
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/favicon-96x96.png', sizes: '96x96', type: 'image/png' },
+    ],
+    shortcut: '/favicon.ico',
+    apple: [{ url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
@@ -36,15 +46,6 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${lexend.variable} h-full`} suppressHydrationWarning>
-      <head>
-        {/* PWA: Apple touch icon */}
-        <link rel="apple-touch-icon" href="/icon-192.png" />
-        {/* PWA: Safari pinned tab & splash */}
-        <meta name="mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-        <meta name="apple-mobile-web-app-title" content="SpeakUP" />
-      </head>
       <body className="h-full antialiased" suppressHydrationWarning>
         <AuthProvider>{children}</AuthProvider>
         {/* Service worker registration */}
