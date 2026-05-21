@@ -1,4 +1,4 @@
-const CACHE_NAME = 'speakup-v5';
+const CACHE_NAME = 'speakup-v6';
 
 // App shell — pre-cached on install
 const SHELL_ASSETS = [
@@ -12,8 +12,12 @@ const SHELL_ASSETS = [
   '/settings',
   '/billing',
   '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png',
+  '/favicon.ico',
+  '/favicon.svg',
+  '/favicon-96x96.png',
+  '/apple-touch-icon.png',
+  '/web-app-manifest-192x192.png',
+  '/web-app-manifest-512x512.png',
 ];
 
 // ── Install: pre-cache app shell ──────────────────────────────────────
