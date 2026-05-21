@@ -329,6 +329,46 @@ SESSION MODE: REFLECTION (turns 9+)
 
 }
 
+# Stance injected while a practice card is OFFERED but not yet started, so the user
+# is still in charge. Keeps the WARM_UP discipline (one question, low pressure) and
+# POSITIVELY tells the AI to follow the user — replacing the void left by not using
+# CHALLENGE/REFLECTION mode here, whose "redirect off-topic / don't let them escape"
+# rules contradicted the offer block and looped the AI back to the mission after the
+# user asked to change topic.
+OFFER_PHASE_STANCE = """
+CONVERSATION STANCE (a practice card is offered below but NOT started — the user leads):
+- Be warm, low-pressure, and conversational. Ask at most ONE question per turn.
+- Follow the user's topic. If they change the subject, say they're tired, or ask to move on,
+  immediately drop the previous thread and go where THEY want.
+- Do NOT redirect them back to an earlier topic or try to keep them "on task" — there is no
+  task yet, only the optional offer below.
+"""
+
+# Fields that encode guided-learning intent (mission, deck/card, prior-session
+# insight). In free talk we wipe them so neither this node's prompt assembly nor
+# the downstream nodes (llm_tts / persist) can slip back into instructor mode.
+# NOTE: long-term memory facts are NOT here — they're injected by memory-service
+# into the base prompt and must stay (the user is just chatting with a friend who
+# happens to remember them). Returns a fresh dict each call so the empty
+# dict/list values are never shared/mutated across requests.
+def _free_talk_overrides() -> dict:
+    return {
+        "active_mission": "",
+        "session_insight": {},
+        "deck_active": False,
+        "deck_status": "none",
+        "deck_end_reason": "",
+        "card_title": "",
+        "card_task": "",
+        "card_type": "",
+        "card_success_criteria": [],
+        "card_index": 0,
+        "card_total": 0,
+        "card_attempts": 0,
+        "card_retry_allowed": False,
+    }
+
+
 def _build_free_talk_mode_block(state: dict) -> str:
     target_lang = state.get("target_language", "English") or "English"
     learning_goal = (state.get("learning_goal") or "").strip()
@@ -339,6 +379,12 @@ def _build_free_talk_mode_block(state: dict) -> str:
     )
     return (
         "\n\nSESSION MODE: FREE_TALK\n"
+        "- YOU ARE THIS PERSON'S FRIEND — NOT a teacher, tutor, guide, coach, or instructor. "
+        "Do not run a lesson, set a mission, give an assignment, drill, quiz, or grade. There is no agenda.\n"
+        "- MEMORY = CONTEXT ONLY: treat everything under \"What you know about this user\" purely as background "
+        "so you sound familiar and personal. Let it shape your tone and references. NEVER quiz them on it, and "
+        "never turn a remembered fact into a question or task. Bring a fact up only if it flows naturally from "
+        "what THEY are already talking about.\n"
         "- This is open conversation, not a guided lesson, mission, challenge, drill, or evaluation.\n"
         "- Be a relaxed, slightly playful friend who can chat, share perspective, explain things, brainstorm, or give advice when useful.\n"
         "- Let the user talk about anything. Follow their topic and emotional tone instead of redirecting to practice.\n"
@@ -731,6 +777,24 @@ async def build_prompt_node(state: dict) -> dict:
     is_free_talk_session = session_mode == "free_talk" and not is_onboarding
     active_mission = (state.get("active_mission") or "").strip()
 
+    # DEBUG: surface exactly what mode signal arrived. raw_session_mode=None means
+    # the x-session-mode header never reached this node (stale container / orchestrator
+    # not sending it); ='guided_learning' means the session is genuinely guided in DB.
+    log.info(
+        "── build_prompt MODE-DEBUG  session=%s  raw_session_mode=%r  resolved=%s  "
+        "is_free_talk=%s  is_onboarding=%s  deck_status=%r  active_mission=%r",
+        session_id, state.get("session_mode"), session_mode,
+        is_free_talk_session, is_onboarding,
+        state.get("deck_status"), active_mission[:40],
+    )
+
+    # Free talk = pure friend conversation. Strip every guided-learning signal up
+    # front so nothing below (mission/warmup/insight/deck blocks) and no downstream
+    # node can resurrect instructor behavior. Long-term memory facts are untouched.
+    if is_free_talk_session:
+        state.update(_free_talk_overrides())
+        active_mission = ""
+
     # During the user's first speaking session ONLY, run intent extraction
     # in parallel with the main turn. asyncio.create_task() schedules it on the same
     # event loop without blocking; the coroutine guarantees failure isolation.
@@ -790,10 +854,11 @@ async def build_prompt_node(state: dict) -> dict:
             onboarding_state = await _fetch_onboarding_state(user_id)
             phase = get_onboarding_phase(turn_index, onboarding_state)
             # Only inject the generic onboarding phase guidance before the deck starts.
-            # Once a card is in_progress/completed, the card/deck-specific block below
-            # must own the response; otherwise MINI_CHALLENGE repeats the old
-            # "I have a better sense... Let's try..." transition during card flow.
-            if not deck_active and deck_status not in ("completed",):
+            # Once a card is in_progress, or the deck has ended (completed / declined /
+            # abandoned), the deck-specific block below must own the response; otherwise
+            # the MINI_CHALLENGE "Let's try a practice" transition leaks in and fights
+            # the decline-outro ("offer practice" vs "ask what to talk about").
+            if not deck_active and deck_status not in ("completed", "ended_early", "abandoned"):
                 system_prompt += build_onboarding_block(state, turn_index, onboarding_state)
 
             learned_block = _render_learned_block(onboarding_state)
@@ -1015,7 +1080,11 @@ async def build_prompt_node(state: dict) -> dict:
             elif deck_status == "not_started" and turn_index >= 3:
                 # Turn 3-4: soft optional offer; turn 5+: AI must offer the challenge
                 mode = get_session_mode(turn_index)
-                system_prompt += "\n" + SESSION_MODE_INSTRUCTIONS[mode]
+                # Deck not started → the user is still free. Use a follow-the-user stance
+                # instead of CHALLENGE/REFLECTION mode, whose "redirect off-topic / don't
+                # let them escape" rules contradict the offer block and made the AI loop
+                # back to the mission after the user asked to change topic.
+                system_prompt += "\n" + OFFER_PHASE_STANCE
                 if turn_index >= 5:
                     system_prompt += _build_card_hard_offer_block(state)
                     log.info(
@@ -1047,7 +1116,10 @@ async def build_prompt_node(state: dict) -> dict:
                     deck_status,
                 )
         system_prompt += _build_language_lock_block(state.get("target_language", "English") or "English")
-        return {"system_prompt": system_prompt}
+        result = {"system_prompt": system_prompt}
+        if is_free_talk_session:
+            result.update(_free_talk_overrides())
+        return result
 
     except Exception as e:
         log.error("── build_prompt ✖ memory service failed: %s", e)
@@ -1076,7 +1148,8 @@ async def build_prompt_node(state: dict) -> dict:
             elif deck_active:
                 fallback += _build_card_context_block(state)
             elif deck_status == "not_started" and turn_index >= 3:
-                fallback += "\n" + SESSION_MODE_INSTRUCTIONS[get_session_mode(turn_index)]
+                # Offer phase — follow-the-user stance, not CHALLENGE mode (see main path).
+                fallback += "\n" + OFFER_PHASE_STANCE
                 if turn_index >= 5:
                     fallback += _build_card_hard_offer_block(state)
                 else:
@@ -1087,4 +1160,7 @@ async def build_prompt_node(state: dict) -> dict:
                     fallback += _build_external_active_mission_block(active_mission, turn_index)
                 fallback += _build_session_insight_block(state.get("session_insight"), turn_index)
         fallback += _build_language_lock_block(lang)
-        return {"system_prompt": fallback}
+        result = {"system_prompt": fallback}
+        if is_free_talk_session:
+            result.update(_free_talk_overrides())
+        return result

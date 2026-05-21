@@ -23,6 +23,7 @@ router = APIRouter()
 
 class ConsolidateRequest(BaseModel):
     session_id: str
+    user_timezone: str = "UTC"
 
 
 class AppendRequest(BaseModel):
@@ -39,8 +40,8 @@ class TodayChallengeRequest(BaseModel):
 @router.post("/consolidate/{user_id}")
 async def consolidate(user_id: str, body: ConsolidateRequest, bg: BackgroundTasks):
     log.info("[memory_ops] consolidate queued  user=%s  session=%s", user_id, body.session_id)
-    bg.add_task(run_consolidation, user_id, body.session_id)
-    return {"status": "queued", "user_id": user_id, "session_id": body.session_id}
+    bg.add_task(run_consolidation, user_id, body.session_id, body.user_timezone)
+    return {"status": "queued", "user_id": user_id, "session_id": body.session_id, "user_timezone": body.user_timezone}
 
 
 # GET /short-term/:user_id — returns recent messages, optionally filtered by session_id

@@ -312,7 +312,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // Public setter — also persists. Refuses to change mode while a session is
   // already live (sessionId is set) so we don't desync FE state vs BE.
   const setNextSessionMode = useCallback((mode: SessionMode) => {
-    if (sessionIdRef.current || modeSelectionLocked) return;
+    if (sessionIdRef.current || modeSelectionLocked) {
+      console.warn('[mode-debug] setNextSessionMode BLOCKED', {
+        requested: mode,
+        hasLiveSession: !!sessionIdRef.current,
+        modeSelectionLocked,
+      });
+      return;
+    }
+    console.log('[mode-debug] setNextSessionMode →', mode);
     setNextSessionModeState(mode);
     if (typeof window !== 'undefined') {
       window.localStorage.setItem('speakup_next_session_mode', mode);
@@ -423,23 +431,22 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         }
       }
 
+      // The orchestrator quota is the single source of truth for the *daily*
+      // gate: quota.sessions_used counts sessions started today. Do NOT gate on
+      // billing's usage.sessions_used — that's a *monthly* cumulative count, so
+      // comparing it to the daily limit would keep the user blocked for the rest
+      // of the month once they hit 10 in a day.
       const quotaLimitReached =
         !!quota &&
         !quota.is_unlimited &&
         !quota.can_start;
 
-      const usageLimitReached =
-        !!usage &&
-        !usage.is_unlimited &&
-        usage.daily_session_limit > -1 &&
-        usage.sessions_used >= usage.daily_session_limit;
-
-      if (!quotaLimitReached && !usageLimitReached) return quota;
+      if (!quotaLimitReached) return quota;
 
       setBillingLimitError(new BillingLimitError(
         'SESSION_LIMIT_REACHED',
-        usage?.daily_session_limit ?? quota?.daily_session_limit ?? 10,
-        Math.max(usage?.sessions_used ?? 0, quota?.sessions_used ?? 0),
+        quota?.daily_session_limit ?? usage?.daily_session_limit ?? 10,
+        quota?.sessions_used ?? 0,
       ));
       return quota;
     } catch (err) {
@@ -1008,6 +1015,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (!sessionId) {
       if (!trimmedTranscript) return;
 
+      console.log(
+        `[mode-debug] START → requestedMode=${requestedMode} nextSessionMode=${nextSessionMode} ` +
+        `locked=${modeSelectionLocked} saved=${typeof window !== 'undefined' ? window.localStorage.getItem('speakup_next_session_mode') : 'n/a'}`,
+      );
+
       try {
         if (!sessionStartPromiseRef.current) {
           // Snapshot the picked mode now — onboarding-first will still force
@@ -1015,6 +1027,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           sessionStartPromiseRef.current = sessionService
             .start(requestedMode)
             .then(({ session_id, is_first_session, mode }) => {
+              console.log(`[mode-debug] START RESPONSE → BE mode=${mode} is_first_session=${is_first_session} (requested=${requestedMode})`);
               const resolvedMode = mode ?? requestedMode;
               sessionIdRef.current = session_id;
               setCurrentSessionId(session_id);
@@ -1188,7 +1201,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       setStatus('error');
     }
-  }, [activeSessionMode, enqueueSegment, nextSessionMode, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
+  }, [activeSessionMode, enqueueSegment, nextSessionMode, modeSelectionLocked, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);

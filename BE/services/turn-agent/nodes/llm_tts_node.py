@@ -115,6 +115,16 @@ async def llm_tts_node(state: dict) -> dict:
             llm_user_content = "[User declined the exercise — they may want to end the session]"
         else:
             llm_user_content = "[User skipped through the exercises]"
+    elif not state["transcript"].strip() and state.get("deck_active"):
+        # User clicked Next / accepted a card — no speech. A bare "Continue."
+        # collides with the prior assistant line ("Tap Next when you're ready!"),
+        # so the model just acknowledges ("Sounds good, let's keep going") instead
+        # of reading the new task. Make the intent explicit to match the system
+        # prompt's ACTION REQUIRED so it announces this card's task aloud.
+        llm_user_content = (
+            "[User advanced to the next exercise card and is waiting. "
+            "Introduce this card's task and invite them to try it now — do not just acknowledge.]"
+        )
     else:
         llm_user_content = state["transcript"].strip() or "Continue."
     messages_for_llm = recent + [{"role": "user", "content": llm_user_content}]

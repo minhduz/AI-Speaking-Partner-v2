@@ -26,14 +26,15 @@ const ENERGY_LABELS: Record<string, string> = {
 interface OnboardingPanelProps {
   isVisible: boolean;
   state: OnboardingState | null;
+  className?: string;
 }
 
 function useful(value: string | null | undefined): boolean {
   return Boolean(value && value !== 'unclear');
 }
 
-export function OnboardingPanel({ isVisible, state }: OnboardingPanelProps) {
-  if (!isVisible || !state) return null;
+export function getOnboardingPanelItems(state: OnboardingState | null): string[] {
+  if (!state) return [];
 
   const items: string[] = [];
 
@@ -50,14 +51,23 @@ export function OnboardingPanel({ isVisible, state }: OnboardingPanelProps) {
     if (fact && items.length < 4) items.push(fact);
   }
 
-  const visibleItems = items.slice(0, 4);
+  return items.slice(0, 4);
+}
+
+export function hasOnboardingPanelContent(isVisible: boolean, state: OnboardingState | null): boolean {
+  return isVisible && getOnboardingPanelItems(state).length >= 2;
+}
+
+export function OnboardingPanel({ isVisible, state, className = '' }: OnboardingPanelProps) {
+  const visibleItems = getOnboardingPanelItems(state);
 
   // Wait until we have at least 2 useful labels so the panel does not surface noise too early.
   if (visibleItems.length < 2) return null;
+  if (!isVisible) return null;
 
   return (
     <aside
-      className="fixed bottom-24 left-4 right-4 z-20 rounded-[28px] bg-white px-4 py-4 backdrop-blur-sm lg:bottom-auto lg:left-auto lg:right-6 lg:top-28 lg:w-[280px] lg:max-w-[calc(100vw-48px)]"
+      className={`hidden rounded-[24px] bg-white px-4 py-4 backdrop-blur-sm md:block ${className}`}
       style={{ border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2', fontFamily: 'Lexend, sans-serif' }}
     >
       <div className="mb-3 flex items-center gap-3">

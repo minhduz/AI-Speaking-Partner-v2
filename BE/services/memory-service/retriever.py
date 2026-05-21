@@ -12,6 +12,7 @@ _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 VALID_LAYERS = {"short_term", "long_term", "urgent"}
 
 _PRIORITY_SCORE = {"urgent": 0.95, "high": 0.85, "normal": 0.75}
+_MIN_LONG_TERM_SCORE = 0.45
 
 # In-memory embedding cache keyed by "session_id:md5(text)".
 # Avoids a round-trip to the embeddings API on repeated/similar queries within a session.
@@ -94,7 +95,7 @@ async def _context_as_chunks(user_id: str, query: str, active_layers: set, sessi
     vec_literal = f"[{','.join(str(v) for v in query_vec)}]"
 
     rows = await database.fetch(
-        """SELECT content, priority, expires_at,
+        """SELECT content, priority, expires_at, score AS memory_score,
                   1 - (embedding <=> $2::vector) AS similarity
            FROM memory.memory_facts
            WHERE user_id = $1
@@ -116,12 +117,15 @@ async def _context_as_chunks(user_id: str, query: str, active_layers: set, sessi
         source = "urgent" if priority == "urgent" else "long_term"
         # Blend vector similarity with priority weight so urgent facts always surface
         base_score  = float(row["similarity"]) if row["similarity"] is not None else 0.5
-        prio_boost  = _PRIORITY_SCORE.get(priority, 0.75)
-        score       = 0.7 * base_score + 0.3 * prio_boost
+        memory_score = float(row["memory_score"]) if row["memory_score"] is not None else _PRIORITY_SCORE.get(priority, 0.75)
+        score       = 0.75 * base_score + 0.25 * memory_score
+        if source == "long_term" and score < _MIN_LONG_TERM_SCORE:
+            continue
         chunks.append({"text": row["content"], "score": score, "source": source})
 
-    # If no per-fact rows exist yet (legacy data), fall back to get_facts()
-    if not chunks:
+    # If no per-fact rows exist yet (legacy data), fall back to get_facts().
+    # Do not fallback just because relevance filtering removed all chunks.
+    if not rows:
         facts = await LongTermMemory.get_facts(user_id)
         for fact in facts:
             priority = fact.get("priority", "normal")

@@ -21,6 +21,11 @@ class TurnState(TypedDict):
     current_datetime: str
     turn_index: int
     is_onboarding: bool
+    # 'guided_learning' | 'free_talk' — set from the X-Session-Mode header. MUST be
+    # declared here: LangGraph's StateGraph only keeps channels present in this
+    # TypedDict, so an undeclared key is silently dropped before any node runs
+    # (that's why free talk was never detected — session_mode arrived as None).
+    session_mode: str
     active_mission: str
     voice_id: str
     speech_rate: float

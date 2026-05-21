@@ -35,7 +35,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${lexend.variable} h-full`}>
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${lexend.variable} h-full`} suppressHydrationWarning>
       <head>
         {/* PWA: Apple touch icon */}
         <link rel="apple-touch-icon" href="/icon-192.png" />

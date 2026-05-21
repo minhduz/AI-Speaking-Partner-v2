@@ -1,6 +1,6 @@
 import { Controller, Post, Put, Get, Param, Body, Query, UseGuards, Req, Res, HttpCode } from '@nestjs/common';
 import { Response } from 'express';
-import { IsString } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
 import { UserService } from '../user/user.service';
@@ -15,6 +15,12 @@ class EndSessionDto {
 class TodayChallengeDto { @IsString() challenge: string; }
 class StartSessionDto {
   // Optional — defaults to 'guided_learning' on the server side if missing.
+  // The validation decorators are REQUIRED: with ValidationPipe({ whitelist: true })
+  // any property lacking a class-validator decorator is silently stripped from
+  // the parsed body. Without these, the FE's `mode: 'free_talk'` would be dropped
+  // and the controller would fall back to 'guided_learning'.
+  @IsOptional()
+  @IsIn(['guided_learning', 'free_talk'])
   mode?: 'guided_learning' | 'free_talk';
 }
 
@@ -459,11 +465,12 @@ export class SessionController {
           '',
           `YOUR GREETING — STRICT RULES:`,
           `1. Output EXACTLY ONE sentence, max 25 words. No preamble, no second sentence.`,
-          `2. Be warm and natural — weave in the recent snippet implicitly if provided. Never say "last session", "based on your insight", or quote labels.`,
-          `3. Do NOT mention any challenge, practice, exercise, or mission — that is handled later in conversation, not here.`,
-          `4. Ending with ONE short question is fine (the system preserves context) — or close with a soft "ready when you are".`,
-          `5. No emojis. No generic openers like "Great to see you!" or "How can I help you today?".`,
-          `6. If the recent snippet mentions a past event, ask how it went; if a future event, do not wish luck if it has already passed (compare to right now).`,
+          `2. Be warm and natural — if the snippet mentions an upcoming interview, meeting, exam, deadline, or appointment, make that the greeting's main context.`,
+          `3. Never say "last session", "based on your insight", or quote labels.`,
+          `4. Do NOT mention any challenge, practice, exercise, or mission — that is handled later in conversation, not here.`,
+          `5. Ending with ONE short question is fine (the system preserves context) — or close with a soft "ready when you are".`,
+          `6. No emojis. No generic openers like "Great to see you!" or "How can I help you today?".`,
+          `7. If the recent snippet mentions a past event, ask how it went; if a future event, acknowledge it gently and compare to right now.`,
         ].filter(Boolean).join('\n');
       }
 

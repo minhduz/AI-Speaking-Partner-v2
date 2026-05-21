@@ -4,12 +4,14 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThanOrEqual } from 'typeorm';
 import { Session } from '../session/entities/session.entity';
 import { Turn } from '../turn/entities/turn.entity';
+import { UserService } from '../user/user.service';
 
 @Injectable()
 export class ProgressService {
   constructor(
     @InjectRepository(Session) private sessionRepo: Repository<Session>,
     @InjectRepository(Turn)    private turnRepo:    Repository<Turn>,
+    private users: UserService,
   ) {}
 
   async getOverall(userId: string) {
@@ -72,8 +74,15 @@ export class ProgressService {
       order: { startedAt: 'DESC' },
     });
 
-    // Local-day key (server timezone). Good enough for MVP streak display.
-    const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    // Day key in the *user's* timezone — server-local keys would roll the day
+    // over at the wrong hour for non-UTC users (e.g. a 6am session in Vietnam
+    // on a UTC server would be bucketed into the previous day).
+    const user = await this.users.findById(userId).catch(() => null);
+    const tz = user?.timezone || 'Asia/Ho_Chi_Minh';
+    const dayFmt = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    });
+    const dayKey = (d: Date) => dayFmt.format(d);
     const studiedDays = new Set(rows.map((r) => dayKey(new Date(r.startedAt))));
 
     // Streak: consecutive days up to today. Grace — if nothing today yet, count

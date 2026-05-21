@@ -74,6 +74,17 @@ async def move_to_next_card(session_id: str):
 # state — `result` stays null so consolidation doesn't treat it as attempted.
 @router.put("/exercise-deck/{session_id}/skip")
 async def skip_current_card(session_id: str):
+    deck = await ExerciseDeckService.get_deck(session_id)
+    if not deck:
+        return {"status": "none", "session_id": session_id}
+    # Onboarding diagnostic is an all-or-nothing mini-deck. A single Skip means the
+    # user is opting out of onboarding practice entirely, so end the whole deck at
+    # once (→ ended_early → decline outro) like the S+ end-deck flow. Skipping
+    # card-by-card forced the user to press Skip once per remaining card before the
+    # outro ever appeared.
+    if deck.get("session_type") == "onboarding_diagnostic":
+        ended = await ExerciseDeckService.mark_deck_ended(session_id, "user_skipped_all")
+        return ended or {"status": "none", "session_id": session_id}
     skip_update = {"status": "skipped"}
     updated = await ExerciseDeckService.update_current_card(session_id, skip_update)
     if not updated:

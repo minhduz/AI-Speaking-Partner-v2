@@ -35,16 +35,36 @@ export class SessionService {
     private userService: UserService,
   ) {}
 
+  /**
+   * Start of "today" in the user's own timezone, returned as a UTC instant so it
+   * compares correctly against started_at. Server-local midnight is wrong for
+   * non-UTC users: on a UTC server the day would only roll over at 07:00 in
+   * Vietnam (UTC+7), so the daily session quota would reset hours late.
+   */
+  private startOfTodayInTz(timeZone: string): Date {
+    const now = new Date();
+    const parts = Object.fromEntries(
+      new Intl.DateTimeFormat('en-US', {
+        timeZone, hourCycle: 'h23',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+      }).formatToParts(now).map((p) => [p.type, p.value]),
+    ) as Record<string, string>;
+    const wallNowAsUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second);
+    const tzOffsetMs = wallNowAsUtc - now.getTime();
+    const wallMidnightAsUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, 0, 0, 0);
+    return new Date(wallMidnightAsUtc - tzOffsetMs);
+  }
+
   async countTodaySessions(userId: string): Promise<number> {
-    const todayMidnight = new Date();
-    todayMidnight.setHours(0, 0, 0, 0);
-    return this.repo.count({ where: { userId, startedAt: MoreThanOrEqual(todayMidnight) } });
+    const user = await this.userService.findById(userId).catch(() => null);
+    const startOfToday = this.startOfTodayInTz(user?.timezone || 'Asia/Ho_Chi_Minh');
+    return this.repo.count({ where: { userId, startedAt: MoreThanOrEqual(startOfToday) } });
   }
 
   async getQuota(userId: string) {
     const billingUrl = this.cfg.get<string>('BILLING_SERVICE_URL');
     let limits = { is_unlimited: false, daily_session_limit: 10, session_token_limit: 30000 };
-    let billingSessionsUsed = 0;
     try {
       const { data } = await firstValueFrom(
         this.http.get<any>(`${billingUrl}/internal/limits/${userId}`),
@@ -56,7 +76,6 @@ export class SessionService {
       const { data } = await firstValueFrom(
         this.http.get<any>(`${billingUrl}/usage/${userId}`),
       );
-      billingSessionsUsed = Number(data?.sessions_used ?? 0);
       if (typeof data?.daily_session_limit === 'number') {
         limits.daily_session_limit = data.daily_session_limit;
       }
@@ -68,8 +87,11 @@ export class SessionService {
       }
     } catch { /* fail open if billing usage is unreachable */ }
 
-    const todayCount = await this.countTodaySessions(userId);
-    const sessionsUsed = Math.max(todayCount, billingSessionsUsed);
+    // Daily quota is measured strictly against sessions started today (in the
+    // user's timezone). Billing's sessions_used is a *monthly* cumulative count
+    // for analytics — mixing it in here blocked the user for the rest of the
+    // month once they hit 10, instead of resetting each day.
+    const sessionsUsed = await this.countTodaySessions(userId);
     return {
       is_unlimited: limits.is_unlimited,
       daily_session_limit: limits.daily_session_limit,
@@ -393,13 +415,15 @@ export class SessionService {
 
   async getGreetingContext(userId: string): Promise<string> {
     const prefix = `[Greeting][getGreetingContext] user=${userId}`;
-    // Slim greeting: 1 snippet is enough for a single-sentence reference.
+    // Slim greeting: prefer concrete short-term facts (appointments, deadlines)
+    // over the synthetic SESSION_INSIGHT blob so the greeting can reference
+    // urgent real-world context like "your 1 PM interview" naturally.
     // Heavy context (insight, mission, today_challenge) now lives in the
     // turn-agent's per-turn system prompt — not here.
     const payload = {
       query: 'recent conversation context',
       session_id: '',
-      limit: 1,
+      limit: 5,
       layers: ['short_term'],
     };
     console.log(`${prefix} → POST /retrieve layers=${JSON.stringify(payload.layers)}`);
@@ -412,7 +436,9 @@ export class SessionService {
       chunks.forEach((c, i) =>
         console.log(`  [${i}] source=${c.source} score=${c.score?.toFixed(3)} text="${String(c.text).slice(0, 80)}"`)
       );
-      const context = chunks.map((c) => c.text).join('\n');
+      const concrete = chunks.filter((c) => !String(c.text ?? '').startsWith('SESSION_INSIGHT:'));
+      const selected = concrete.length > 0 ? concrete.slice(0, 2) : chunks.slice(0, 1);
+      const context = selected.map((c) => c.text).join('\n');
       console.log(`${prefix} context=${context ? `"${context.slice(0, 120)}..."` : 'empty'}`);
       return context;
     } catch (err: any) {
@@ -579,7 +605,11 @@ export class SessionService {
         insight?.recommended_next_mode === 'lighter_deck';
       const numCards = isLightDeck ? 3 : 4;
 
-      cards = await this.generateCardsWithLLM(sessionType, mission, insight, user, numCards, llmUrl);
+      // Pull the tasks from the user's most recent decks so the generator can
+      // avoid handing them the same exercises again — the #1 cause of "every
+      // session feels identical" when the mission stays the same for 72h.
+      const avoidTasks = await this.getRecentCardTasks(userId, sessionId);
+      cards = await this.generateCardsWithLLM(sessionType, mission, insight, user, numCards, llmUrl, avoidTasks);
     }
 
     const deck = {
@@ -640,6 +670,36 @@ export class SessionService {
     ];
   }
 
+  /**
+   * Collect the exercise tasks from the user's last couple of decks so the card
+   * generator can steer away from repeating them. Best-effort: any failure just
+   * yields an empty list (generation proceeds without the avoid-hint).
+   */
+  private async getRecentCardTasks(userId: string, currentSessionId: string, maxTasks = 8): Promise<string[]> {
+    try {
+      const recent = await this.repo.find({
+        where: [{ userId, status: 'ended' }, { userId, status: 'abandoned' }],
+        order: { startedAt: 'DESC' },
+        take: 2,
+        select: ['id'],
+      });
+      const tasks: string[] = [];
+      for (const s of recent) {
+        if (s.id === currentSessionId) continue;
+        const deck = await this.getDeck(s.id).catch(() => null);
+        const cards = Array.isArray(deck?.cards) ? deck.cards : [];
+        for (const c of cards) {
+          const t = (c?.task || '').trim();
+          if (t) tasks.push(t);
+        }
+      }
+      return [...new Set(tasks)].slice(0, maxTasks);
+    } catch (err: any) {
+      console.error(`[Deck] getRecentCardTasks failed user=${userId}:`, err?.message);
+      return [];
+    }
+  }
+
   private async generateCardsWithLLM(
     sessionType: string,
     mission: string,
@@ -647,6 +707,7 @@ export class SessionService {
     user: any,
     numCards: number,
     llmUrl: string,
+    avoidTasks: string[] = [],
   ): Promise<any[]> {
     const cardPool = [
       { type: 'simple_explanation', desc: 'Warm-up: ask user to explain a basic concept from the mission simply (30-45 sec)' },
@@ -664,6 +725,12 @@ export class SessionService {
 
     const poolDesc = cardPool.map(c => `- ${c.type}: ${c.desc}`).join('\n');
 
+    const avoidBlock = avoidTasks.length
+      ? `RECENT TASKS TO AVOID — the user already practiced these in their last session(s). ` +
+        `Do NOT reuse, translate, or closely paraphrase any of them; invent clearly different scenarios this time:\n` +
+        avoidTasks.map((t) => `- ${t}`).join('\n')
+      : '';
+
     const contextLines = [
       insight?.struggled_with     ? `Struggled with last session: ${insight.struggled_with}`    : '',
       insight?.improved_vs_before ? `Improved on: ${insight.improved_vs_before}`                : '',
@@ -675,7 +742,7 @@ export class SessionService {
       `Choose and generate exactly ${numCards} speaking exercise cards from the pool below.`,
       ``,
       `Session type: ${sessionType}`,
-      `Mission: "${mission}"`,
+      `Mission (your INTERNAL coaching goal — never quote or copy it into a task): "${mission}"`,
       `User level: ${user?.level ?? 'beginner'}`,
       `Target language: ${user?.targetLanguage ?? 'English'}`,
       `Native language: ${user?.nativeLanguage ?? 'Vietnamese'}`,
@@ -693,9 +760,14 @@ export class SessionService {
       ``,
       `CONTENT RULES:`,
       `- Each task: 1-2 clear sentences, specific to the mission — no generic filler.`,
+      `- Write every task as a DIRECT instruction TO the learner in second person ("Tell me about...", "Describe a time when...", "Explain how you..."). NEVER phrase it as an instruction ABOUT the learner ("Encourage the user to...", "Ask the user to...", "Get them to...") and never copy the Mission wording verbatim — the Mission is your goal, the task is what the learner actually does.`,
+      `- The ${numCards} tasks MUST each cover a DISTINCT scenario or angle. No two cards may ask essentially the same thing or reuse one prompt with minor wording changes.`,
+      `- Every task must be SELF-CONTAINED: name the concrete subject explicitly. Never write a vague task like "explain this" or "describe it" with no referent.`,
       `- final_boss task must explicitly say "speak for 60 seconds".`,
       `- Success criteria: 2-3 short measurable statements. Be forgiving — clear meaning counts.`,
       `- Title: 4 words max.`,
+      ``,
+      avoidBlock,
       ``,
       `Return ONLY a valid JSON array, no markdown fences:`,
       `[{"id":"card-1","type":"<chosen_type>","title":"<title>","task":"<task>","success_criteria":["<c1>","<c2>"],"expected_duration_seconds":<n>,"retry_allowed":true,"status":"not_started","attempts":0,"result":null,"feedback":null,"ui_hint":null}]`,
@@ -747,30 +819,51 @@ export class SessionService {
     return this.buildFallbackCards(mission, fallbackTypes);
   }
 
+  /**
+   * Turn a mission (which is phrased as an instruction to the COACH, e.g.
+   * "Encourage the user to describe a moment with their dog") into a learner-facing
+   * goal phrase ("describe a moment with your dog") that slots cleanly into a task
+   * sentence. Best-effort string surgery — used only by the deterministic fallback.
+   */
+  private missionToLearnerGoal(mission: string): string {
+    let t = (mission || '').trim();
+    // Drop the leading coach-directive so what remains is what the learner does.
+    t = t.replace(
+      /^(encourage|ask|get|help|guide|prompt|invite|have|push|tell|remind)\s+(the\s+)?(user|learner|student|them)\s+(to\s+|into\s+|about\s+)?/i,
+      '',
+    );
+    // Flip third-person references to second person.
+    t = t.replace(/\btheir\b/gi, 'your').replace(/\bthem\b/gi, 'you').replace(/\bthemselves\b/gi, 'yourself');
+    t = t.replace(/[\s.,;:]+$/, '').trim();
+    if (t) t = t.charAt(0).toLowerCase() + t.slice(1);
+    return t || 'talk about something that matters to you';
+  }
+
   private buildFallbackCards(mission: string, cardTypes: string[]): any[] {
-    const shortMission = mission.slice(0, 60);
+    const goal = this.missionToLearnerGoal(mission);
+    const goalCap = goal.charAt(0).toUpperCase() + goal.slice(1);
     const templates: Record<string, any> = {
       simple_explanation: {
         title: 'Start simple',
-        task: `Describe your idea about "${shortMission}" in 2 sentences.`,
+        task: `In 2 sentences, ${goal}.`,
         success_criteria: ['meaning is clear', 'uses simple English', 'no long pause'],
         expected_duration_seconds: 45,
       },
       weakness_drill: {
         title: 'Drill it',
-        task: 'Explain the same idea using different words and simpler English.',
+        task: `Now ${goal} again, using different and simpler words.`,
         success_criteria: ['uses different vocabulary', 'explanation is clear'],
         expected_duration_seconds: 60,
       },
       real_situation: {
         title: 'Real situation',
-        task: 'How would you explain this to someone who knows nothing about it?',
+        task: `${goalCap}, as if you are explaining it to someone who knows nothing about it.`,
         success_criteria: ['explains clearly for a new listener', 'uses relatable language'],
         expected_duration_seconds: 60,
       },
       final_boss: {
         title: 'Final boss',
-        task: `Speak for 60 seconds about everything you practiced related to: "${shortMission}".`,
+        task: `Speak for 60 seconds: ${goal}, with as much detail as you can.`,
         success_criteria: ['speaks for at least 45 seconds', 'covers the main idea', 'mostly target language'],
         expected_duration_seconds: 90,
       },
@@ -937,10 +1030,14 @@ export class SessionService {
     console.log(`[Consolidation] ── triggering ───────────────────────`);
     console.log(`[Consolidation]   user    : ${userId}`);
     console.log(`[Consolidation]   session : ${sessionId}`);
+    const user = await this.userService.findById(userId).catch(() => null);
+    const userTimezone = user?.timezone || 'UTC';
+    console.log(`[Consolidation]   timezone: ${userTimezone}`);
     try {
       const res = await firstValueFrom(
         this.http.post(`${this.cfg.get('MEMORY_SERVICE_URL')}/consolidate/${userId}`, {
           session_id: sessionId,
+          user_timezone: userTimezone,
         }),
       );
       console.log(`[Consolidation] queued → memory-service responded:`, res.data);

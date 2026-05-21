@@ -9,7 +9,7 @@ import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { MessageInput } from '@/components/chat/message-input/message-input';
 import { DictionaryPopup } from '@/components/chat/dictionary-popup/dictionary-popup';
 import { MissionCard } from '@/components/chat/mission-card/mission-card';
-import { OnboardingPanel } from '@/components/chat/onboarding-panel/onboarding-panel';
+import { OnboardingPanel, hasOnboardingPanelContent } from '@/components/chat/onboarding-panel/onboarding-panel';
 import { PageHeader } from '@/components/shared/page-header';
 import { useAuth } from '@/hooks/use-auth';
 import { useChat } from '@/hooks/use-chat';
@@ -235,6 +235,7 @@ export default function ChatPage() {
     onboardingDeckReady &&
     (currentDeck.status === 'not_started' || currentDeck.status === 'in_progress') &&
     currentDeck.cards.length > 0;
+  const onboardingPanelVisible = hasOnboardingPanelContent(isOnboardingSession, onboardingState);
 
   // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
   // Three phases: (1) farewell playing, (2) choices [View recap/breakdown]/[Exit],
@@ -264,7 +265,7 @@ export default function ChatPage() {
             </p>
             {closingText ? (
               <p className="mx-auto mt-3 max-w-[320px] text-base font-bold leading-relaxed" style={{ color: '#1a1c1c' }}>
-                {closingText}
+                <TappableText text={closingText} />
               </p>
             ) : (
               <p className="mt-3 text-sm font-bold animate-pulse" style={{ color: '#6f7b64' }}>
@@ -388,16 +389,26 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* Conversation — greeting + message bubbles, always rendered. */}
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto px-6 py-4 flex flex-col items-center gap-3"
-        >
-          <div className="w-full max-w-md flex flex-col gap-3">
+        {/* Conversation — greeting + message bubbles, with a tablet/desktop insight rail. */}
+        <div className="min-h-0 flex-1 overflow-hidden px-4 sm:px-6">
+          <div
+            className={
+              onboardingPanelVisible
+                ? 'mx-auto grid h-full w-full max-w-[1040px] grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_248px] lg:grid-cols-[minmax(0,1fr)_280px]'
+                : 'h-full'
+            }
+          >
+            <div
+              ref={scrollContainerRef}
+              className="min-h-0 overflow-y-auto py-4 flex flex-col items-center gap-3"
+            >
+              <div className="w-full max-w-md flex flex-col gap-3">
             {messages.length === 0 && greetingSentences.length > 0 && (
               <div className="text-center text-2xl md:text-3xl font-medium leading-snug text-gray-800 mt-6">
                 {greetingSentences.map((sentence, index) => (
-                  <p key={index}>{sentence}</p>
+                  <p key={index}>
+                    <TappableText text={sentence} />
+                  </p>
                 ))}
               </div>
             )}
@@ -416,7 +427,19 @@ export default function ChatPage() {
               <p className="text-sm text-gray-400 text-center mt-2 animate-reveal">Tap the mic to reply.</p>
             )}
 
-            <div ref={messagesEndRef} />
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {onboardingPanelVisible && (
+              <div className="hidden min-h-0 py-4 md:block">
+                <OnboardingPanel
+                  isVisible={isOnboardingSession}
+                  state={onboardingState}
+                  className="sticky top-0 max-h-full overflow-y-auto"
+                />
+              </div>
+            )}
           </div>
         </div>
 
@@ -433,8 +456,6 @@ export default function ChatPage() {
           isRecording={isRecording}
           disabled={micDisabled}
         />
-
-        <OnboardingPanel isVisible={isOnboardingSession} state={onboardingState} />
 
         {wordDictionary.isOpen && CORNER_STYLES.map((cs, i) => (
           <div key={i} style={{ position: 'fixed', ...cs, width: 14, height: 14, borderRadius: 4, border: '2px solid rgba(132,71,255,0.35)', background: 'rgba(132,71,255,0.08)', zIndex: 99, pointerEvents: 'none' }} />
@@ -1358,33 +1379,110 @@ function tokenizeForTap(text: string): { token: string; isWord: boolean }[] {
   return matches.map((token) => ({ token, isWord: /[\p{L}\p{N}\p{M}]/u.test(token) }));
 }
 
+type InlineEmphasis = 'plain' | 'em' | 'strong';
+
+interface InlineTextRun {
+  text: string;
+  emphasis: InlineEmphasis;
+}
+
+function findClosingMarker(text: string, marker: '*' | '**', start: number): number {
+  const markerLength = marker.length;
+  const contentStart = start + markerLength;
+
+  for (let i = contentStart; i < text.length; i += 1) {
+    if (!text.startsWith(marker, i)) continue;
+    if (marker === '*' && (text[i - 1] === '*' || text[i + 1] === '*')) continue;
+
+    const content = text.slice(contentStart, i);
+    if (content.trim().length > 0 && !/\s/.test(content[0]) && !/\s/.test(content[content.length - 1])) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+function parseInlineEmphasis(text: string): InlineTextRun[] {
+  const runs: InlineTextRun[] = [];
+  let plain = '';
+  let i = 0;
+
+  const pushPlain = () => {
+    if (plain) {
+      runs.push({ text: plain, emphasis: 'plain' });
+      plain = '';
+    }
+  };
+
+  while (i < text.length) {
+    if (text.startsWith('**', i) && text[i + 2] && !/\s/.test(text[i + 2])) {
+      const end = findClosingMarker(text, '**', i);
+      if (end >= 0) {
+        pushPlain();
+        runs.push({ text: text.slice(i + 2, end), emphasis: 'strong' });
+        i = end + 2;
+        continue;
+      }
+    }
+
+    if (text[i] === '*' && text[i + 1] !== '*' && text[i - 1] !== '*' && text[i + 1] && !/\s/.test(text[i + 1])) {
+      const end = findClosingMarker(text, '*', i);
+      if (end >= 0) {
+        pushPlain();
+        runs.push({ text: text.slice(i + 1, end), emphasis: 'em' });
+        i = end + 1;
+        continue;
+      }
+    }
+
+    plain += text[i];
+    i += 1;
+  }
+
+  pushPlain();
+  return runs;
+}
+
 function TappableText({
   text,
   color,
   onTapWord,
 }: {
   text: string;
-  color: string;
-  onTapWord: (word: string, e: React.MouseEvent) => void;
+  color?: string;
+  onTapWord?: (word: string, e: React.MouseEvent) => void;
 }) {
+  const tokenStyle = color ? { color } : undefined;
+  const clickableStyle = color
+    ? { color, WebkitTapHighlightColor: 'transparent' }
+    : { WebkitTapHighlightColor: 'transparent' };
+
   return (
     <>
-      {tokenizeForTap(text).map((t, j) =>
-        t.isWord ? (
-          <span
-            key={j}
-            onClick={(e) => onTapWord(t.token.replace(/^['’]+|['’]+$/g, ''), e)}
-            className="cursor-pointer rounded-sm transition-colors hover:bg-[#fff5b0] active:bg-[#ffe680]"
-            style={{ color, WebkitTapHighlightColor: 'transparent' }}
-          >
-            {t.token}
-          </span>
-        ) : (
-          <span key={j} style={{ color }}>
-            {t.token}
-          </span>
-        ),
-      )}
+      {parseInlineEmphasis(text).map((run, runIndex) => (
+        <span
+          key={runIndex}
+          className={run.emphasis === 'strong' ? 'font-black' : run.emphasis === 'em' ? 'italic' : undefined}
+        >
+          {tokenizeForTap(run.text).map((t, tokenIndex) =>
+            t.isWord && onTapWord ? (
+              <span
+                key={tokenIndex}
+                onClick={(e) => onTapWord(t.token.replace(/^['’]+|['’]+$/g, ''), e)}
+                className="cursor-pointer rounded-sm transition-colors hover:bg-[#fff5b0] active:bg-[#ffe680]"
+                style={clickableStyle}
+              >
+                {t.token}
+              </span>
+            ) : (
+              <span key={tokenIndex} style={tokenStyle}>
+                {t.token}
+              </span>
+            ),
+          )}
+        </span>
+      ))}
     </>
   );
 }
@@ -1636,9 +1734,15 @@ function DeckCardActions({
     hasEval && (card.next_action === 'finish_session' || (isFinalBoss && card.result === 'passed'));
   const showNext = hasEval && !showFinish && card.next_action !== 'retry';
 
+  // Skip is only meaningful while the user has NOT yet cleared the card. Once an
+  // eval passes (or is forced through), Next/Finish owns the forward action, so
+  // showing Skip too is redundant and confuses the BE (a Skip tap after a pass
+  // would mark the already-passed card as skipped). Hide it then.
+  const showSkip = !isLighter && !showNext && !showFinish;
+
   return (
     <div className="flex justify-end gap-2 pt-1">
-      {!isLighter && (
+      {showSkip && (
         <button
           type="button"
           onClick={onSkip}
@@ -1829,7 +1933,7 @@ function HomeDashboard({
                     className="text-xl sm:text-2xl font-extrabold leading-snug"
                     style={{ color: '#ffffff', letterSpacing: '-0.01em' }}
                   >
-                    {greetingSentences.join(' ')}
+                    <TappableText text={greetingSentences.join(' ')} />
                   </h2>
                 </div>
 

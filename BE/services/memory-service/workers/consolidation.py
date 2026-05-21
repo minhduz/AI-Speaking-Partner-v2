@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openai import AsyncOpenAI
 
@@ -129,7 +131,20 @@ def _usd(prompt: int = 0, completion: int = 0, embed: int = 0) -> float:
          + embed * _EMBED_PRICE / 1_000_000
 
 
-async def run_consolidation(user_id: str, session_id: str):
+def _safe_zoneinfo(tz_name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("invalid user timezone %r; falling back to UTC", tz_name)
+        return ZoneInfo("UTC")
+
+
+def _format_offset(dt: datetime) -> str:
+    offset = dt.strftime("%z")
+    return f"{offset[:3]}:{offset[3:]}" if offset else "+00:00"
+
+
+async def run_consolidation(user_id: str, session_id: str, user_timezone: str = "UTC"):
     """
     Runs after every session ends.
 
@@ -160,9 +175,14 @@ async def run_consolidation(user_id: str, session_id: str):
             await _mark_done(user_id, session_id, 0, 0)
             return
 
-        # 2. Resolve session start time
+        # 2. Resolve session start time. Keep UTC for storage/comparison, but
+        # anchor LLM temporal extraction in the user's own timezone so phrases
+        # like "this afternoon at 13:00" are not incorrectly stamped as UTC.
         session_start_utc = _parse_session_time(messages)
-        log.info("step 2 — session time: %s", session_start_utc.isoformat())
+        user_tz = _safe_zoneinfo(user_timezone)
+        session_start_local = session_start_utc.astimezone(user_tz)
+        log.info("step 2 — session time: utc=%s local=%s tz=%s",
+                 session_start_utc.isoformat(), session_start_local.isoformat(), user_tz.key)
 
         # 3. LLM extracts long-term and short-term facts in parallel — only use last 60 messages
         CONSOLIDATION_WINDOW = 60
@@ -211,6 +231,8 @@ async def run_consolidation(user_id: str, session_id: str):
         try:
             _all, extract_usage = await _extract_all_facts(
                 conversation, session_start_utc,
+                user_timezone=user_tz.key,
+                session_start_local=session_start_local,
                 user_turn_count=_count_user_turns(messages_to_extract),
                 deck_context=deck_context,
             )
@@ -606,6 +628,7 @@ def _merge(existing: list[dict], new_facts: list[dict]) -> list[dict]:
                 break
         if not replaced:
             result.append(new)
+
     return result
 
 
@@ -685,6 +708,8 @@ async def _batch_embed(texts: list[str]) -> tuple[list[list[float]], int]:
 async def _extract_all_facts(
     conversation: str,
     session_start_utc: datetime,
+    user_timezone: str = "UTC",
+    session_start_local: datetime | None = None,
     user_turn_count: int = 0,
     deck_context: dict | None = None,
 ) -> tuple[dict, object]:
@@ -693,10 +718,17 @@ async def _extract_all_facts(
     a structured `session_insight` block used to drive trajectory.
     Returns {"long_term": [...], "short_term": [...], "session_insight": {...} | None}.
     """
-    fmt_time  = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-    week_end  = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
-    example_abs = (session_start_utc + timedelta(minutes=10)).strftime(
-        "%I:%M %p on %A, %B %d, %Y UTC"
+    local_start = session_start_local or session_start_utc
+    tz_offset = _format_offset(local_start)
+    fmt_time = (
+        f"{local_start.strftime('%A, %B %d, %Y at %I:%M %p')} "
+        f"{user_timezone} (UTC{tz_offset})"
+    )
+    week_end  = (local_start + timedelta(days=7)).strftime("%A, %B %d, %Y")
+    example_dt = local_start + timedelta(minutes=10)
+    example_abs = (
+        f"{example_dt.strftime('%I:%M %p on %A, %B %d, %Y')} "
+        f"{user_timezone} (UTC{_format_offset(example_dt)})"
     )
     # Sessions shorter than 4 user turns can't reliably be judged for trajectory.
     insight_too_short = user_turn_count < 4
@@ -768,7 +800,8 @@ async def _extract_all_facts(
             {
                 "role": "system",
                 "content": (
-                    f"The conversation took place on {fmt_time}.\n\n"
+                    f"The conversation took place on {fmt_time}.\n"
+                    f"All relative times in the user's words are relative to {user_timezone}, not UTC.\n\n"
                     "Extract facts about the USER from this conversation.\n"
                     "Return ONLY valid JSON with this exact structure:\n"
                     "{\n"
@@ -785,18 +818,18 @@ async def _extract_all_facts(
                     "Extract facts even when stated as corrections or clarifications:\n"
                     "  'I mean my dog named Kiki'  → {\"content\": \"User has a dog named Kiki\", \"priority\": \"normal\"}\n"
                     "  'Actually I have two cats'  → {\"content\": \"User has two cats\", \"priority\": \"normal\"}\n"
-                    "For time-sensitive facts embed the absolute date/time in content:\n"
+                    "For time-sensitive facts embed the absolute local date/time in content with timezone:\n"
                     f"  Bad:  'User has an exam in 10 minutes'\n"
                     f"  Good: 'User has an exam at {example_abs}'\n\n"
                     "── short_term ──\n"
                     f"ONLY USER facts relevant within the next 7 days (by {week_end}).\n"
                     "Each object: {\"content\": string, \"priority\": \"urgent\"|\"high\"}\n"
-                    "Content MUST describe the event AND its absolute date/time:\n"
+                    "Content MUST describe the event AND its absolute local date/time with timezone:\n"
                     f"  BAD:  '{example_abs}'\n"
                     f"  GOOD: 'User has a meeting at {example_abs}'\n"
                     "Include only: upcoming meetings, appointments, deadlines, exams within 7 days, "
                     "active urgent situations.\n"
-                    "Never use relative terms — always absolute date/time.\n"
+                    "Never use relative terms — always absolute date/time in the user's timezone.\n"
                     "Return empty array if no qualifying facts.\n\n"
                     + insight_instructions +
                     "\nDO NOT extract (for long_term / short_term):\n"
@@ -830,6 +863,14 @@ async def _extract_all_facts(
         return {"long_term": [], "short_term": [], "session_insight": None}, usage
 
 
+def _st_merge_key(content: str) -> str:
+    key = content.lower().strip()
+    key = re.sub(r"\b0(\d:\d{2}\s*[ap]m)\b", r"\1", key)
+    key = re.sub(r"\s+\(?utc[+-]?\d{0,2}:?\d{0,2}\)?$", "", key)
+    key = re.sub(r"\s+[a-z_]+/[a-z_]+(?:\s+\(utc[+-]\d{2}:\d{2}\))?$", "", key)
+    return key[:90]
+
+
 def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
     """
     Merge new short-term facts into existing.
@@ -852,16 +893,27 @@ def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
             # Always insert SESSION_INSIGHT first (highest retrieval priority).
             result.insert(0, new)
             continue
-        key = new["content"].lower().strip()[:60]
+        key = _st_merge_key(new["content"])
         replaced = False
         for i, ef in enumerate(result):
-            if ef["content"].lower().strip()[:60] == key:
+            if _st_merge_key(ef["content"]) == key:
                 result[i] = new
                 replaced = True
                 break
         if not replaced:
             result.append(new)
-    return result
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for fact in result:
+        content = fact.get("content", "")
+        key = SESSION_INSIGHT_PREFIX if content.startswith(SESSION_INSIGHT_PREFIX) else _st_merge_key(content)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fact)
+    return deduped
+
 
 
 def _count_user_turns(messages: list[dict]) -> int:

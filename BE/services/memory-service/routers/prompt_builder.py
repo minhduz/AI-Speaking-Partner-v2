@@ -8,7 +8,7 @@ TOKEN_BUDGET    = 2500   # ~2500 tokens of context headroom
 CHARS_PER_TOKEN = 4
 # Per-source caps — prevents one layer from monopolising the context window
 _MAX_SHORT_TERM = 5
-_MAX_LONG_TERM  = 8
+_MAX_LONG_TERM  = 4
 
 class BuildPromptRequest(BaseModel):
     query: str
