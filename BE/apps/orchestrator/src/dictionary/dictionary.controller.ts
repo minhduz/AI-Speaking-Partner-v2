@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Delete, Param, Query, Req, Body, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Patch, Param, Query, Req, Body, HttpException, HttpStatus, UseGuards } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -84,25 +84,62 @@ export class DictionaryController {
     }
   }
 
-  @Delete('flashcards/:id')
-  async deleteFlashcard(
-    @Req() req: any,
-    @Param('id') id: string,
-  ) {
+  @Get('flashcards/archived')
+  async getArchivedFlashcards(@Req() req: any) {
     const userId: string = req.user?.id ?? null;
-    if (!userId || !id) {
-      throw new HttpException('Bad Request', HttpStatus.BAD_REQUEST);
-    }
-
+    if (!userId) throw new HttpException('Unauthorized', HttpStatus.UNAUTHORIZED);
     try {
       const dictServiceUrl = this.configService.get<string>('DICTIONARY_SERVICE_URL', 'http://localhost:3005');
       const response = await firstValueFrom(
-        this.httpService.delete(`${dictServiceUrl}/dictionary/flashcards/${id}`, {
-          params: { userId },
-        }),
+        this.httpService.get(`${dictServiceUrl}/dictionary/flashcards/archived`, { params: { userId } }),
       );
       return response.data;
-    } catch (error) {
+    } catch {
+      throw new HttpException('Dictionary service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  @Get('flashcards/review-due')
+  async getReviewDue(@Req() req: any) {
+    const userId: string = req.user?.id ?? null;
+    if (!userId) throw new HttpException('Unauthorized', HttpStatus.UNAUTHORIZED);
+    try {
+      const dictServiceUrl = this.configService.get<string>('DICTIONARY_SERVICE_URL', 'http://localhost:3005');
+      const response = await firstValueFrom(
+        this.httpService.get(`${dictServiceUrl}/dictionary/flashcards/review-due`, { params: { userId } }),
+      );
+      return response.data;
+    } catch {
+      throw new HttpException('Dictionary service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  @Patch('flashcards/:id/review')
+  async reviewFlashcard(@Req() req: any, @Param('id') id: string, @Body('result') result: string) {
+    const userId: string = req.user?.id ?? null;
+    if (!userId || !id || !result) throw new HttpException('Bad Request', HttpStatus.BAD_REQUEST);
+    try {
+      const dictServiceUrl = this.configService.get<string>('DICTIONARY_SERVICE_URL', 'http://localhost:3005');
+      const response = await firstValueFrom(
+        this.httpService.patch(`${dictServiceUrl}/dictionary/flashcards/${id}/review`, { result }, { params: { userId } }),
+      );
+      return response.data;
+    } catch {
+      throw new HttpException('Dictionary service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  @Delete('flashcards/:id')
+  async deleteFlashcard(@Req() req: any, @Param('id') id: string) {
+    const userId: string = req.user?.id ?? null;
+    if (!userId || !id) throw new HttpException('Bad Request', HttpStatus.BAD_REQUEST);
+    try {
+      const dictServiceUrl = this.configService.get<string>('DICTIONARY_SERVICE_URL', 'http://localhost:3005');
+      const response = await firstValueFrom(
+        this.httpService.delete(`${dictServiceUrl}/dictionary/flashcards/${id}`, { params: { userId } }),
+      );
+      return response.data;
+    } catch {
       throw new HttpException('Dictionary service unavailable', HttpStatus.SERVICE_UNAVAILABLE);
     }
   }

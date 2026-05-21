@@ -1,8 +1,10 @@
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
 langgraph>=0.2.0,<0.3.0
+langsmith>=0.1.125
 aiohttp==3.9.5
 asyncpg==0.29.0
 pydantic==2.7.0
 pydantic-settings==2.2.1
 python-multipart==0.0.9
+python-dotenv>=1.0.0

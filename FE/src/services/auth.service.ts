@@ -6,8 +6,18 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const data = await res.json();
+
+  const contentType = res.headers.get('content-type') ?? '';
+  const data = contentType.includes('application/json')
+    ? await res.json()
+    : { message: `Server returned ${res.status} ${res.statusText || 'non-JSON response'} instead of JSON.` };
+
   if (!res.ok) throw new Error(data.message ?? 'Request failed');
+
+  if (!contentType.includes('application/json')) {
+    throw new Error(data.message);
+  }
+
   return data as T;
 }
 

@@ -64,9 +64,23 @@ export interface SessionInsight {
   last_session_days_ago?: number | null;
 }
 
+export type SessionMode = 'guided_learning' | 'free_talk';
+
 export interface StartSessionResponse {
   session_id: string;
   is_first_session: boolean;
+  /** Backend echoes the effective mode (may differ from requested if onboarding-forced). */
+  mode: SessionMode;
+}
+
+export interface SessionQuota {
+  is_unlimited: boolean;
+  daily_session_limit: number;
+  session_token_limit: number;
+  sessions_used: number;
+  can_start: boolean;
+  /** True until the user completes/starts their first guided onboarding session. */
+  is_first_session?: boolean;
 }
 
 export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
@@ -83,6 +97,111 @@ export class BillingLimitError extends Error {
     this.limit = limit;
     this.used = used;
   }
+}
+
+export interface DeckCard {
+  id: string;
+  type: string;
+  title: string;
+  task: string;
+  success_criteria: string[];
+  expected_duration_seconds: number;
+  retry_allowed: boolean;
+  status: string;
+  attempts: number;
+  result: string | null;
+  feedback: string | null;
+  ui_hint: string | null;
+  next_action?: 'retry' | 'next_card' | 'finish_session' | null;
+}
+
+/**
+ * Eval block emitted by the turn-agent at the end of each deck-active turn.
+ * Mirrors the JSON the LLM produces after `EVAL:` — used by the FE to update
+ * deck UI optimistically before the 3s poll reconciles.
+ */
+export interface DeckEvalData {
+  passed: boolean;
+  feedback: string;
+  retryRecommended: boolean;
+  nextAction: 'retry' | 'next_card' | 'finish_session';
+  detectedIssues: string[];
+}
+
+export interface ExerciseDeck {
+  id: string;
+  session_id: string;
+  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training';
+  mission: string;
+  mission_source: string;
+  reason: string;
+  status: 'not_started' | 'in_progress' | 'completed' | 'ended_early' | 'abandoned' | 'none';
+  current_card_index: number;
+  cards: DeckCard[];
+  end_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  /** True when this deck continues an incomplete deck from a previous session. */
+  is_continuation?: boolean;
+}
+
+export interface SessionEvaluationCard {
+  title: string;
+  type: string | null;
+  result: 'passed' | 'partial' | 'not_passed' | null;
+  attempts: number;
+  feedback: string;
+}
+
+export interface SessionEvaluationCorrection {
+  you_said: string;
+  try_this: string;
+  why: string;
+}
+
+export interface SessionEvaluationSkill {
+  skill: string;
+  level: 'Strong' | 'Okay' | 'Needs work';
+  evidence: string;
+}
+
+export interface SessionEvaluationPattern {
+  title: string;
+  evidence: string;
+  practice_tip: string;
+}
+
+export interface SessionEvaluationDrill {
+  title: string;
+  steps: string[];
+  success_criteria?: string;
+}
+
+export interface SessionEvaluation {
+  status: 'ready';
+  /** Branches the FE: 'free_talk' → lightweight recap, 'guided_learning' → full board. */
+  mode?: SessionMode;
+  quality?: 'basic' | 'rich';
+  session_id: string;
+  generated_at: string;
+  summary: string;
+  highlights: string[];
+  growth_areas: string[];
+  next_focus: string;
+  energy: string;
+  cards: SessionEvaluationCard[];
+  spoken_samples: string[];
+  corrections?: SessionEvaluationCorrection[];
+  skill_radar?: SessionEvaluationSkill[];
+  recurring_pattern?: SessionEvaluationPattern | null;
+  next_drill?: SessionEvaluationDrill | null;
+  stats: {
+    user_turns: number;
+    cards_completed: number;
+    cards_total: number;
+    cards_skipped: number;
+    duration_minutes: number | null;
+  };
 }
 
 export interface OnboardingState {
@@ -113,7 +232,7 @@ export interface TurnResult {
  *   idle_timeout  – 15-min client-side idle timer
  *   tab_close     – beforeunload / beacon
  */
-export type EndReason = 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
+export type EndReason = 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close' | 'ai_farewell';
 
 export interface CloseSessionResponse {
   session_id: string;
@@ -126,11 +245,21 @@ export interface CloseSessionResponse {
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export const sessionService = {
-  start: async (): Promise<StartSessionResponse> => {
-    log('POST /session/start');
+  getQuota: async (): Promise<SessionQuota | null> => {
+    log('GET /session/quota');
+    const res = await fetchWithAuth(`${API_BASE}/session/quota`);
+    if (!res.ok) return null;
+    const data: SessionQuota = await res.json();
+    log('GET /session/quota â†’', data);
+    return data;
+  },
+
+  start: async (mode: SessionMode = 'guided_learning'): Promise<StartSessionResponse> => {
+    log('POST /session/start', { mode });
     const res = await fetchWithAuth(`${API_BASE}/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
@@ -152,11 +281,16 @@ export const sessionService = {
     return data as OnboardingState;
   },
 
-  streamGreetingAnon: async (): Promise<AsyncGenerator<GreetingEvent>> => {
+  streamGreetingAnon: async (
+    signal?: AbortSignal,
+    mode: SessionMode = 'guided_learning',
+  ): Promise<AsyncGenerator<GreetingEvent>> => {
     const dt = encodeURIComponent(new Date().toISOString());
-    log('GET /session/greeting/stream');
-    const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}`, {
+    const modeParam = mode === 'free_talk' ? '&mode=free_talk' : '';
+    log('GET /session/greeting/stream', { mode });
+    const res = await fetch(`${API_BASE}/session/greeting/stream?datetime=${dt}${modeParam}`, {
       headers: authHeaders(),
+      signal,
     });
     if (!res.ok) throw new Error(`Greeting stream failed: ${res.status}`);
     async function* wrapped(): AsyncGenerator<GreetingEvent> {
@@ -208,8 +342,15 @@ export const sessionService = {
     return wrapped();
   },
 
-  streamTurnText: async (sessionId: string, transcript: string): Promise<AsyncGenerator<TurnEvent>> => {
-    log(`POST /turn/${sessionId}/stream-text`, { transcript: transcript.slice(0, 60) });
+  streamTurnText: async (
+    sessionId: string,
+    transcript: string,
+    greetingText?: string,
+  ): Promise<AsyncGenerator<TurnEvent>> => {
+    log(`POST /turn/${sessionId}/stream-text`, {
+      transcript: transcript.slice(0, 60),
+      greetingText: greetingText ? `${greetingText.slice(0, 60)}…` : undefined,
+    });
     const res = await fetch(`${API_BASE}/turn/${sessionId}/stream-text`, {
       method: 'POST',
       headers: {
@@ -217,7 +358,12 @@ export const sessionService = {
         'Content-Type': 'application/json',
         'X-Client-Datetime': new Date().toISOString(),
       },
-      body: JSON.stringify({ transcript }),
+      // greeting_text is only sent on the FIRST turn of a session. The
+      // orchestrator forwards it to the turn-agent which (a) prepends it as a
+      // prior assistant message in the LLM prompt so the AI knows what it just
+      // asked, and (b) writes it to short-term so subsequent turns see it in
+      // recent_messages.
+      body: JSON.stringify(greetingText ? { transcript, greeting_text: greetingText } : { transcript }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => res.statusText);
@@ -329,6 +475,82 @@ export const sessionService = {
     const data: CloseSessionResponse = await res.json();
     log(`POST /session/${sessionId}/close →`, { text: data.text?.slice(0, 80), hasAudio: !!data.audio_b64 });
     return data;
+  },
+
+  getDeck: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck`);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
+  },
+
+  /**
+   * Fetch the end-of-session evaluation report. Returns null while
+   * consolidation is still building it (BE responds {status:'pending'}),
+   * so the caller can poll.
+   */
+  getEvaluation: async (sessionId: string): Promise<SessionEvaluation | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/evaluation`);
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'pending') return null;
+    return data as SessionEvaluation;
+  },
+
+  advanceDeckCard: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+  },
+
+  skipDeckCard: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+  },
+
+  acceptDeckChallenge: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/card`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+  },
+
+  /** Force-complete the deck without advancing — used after a lighter-mode card. */
+  completeLighterDeck: async (sessionId: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed' }),
+    });
+  },
+
+  rejectDeckChallenge: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ end_reason: 'user_clicked_end' }),
+    });
+    if (!res.ok) throw new Error(`Failed to reject deck: ${res.status}`);
+    const data = await res.json().catch(() => null);
+    return data && data.status !== 'none' ? data as ExerciseDeck : null;
+  },
+
+  rejectDeckWithMode: async (sessionId: string, endReason: 'user_chose_free_talk' | 'user_wants_to_end'): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/end`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ end_reason: endReason }),
+    });
+    if (!res.ok) throw new Error(`Failed to end deck with ${endReason}: ${res.status}`);
+    const data = await res.json().catch(() => null);
+    return data && data.status !== 'none' ? data as ExerciseDeck : null;
+  },
+
+  regenerateDeck: async (sessionId: string, topic: string): Promise<void> => {
+    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/regenerate`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic }),
+    });
   },
 
   /**

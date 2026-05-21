@@ -17,7 +17,7 @@ export default function MainLayout({ children }: { children: ReactNode }) {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#F8F9FB]">
+      <div className="flex h-screen items-center justify-center bg-white">
         <div className="w-8 h-8 rounded-full border-2 border-[#4A6741] border-t-transparent animate-spin" />
       </div>
     );
@@ -25,5 +25,12 @@ export default function MainLayout({ children }: { children: ReactNode }) {
 
   if (!isAuthenticated) return null;
 
-  return <div className="flex h-screen bg-[#F8F9FB] overflow-hidden">{children}</div>;
+  return (
+    <div
+      className="flex bg-white overflow-hidden"
+      style={{ height: '100dvh' }}
+    >
+      {children}
+    </div>
+  );
 }

@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  DEV_COOKIE_OPTIONS,
+  fetchAuthBackend,
+  hasAccessToken,
+  readBackendJson,
+} from '../_utils';
 
-const BE_URL = process.env.BACKEND_URL ?? 'http://localhost:3000';
 const DEV_BYPASS = process.env.DEV_AUTH_BYPASS === 'true' && process.env.NODE_ENV !== 'production';
-
-const DEV_COOKIE_OPTIONS = {
-  httpOnly: true,
-  secure: false,
-  sameSite: 'strict' as const,
-  path: '/',
-  maxAge: 60 * 60 * 24 * 7,
-};
 
 export async function POST(req: NextRequest) {
   const refreshToken = req.cookies.get('refresh_token')?.value;
@@ -24,18 +21,19 @@ export async function POST(req: NextRequest) {
     return response;
   }
 
-  const res = await fetch(`${BE_URL}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh_token: refreshToken }),
-  });
+  const res = await fetchAuthBackend('/auth/refresh', { refresh_token: refreshToken });
+  if (res instanceof NextResponse) return res;
 
-  const data = await res.json();
+  const data = await readBackendJson(res);
 
   if (!res.ok) {
     const response = NextResponse.json(data, { status: res.status });
     response.cookies.delete('refresh_token');
     return response;
+  }
+
+  if (!hasAccessToken(data)) {
+    return NextResponse.json({ message: 'Invalid auth response from backend' }, { status: 502 });
   }
 
   const { access_token } = data;

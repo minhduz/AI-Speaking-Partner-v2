@@ -100,6 +100,14 @@ export class TurnService {
     return session?.totalTokens ?? 0;
   }
 
+  async getSessionMode(sessionId: string, userId: string): Promise<'guided_learning' | 'free_talk'> {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId, userId },
+      select: ['mode'],
+    });
+    return session?.mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+  }
+
   /**
    * Returns true when the given session is the user's first-ever speaking session.
    * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs
@@ -126,6 +134,58 @@ export class TurnService {
     } catch (err: any) {
       console.error(`[Turn] active mission fetch failed:`, err?.message);
       return null;
+    }
+  }
+
+  /**
+   * Fetches the consolidated session insight (struggled_with, energy, etc.)
+   * for the user. Used by the turn-agent to drive practice lead-in: once the
+   * conversation has warmed up (turn 3+), the AI can reference the insight to
+   * naturally propose a mission. Returns null on miss/error so callers fall
+   * back to a no-insight prompt branch.
+   */
+  async getSessionInsight(userId: string): Promise<any | null> {
+    const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/session-insight/${userId}`;
+    try {
+      const { data } = await firstValueFrom<any>(this.http.get<any>(url));
+      return data && data.has_insight ? data : null;
+    } catch (err: any) {
+      console.error(`[Turn] session-insight fetch failed:`, err?.message);
+      return null;
+    }
+  }
+
+  async getDeckInfo(sessionId: string): Promise<{
+    active: boolean;
+    status: string;
+    end_reason: string;
+    current_card_index: number;
+    total_cards: number;
+    current_card: any | null;
+    is_continuation: boolean;
+  }> {
+    const empty = { active: false, status: 'none', end_reason: '', current_card_index: 0, total_cards: 0, current_card: null, is_continuation: false };
+    const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
+    try {
+      const { data } = await firstValueFrom<any>(
+        this.http.get<any>(`${memoryUrl}/exercise-deck/${sessionId}`),
+      );
+      if (!data || data.status === 'none') return empty;
+      const cards = Array.isArray(data.cards) ? data.cards : [];
+      const idx = data.current_card_index ?? 0;
+      const isActive = data.status === 'in_progress';
+      return {
+        active:              isActive,
+        status:              data.status ?? 'none',
+        end_reason:          data.end_reason ?? '',
+        current_card_index:  idx,
+        total_cards:         cards.length,
+        current_card:        cards[idx] ?? null,
+        is_continuation:     Boolean(data.is_continuation),
+      };
+    } catch (err: any) {
+      console.error(`[Turn] getDeckInfo failed session=${sessionId}:`, err?.message);
+      return empty;
     }
   }
 
@@ -188,7 +248,7 @@ export class TurnService {
         system_prompt += buildActiveMissionBlock(activeMission);
         console.log(`[Turn] [${elapsed()}] system_prompt length: ${system_prompt?.length ?? 0} chars`);
       } catch {
-        system_prompt = `You are a warm, friendly AI companion. Speak in ${user?.targetLanguage ?? 'English'} or whatever language the user uses naturally. Today is ${currentDatetime}.`;
+        system_prompt = `You are a warm, friendly AI companion. Speak only in ${user?.targetLanguage ?? 'English'} in every user-visible sentence. If the user uses their native language, understand it silently but do not mirror it. Today is ${currentDatetime}.`;
         system_prompt += buildActiveMissionBlock(activeMission);
       }
 

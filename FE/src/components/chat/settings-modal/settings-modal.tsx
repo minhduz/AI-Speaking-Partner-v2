@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { userService } from '@/services/user.service';
+import { setUserSpeechRate } from '@/hooks/use-chat';
 import {
   VOICE_OPTIONS,
   STYLE_OPTIONS,
@@ -10,37 +11,58 @@ import {
   type ConversationStyle,
 } from '@/types/user.types';
 
-interface SettingsModalProps {
-  open: boolean;
-  onClose: () => void;
-}
-
 const DEFAULT_SETTINGS = {
   voiceId: 'Adrian' as VoiceId,
   speechRate: 1.0,
   conversationStyle: 'friendly' as ConversationStyle,
 };
 
-export function SettingsModal({ open, onClose }: SettingsModalProps) {
+/* Voice accent groups */
+const VOICE_GROUPS = [
+  {
+    id: 'american', label: 'American', flag: 'us',
+    voices: ['Maya', 'Daniel', 'Noah', 'Nina', 'Emma', 'Jack', 'Adrian', 'Claire', 'Grace', 'Owen', 'Mina', 'Kenji'],
+  },
+  {
+    id: 'british', label: 'British', flag: 'gb',
+    voices: ['Oliver', 'Arthur', 'Isla', 'Victoria'],
+  },
+  {
+    id: 'australian', label: 'Australian', flag: 'au',
+    voices: ['Cooper', 'Mason', 'Ruby', 'Elise'],
+  },
+  {
+    id: 'spanish', label: 'Spanish', flag: 'es',
+    voices: ['Rafael', 'Mateo', 'Lucia', 'Sofia'],
+  },
+  {
+    id: 'indian', label: 'Indian', flag: 'in',
+    voices: ['Arjun', 'Rohan', 'Priya', 'Meera'],
+  },
+] as const;
+
+type VoiceGroupId = typeof VOICE_GROUPS[number]['id'];
+
+function groupForVoice(id: string): VoiceGroupId {
+  return VOICE_GROUPS.find(g => (g.voices as readonly string[]).includes(id))?.id ?? 'american';
+}
+
+export function SettingsPanel() {
   const [voiceId, setVoiceId] = useState<VoiceId>(DEFAULT_SETTINGS.voiceId);
   const [speechRate, setSpeechRate] = useState<number>(DEFAULT_SETTINGS.speechRate);
   const [style, setStyle] = useState<ConversationStyle>(DEFAULT_SETTINGS.conversationStyle);
-  const [loading, setLoading] = useState(false);
+  const [initialSettings, setInitialSettings] = useState(DEFAULT_SETTINGS);
+  const [activeGroup, setActiveGroup] = useState<VoiceGroupId>(groupForVoice(DEFAULT_SETTINGS.voiceId));
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [previewing, setPreviewing] = useState<VoiceId | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [previewState, setPreviewState] = useState<{ voiceId: VoiceId; status: 'loading' | 'playing' } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Snapshot of values when the modal opened — used to detect "no changes" so
-  // Save is a no-op when nothing actually changed.
-  const initialRef = useRef(DEFAULT_SETTINGS);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // Load current settings whenever the modal opens.
   useEffect(() => {
-    if (!open) return;
     let cancelled = false;
-    setLoading(true);
-    setError(null);
     userService.me()
       .then((u) => {
         if (cancelled) return;
@@ -52,216 +74,336 @@ export function SettingsModal({ open, onClose }: SettingsModalProps) {
         setVoiceId(snap.voiceId);
         setSpeechRate(snap.speechRate);
         setStyle(snap.conversationStyle);
-        initialRef.current = snap;
+        setActiveGroup(groupForVoice(snap.voiceId)); // sync tab to loaded voice
+        setInitialSettings(snap);
       })
       .catch((e: Error) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [open]);
-
-  // Esc closes; click outside (handled by overlay) closes.
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+    return () => {
+      cancelled = true;
+      if (audioRef.current) audioRef.current.pause();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  }, []);
 
-  // Stop any in-flight preview when modal closes — orphan audio is jarring.
-  useEffect(() => {
-    if (open) return;
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    setPreviewing(null);
-  }, [open]);
+  const dirty =
+    voiceId !== initialSettings.voiceId ||
+    speechRate !== initialSettings.speechRate ||
+    style !== initialSettings.conversationStyle;
 
   const handlePreview = useCallback(async (id: VoiceId) => {
-    if (previewing) return;
-    setPreviewing(id);
+    if (previewState) return;
+    setPreviewState({ voiceId: id, status: 'loading' });
+    setSaved(false);
     try {
       const { audio_b64 } = await userService.previewVoice(id, speechRate);
       const audio = new Audio(`data:audio/mpeg;base64,${audio_b64}`);
+      // Soniox returns audio at native rate regardless of speech_rate, so the
+      // slider is enforced here via HTMLAudioElement.playbackRate.
+      audio.playbackRate = speechRate;
       audioRef.current = audio;
-      audio.onended = () => setPreviewing(null);
-      audio.onerror = () => setPreviewing(null);
+      audio.onended = () => setPreviewState(null);
+      audio.onerror = () => setPreviewState(null);
+      setPreviewState({ voiceId: id, status: 'playing' });
       await audio.play();
     } catch (e) {
-      setPreviewing(null);
+      setPreviewState(null);
       setError(e instanceof Error ? e.message : 'Preview failed');
     }
-  }, [previewing, speechRate]);
+  }, [previewState, speechRate]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
+    setSaved(false);
     setError(null);
     try {
       const patch: Record<string, unknown> = {};
-      if (voiceId    !== initialRef.current.voiceId)          patch.voiceId = voiceId;
-      if (speechRate !== initialRef.current.speechRate)       patch.speechRate = speechRate;
-      if (style      !== initialRef.current.conversationStyle) patch.conversationStyle = style;
+      if (voiceId    !== initialSettings.voiceId)          patch.voiceId = voiceId;
+      if (speechRate !== initialSettings.speechRate)       patch.speechRate = speechRate;
+      if (style      !== initialSettings.conversationStyle) patch.conversationStyle = style;
       if (Object.keys(patch).length > 0) {
         await userService.updateSettings(patch);
+        setInitialSettings({ voiceId, speechRate, conversationStyle: style });
       }
-      onClose();
+      // Push the new rate to live chat playback immediately (no reload needed).
+      setUserSpeechRate(speechRate);
+      setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Save failed');
     } finally {
       setSaving(false);
     }
-  }, [voiceId, speechRate, style, onClose]);
-
-  if (!open) return null;
+  }, [initialSettings, voiceId, speechRate, style]);
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm px-4"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-md bg-white rounded-3xl shadow-xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-6 pt-5 pb-3">
-          <h2 className="text-lg font-bold text-gray-900">Voice & style</h2>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-full hover:bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600"
-            aria-label="Close"
-          >
-            <CloseIcon />
-          </button>
-        </div>
-
-        <div className="px-6 pb-6 flex flex-col gap-5 max-h-[70vh] overflow-y-auto">
-          {error && (
-            <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-xl px-3 py-2">
-              {error}
+    <div className="min-w-0 lg:h-[calc(100dvh-112px)]" style={{ fontFamily: 'Lexend, sans-serif' }}>
+      <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-12 lg:gap-5 lg:h-full lg:min-h-0">
+        <aside className="min-w-0 lg:col-span-4 flex flex-col gap-4 lg:gap-5 lg:min-h-0">
+          <section className="rounded-3xl p-6 overflow-hidden" style={{ background: '#d7ffb8', border: '2px solid #c8f2a4', boxShadow: '0 4px 0 #c8f2a4' }}>
+            <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#2b6c00' }}>Your speaking setup</p>
+            <h2 className="mt-2 text-3xl font-black leading-tight" style={{ color: '#1e5000' }}>
+              Tune your AI partner
+            </h2>
+            <p className="mt-3 text-sm font-semibold" style={{ color: '#2b6c00' }}>
+              Choose the voice, pace, and coaching style that feels easiest to practice with.
+            </p>
+            <div className="mt-5 h-36 flex items-end justify-center rounded-3xl" style={{ background: 'rgba(255,255,255,0.35)' }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/undraw_adjust-settings_6pis.svg" alt="Adjust settings" className="h-full w-full object-contain object-bottom px-2 pt-3" />
             </div>
-          )}
+          </section>
 
-          <Section title="Voice">
-            <div className="flex flex-col gap-1.5">
-              {VOICE_OPTIONS.map((v) => {
-                const active = v.id === voiceId;
-                return (
-                  <div
-                    key={v.id}
-                    className={`flex items-center justify-between rounded-2xl border px-4 py-2.5 cursor-pointer transition-colors ${
-                      active
-                        ? 'border-[#8447FF] bg-violet-50'
-                        : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
-                    }`}
-                    onClick={() => setVoiceId(v.id)}
-                  >
+          <section className="rounded-3xl p-5" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
+            <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Current setup</p>
+            <div className="mt-4 grid gap-3">
+              <SummaryRow label="Voice" value={VOICE_OPTIONS.find(v => v.id === voiceId)?.label ?? voiceId} tone="blue" />
+              <SummaryRow label="Speed" value={`${speechRate.toFixed(2)}x`} tone="green" />
+              <SummaryRow label="Style" value={STYLE_OPTIONS.find(s => s.id === style)?.label ?? style} tone="orange" />
+            </div>
+          </section>
+
+        </aside>
+
+        <section className="min-w-0 lg:col-span-8 rounded-3xl flex flex-col lg:min-h-0" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2', overflow: 'hidden' }}>
+          <div className="px-5 sm:px-6 py-5 shrink-0 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Controls</p>
+              <h2 className="text-xl font-black" style={{ color: '#1a1c1c' }}>Voice & style</h2>
+            </div>
+            {loading ? (
+              <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: '#58cc02' }}>
+                <div className="w-5 h-5 rounded-full border-4 border-[#1e5000]/25 border-t-[#1e5000] animate-spin" />
+              </div>
+            ) : saved ? (
+              <div className="px-4 py-2 rounded-2xl text-xs font-extrabold" style={{ background: '#d7ffb8', color: '#2b6c00' }}>Saved</div>
+            ) : dirty ? (
+              <div className="px-4 py-2 rounded-2xl text-xs font-extrabold" style={{ background: '#ffe9cc', color: '#683a00' }}>Unsaved</div>
+            ) : null}
+          </div>
+
+          <div className="px-3 pb-4 sm:px-6 sm:pb-6 lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
+            <div className="grid min-w-0 gap-4 sm:gap-5">
+              {error && (
+                <div className="rounded-2xl px-4 py-3 text-sm font-bold" style={{ background: '#ffe0e0', color: '#9b1c1c', border: '2px solid #ffc6c6' }}>
+                  {error}
+                </div>
+              )}
+
+              <SettingsCard title="Voice" tone="blue">
+                {/* Accent group tabs */}
+                <div className="flex flex-wrap gap-2 mb-4">
+                  {VOICE_GROUPS.map((group) => {
+                    const isActive = group.id === activeGroup;
+                    return (
+                      <button
+                        key={group.id}
+                        type="button"
+                        onClick={() => setActiveGroup(group.id)}
+                        className="flex min-w-0 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[11px] font-extrabold transition active:scale-95 sm:px-3 sm:text-xs"
+                        style={isActive
+                          ? { background: '#2fb8ff', color: '#004666', boxShadow: '0 2px 0 #006590', border: '2px solid #1c93d1' }
+                          : { background: '#f3f3f3', color: '#6f7b64', border: '2px solid #e2e2e2' }}
+                      >
+                        <span
+                          className="shrink-0 overflow-hidden"
+                          style={{ width: 22, height: 14, borderRadius: 3, background: '#ffffff', border: '1px solid rgba(0,0,0,0.08)' }}
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={`https://flagcdn.com/w40/${group.flag}.png`}
+                            alt={group.label}
+                            width={40}
+                            height={27}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                          />
+                        </span>
+                        {group.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Voices for active group */}
+                <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+                  {VOICE_OPTIONS
+                    .filter((v) => (VOICE_GROUPS.find(g => g.id === activeGroup)?.voices as readonly string[] ?? []).includes(v.id))
+                    .map((v) => {
+                      const active = v.id === voiceId;
+                      const previewForVoice = previewState?.voiceId === v.id ? previewState.status : null;
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          className="w-full min-w-0 overflow-hidden flex items-center justify-between gap-3 rounded-2xl px-3 py-3 text-left transition active:translate-y-0.5 sm:px-4"
+                          style={active
+                            ? { background: '#d7ffb8', border: '2px solid #58cc02', boxShadow: '0 3px 0 #46a302' }
+                            : { background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}
+                          onClick={() => { setVoiceId(v.id); setSaved(false); }}
+                        >
+                          <span className="flex flex-col min-w-0">
+                            <span className="text-sm font-black" style={{ color: active ? '#1e5000' : '#1a1c1c' }}>{v.label}</span>
+                            <span className="text-[11px] font-semibold" style={{ color: active ? '#2b6c00' : '#6f7b64' }}>{v.sub}</span>
+                          </span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); void handlePreview(v.id); }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault(); e.stopPropagation(); void handlePreview(v.id);
+                              }
+                            }}
+                            aria-disabled={previewState !== null}
+                            aria-label={`Preview ${v.label}`}
+                            title={previewForVoice === 'loading' ? 'Loading preview' : previewForVoice === 'playing' ? 'Playing preview' : `Preview ${v.label}`}
+                            className="h-10 w-10 rounded-xl transition shrink-0 inline-flex items-center justify-center"
+                            style={previewForVoice
+                              ? { background: '#2fb8ff', color: '#004666' }
+                              : { background: '#f3f3f3', color: '#6f7b64' }}
+                          >
+                            {previewForVoice === 'loading' ? (
+                              <span className="h-4 w-4 rounded-full border-2 border-[#004666]/25 border-t-[#004666] animate-spin" />
+                            ) : (
+                              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+                                <path d="M19 5a9 9 0 0 1 0 14" />
+                              </svg>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </SettingsCard>
+
+              <SettingsCard title="Speech speed" tone="green">
+                <div className="rounded-2xl p-5" style={{ background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}>
+                  {/* Speed readout */}
+                  <div className="flex flex-col gap-4 mb-5 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex flex-col">
-                      <span className={`text-sm font-semibold ${active ? 'text-[#8447FF]' : 'text-gray-800'}`}>
-                        {v.label}
-                      </span>
-                      <span className="text-[11px] text-gray-400">{v.sub}</span>
+                      <span className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>Speed</span>
+                      <span className="text-3xl font-black tabular-nums" style={{ color: '#2b6c00' }}>{speechRate.toFixed(2)}<span className="text-lg">x</span></span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => { e.stopPropagation(); void handlePreview(v.id); }}
-                      disabled={previewing !== null}
-                      className={`text-[11px] font-semibold px-3 py-1.5 rounded-full transition-colors ${
-                        previewing === v.id
-                          ? 'bg-[#8447FF] text-white'
-                          : 'bg-white border border-gray-200 text-gray-600 hover:border-[#8447FF] hover:text-[#8447FF]'
-                      } disabled:opacity-50 disabled:cursor-not-allowed`}
-                    >
-                      {previewing === v.id ? 'Playing…' : 'Preview'}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      {[0.75, 0.9, 1.0, 1.15, 1.3].map((v) => (
+                        <button
+                          key={v}
+                          type="button"
+                          onClick={() => { setSpeechRate(v); setSaved(false); }}
+                          className="px-2.5 py-1.5 rounded-xl text-[11px] font-extrabold transition active:scale-95 sm:text-xs"
+                          style={Math.abs(speechRate - v) < 0.01
+                            ? { background: '#58cc02', color: '#1e5000', boxShadow: '0 2px 0 #46a302' }
+                            : { background: '#f3f3f3', color: '#6f7b64', border: '2px solid #e2e2e2' }}
+                        >
+                          {v}x
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          </Section>
+                  {/* Tall hit area for mobile fingers */}
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] font-bold shrink-0" style={{ color: '#afafaf' }}>0.75x</span>
+                    <div className="flex-1 relative flex items-center" style={{ height: 44 }}>
+                      <input
+                        type="range"
+                        min={0.75}
+                        max={1.5}
+                        step={0.05}
+                        value={speechRate}
+                        onChange={(e) => { setSpeechRate(parseFloat(e.target.value)); setSaved(false); }}
+                        className="w-full accent-[#58cc02] cursor-pointer"
+                        style={{ height: 44 }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-bold shrink-0" style={{ color: '#afafaf' }}>1.5x</span>
+                  </div>
+                </div>
+              </SettingsCard>
 
-          <Section title="Speech speed">
-            <div className="flex items-center gap-3">
-              <span className="text-[11px] text-gray-400 w-10">Slow</span>
-              <input
-                type="range"
-                min={0.75}
-                max={1.5}
-                step={0.05}
-                value={speechRate}
-                onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
-                className="flex-1 accent-[#8447FF]"
-              />
-              <span className="text-[11px] text-gray-400 w-10 text-right">Fast</span>
+              <SettingsCard title="Conversation style" tone="orange">
+                <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {STYLE_OPTIONS.map((s) => {
+                    const active = s.id === style;
+                    return (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => { setStyle(s.id); setSaved(false); }}
+                        className="flex min-h-[86px] flex-col items-start gap-2 text-left rounded-2xl px-4 py-3 transition active:translate-y-0.5"
+                        style={active
+                          ? { background: '#ffe9cc', border: '2px solid #ff9c27', boxShadow: '0 3px 0 #d97800' }
+                          : { background: '#ffffff', border: '2px solid #e2e2e2', boxShadow: '0 3px 0 #e2e2e2' }}
+                      >
+                        <span className="text-sm font-black" style={{ color: active ? '#683a00' : '#1a1c1c' }}>{s.label}</span>
+                        <span className="text-[11px] font-semibold" style={{ color: active ? '#8a4b00' : '#6f7b64' }}>{s.desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </SettingsCard>
             </div>
-            <div className="flex justify-center mt-1.5">
-              <span className="text-xs font-semibold text-[#8447FF] tabular-nums">
-                {speechRate.toFixed(2)}×
-              </span>
-            </div>
-          </Section>
+          </div>
 
-          <Section title="Conversation style">
-            <div className="grid grid-cols-1 gap-1.5">
-              {STYLE_OPTIONS.map((s) => {
-                const active = s.id === style;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => setStyle(s.id)}
-                    className={`flex flex-col items-start text-left rounded-2xl border px-4 py-2.5 transition-colors ${
-                      active
-                        ? 'border-[#8447FF] bg-violet-50'
-                        : 'border-gray-100 hover:border-gray-200 hover:bg-gray-50'
-                    }`}
-                  >
-                    <span className={`text-sm font-semibold ${active ? 'text-[#8447FF]' : 'text-gray-800'}`}>
-                      {s.label}
-                    </span>
-                    <span className="text-[11px] text-gray-400">{s.desc}</span>
-                  </button>
-                );
-              })}
+          <footer className="px-3 py-4 sm:px-6 sm:py-5 flex flex-col gap-3 shrink-0 lg:flex-row lg:items-center lg:justify-between" style={{ background: '#ffffff', borderTop: '2px solid #f3f3f3' }}>
+            <p className="text-[11px] font-bold leading-snug lg:max-w-[360px]" style={{ color: '#6f7b64' }}>
+              Tip: for shadowing practice, start around 0.95x-1.10x. Increase speed once pronunciation feels automatic.
+            </p>
+            <div className="flex flex-wrap justify-end gap-3">
+              <button
+                onClick={() => {
+                  setVoiceId(initialSettings.voiceId);
+                  setSpeechRate(initialSettings.speechRate);
+                  setStyle(initialSettings.conversationStyle);
+                  setSaved(false);
+                }}
+                disabled={!dirty || saving || loading}
+                className="min-w-0 flex-1 px-4 py-3 rounded-2xl text-sm font-extrabold transition active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed sm:flex-none sm:px-5"
+                style={{ background: '#ffffff', color: '#6f7b64', border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}
+              >
+                Reset
+              </button>
+              <button
+                onClick={handleSave}
+                disabled={!dirty || loading || saving}
+                className="min-w-0 flex-1 px-4 py-3 rounded-2xl text-sm font-extrabold transition active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed sm:flex-none sm:px-6"
+                style={{ background: '#58cc02', color: '#1e5000', boxShadow: '0 4px 0 #46a302' }}
+              >
+                {saving ? 'Saving...' : 'Save changes'}
+              </button>
             </div>
-          </Section>
-        </div>
-
-        <div className="px-6 pb-6 pt-2 flex gap-2 border-t border-gray-100 bg-white">
-          <button
-            onClick={onClose}
-            className="flex-1 px-4 py-2.5 rounded-2xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={loading || saving}
-            className="flex-1 px-4 py-2.5 rounded-2xl bg-[#8447FF] text-white text-sm font-bold hover:bg-[#6e35ff] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
+          </footer>
+        </section>
       </div>
     </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function SummaryRow({ label, value, tone }: { label: string; value: string; tone: 'green' | 'blue' | 'orange' }) {
+  const toneStyle = tone === 'green'
+    ? { background: '#d7ffb8', color: '#2b6c00' }
+    : tone === 'blue'
+      ? { background: '#dceeff', color: '#004666' }
+      : { background: '#ffe9cc', color: '#683a00' };
+
   return (
-    <div className="flex flex-col gap-2">
-      <p className="text-[10px] font-bold tracking-[0.14em] text-gray-400 uppercase">{title}</p>
-      {children}
+    <div className="flex items-center justify-between gap-3 rounded-2xl px-4 py-3" style={{ background: toneStyle.background }}>
+      <span className="text-xs font-extrabold uppercase tracking-widest" style={{ color: toneStyle.color }}>{label}</span>
+      <span className="text-sm font-black truncate" style={{ color: toneStyle.color }}>{value}</span>
     </div>
   );
 }
 
-function CloseIcon() {
+function SettingsCard({ title, tone, children }: { title: string; tone: 'green' | 'blue' | 'orange'; children: React.ReactNode }) {
+  const toneStyle = tone === 'green'
+    ? { background: '#d7ffb8', color: '#2b6c00' }
+    : tone === 'blue'
+      ? { background: '#dceeff', color: '#004666' }
+      : { background: '#ffe9cc', color: '#683a00' };
+
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
+    <section className="rounded-3xl p-4" style={{ background: toneStyle.background, border: '2px solid rgba(0,0,0,0.06)' }}>
+      <p className="mb-3 text-[11px] font-extrabold tracking-widest uppercase" style={{ color: toneStyle.color }}>{title}</p>
+      {children}
+    </section>
   );
 }

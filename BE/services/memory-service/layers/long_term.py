@@ -6,6 +6,19 @@ from db import database
 log = logging.getLogger("long_term")
 
 
+def _fact_score(fact: dict) -> float:
+    """Persisted importance; retrieval still blends this with semantic similarity."""
+    content = (fact.get("content") or "").strip()
+    priority = fact.get("priority", "normal")
+    if content.startswith("Session log ["):
+        return 0.4
+    if priority == "urgent":
+        return 0.95
+    if priority == "high":
+        return 0.82
+    return 0.6
+
+
 def _to_utc(val) -> datetime | None:
     """
     Return a UTC-aware datetime.datetime for asyncpg's timestamptz column.
@@ -112,13 +125,14 @@ class LongTermMemory:
                               fact["content"][:60])
                     await conn.execute(
                         """INSERT INTO memory.memory_facts
-                               (user_id, content, embedding, priority, source, expires_at)
-                           VALUES ($1, $2, $3::vector, $4, 'fact', $5)""",
+                               (user_id, content, embedding, priority, source, expires_at, score)
+                           VALUES ($1, $2, $3::vector, $4, 'fact', $5, $6)""",
                         user_id,
                         fact["content"],
                         json.dumps(emb),
                         fact.get("priority", "normal"),
                         expires_at,   # UTC-aware datetime or None — asyncpg handles directly
+                        _fact_score(fact),
                     )
         log.info("[long_term] replace_facts  done  user=%s", user_id)
 

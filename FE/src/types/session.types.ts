@@ -3,6 +3,8 @@ export interface SessionSummary {
   title: string | null;
   status: string;
   startedAt: string;
+  /** 'guided_learning' (deck + eval) or 'free_talk' (open conversation). */
+  mode?: 'guided_learning' | 'free_talk';
 }
 
 export interface Session {
@@ -44,12 +46,30 @@ export type GreetingEvent =
   | { type: 'done'; greeting: string }
   | { type: 'error'; message: string };
 
+// Deck-evaluation event emitted by the turn-agent when a deck is active.
+// `data` mirrors the JSON the LLM produces after `EVAL:`; FE uses it to update
+// the current card's status/feedback/next_action optimistically.
+export interface DeckEvalEvent {
+  type: 'eval';
+  card_index: number;
+  data: {
+    passed: boolean;
+    feedback: string;
+    retryRecommended: boolean;
+    nextAction: 'retry' | 'next_card' | 'finish_session';
+    detectedIssues: string[];
+  };
+}
+
 export type TurnEvent =
   | { type: 'word'; text: string; is_final: boolean }
   | { type: 'transcript'; text: string }
   | { type: 'pronunciation'; data: { score?: number } }
   | SegmentEvent
+  | DeckEvalEvent
   | { type: 'title'; text: string }
+  | { type: 'session_ended' }
+  | { type: 'deck_new_topic'; topic: string }
   | { type: 'done'; tokens_used: number }
   | { type: 'error'; message: string; limit?: number; used?: number };
 

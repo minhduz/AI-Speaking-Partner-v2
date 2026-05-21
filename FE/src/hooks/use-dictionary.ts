@@ -1,17 +1,41 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import type { DictionaryData } from '@/components/chat/dictionary-popup/dictionary-popup';
 import { httpClient } from '@/lib/http-client';
+import { userService } from '@/services/user.service';
 
-export function useDictionary(sessionTopic?: string) {
+const NATIVE_LANG_TO_CODE: Record<string, string> = {
+  vietnamese: 'vi', english: 'en', chinese: 'zh', korean: 'ko',
+  japanese: 'ja', french: 'fr', spanish: 'es', german: 'de',
+  russian: 'ru', arabic: 'ar', hindi: 'hi',
+};
+const DICT_LANG_KEY = 'dict_target_lang';
+const DICT_USER_SET_KEY = 'dict_user_set'; // true only when user explicitly changed the language
+
+export function useDictionary() {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [data, setData] = useState<DictionaryData | null>(null);
   const [error, setError] = useState<string | undefined>();
-  const [targetLang, setTargetLang] = useState('vi');
+  const [targetLang, setTargetLang] = useState<string>(() =>
+    (typeof window !== 'undefined' ? localStorage.getItem(DICT_LANG_KEY) : null) ?? ''
+  );
+  const [lookupKey, setLookupKey] = useState(0);
   const currentWordRef = useRef('');
+
+  // Always sync from profile on mount unless the user has explicitly chosen a language.
+  // This handles stale localStorage values (e.g. 'vi' left over from a previous account).
+  useEffect(() => {
+    if (localStorage.getItem(DICT_USER_SET_KEY) === 'true') return;
+    userService.me().then((profile) => {
+      const code = NATIVE_LANG_TO_CODE[profile.nativeLanguage?.toLowerCase()] ?? 'vi';
+      setTargetLang(code);
+      localStorage.setItem(DICT_LANG_KEY, code);
+    }).catch(() => { if (!localStorage.getItem(DICT_LANG_KEY)) setTargetLang('vi'); });
+  }, []);
 
   const fetchWord = useCallback(async (word: string, lang: string) => {
     if (!word.trim()) return;
+    setLookupKey(k => k + 1);
     setIsOpen(true);
     setIsLoading(true);
     setError(undefined);
@@ -33,11 +57,13 @@ export function useDictionary(sessionTopic?: string) {
 
   const translate = useCallback((text: string) => {
     currentWordRef.current = text;
-    fetchWord(text, targetLang);
+    fetchWord(text, targetLang || 'vi');
   }, [fetchWord, targetLang]);
 
   const changeLanguage = useCallback((lang: string) => {
     setTargetLang(lang);
+    localStorage.setItem(DICT_LANG_KEY, lang);
+    localStorage.setItem(DICT_USER_SET_KEY, 'true');
     if (currentWordRef.current) {
       fetchWord(currentWordRef.current, lang);
     }
@@ -46,17 +72,13 @@ export function useDictionary(sessionTopic?: string) {
   const close = useCallback(() => setIsOpen(false), []);
 
   const addFlashcard = useCallback(async (cacheId: string) => {
-    const topic = sessionTopic || data?.topic || 'Uncategorized';
     try {
-      await httpClient.post('/api/dictionary/flashcards', {
-        cacheId,
-        contextSentence: topic,
-      });
+      await httpClient.post('/api/dictionary/flashcards', { cacheId });
     } catch (err) {
       console.error('Failed to add flashcard', err);
       throw err;
     }
-  }, [sessionTopic, data]);
+  }, []);
 
   return {
     isOpen,
@@ -64,6 +86,7 @@ export function useDictionary(sessionTopic?: string) {
     data,
     error,
     targetLang,
+    lookupKey,
     translate,
     changeLanguage,
     close,

@@ -14,13 +14,13 @@ export function Logo({ size = 'md' }: LogoProps) {
         fill="none"
         aria-hidden="true"
       >
-        <rect x="1" y="8" width="3" height="8" rx="1.5" fill="#8447FF" />
-        <rect x="6" y="5" width="3" height="14" rx="1.5" fill="#8447FF" />
-        <rect x="11" y="2" width="3" height="20" rx="1.5" fill="#8447FF" />
-        <rect x="16" y="5" width="3" height="14" rx="1.5" fill="#8447FF" />
-        <rect x="21" y="8" width="3" height="8" rx="1.5" fill="#8447FF" />
+        <rect x="1" y="8" width="3" height="8" rx="1.5" fill="#58cc02" />
+        <rect x="6" y="5" width="3" height="14" rx="1.5" fill="#58cc02" />
+        <rect x="11" y="2" width="3" height="20" rx="1.5" fill="#58cc02" />
+        <rect x="16" y="5" width="3" height="14" rx="1.5" fill="#58cc02" />
+        <rect x="21" y="8" width="3" height="8" rx="1.5" fill="#58cc02" />
       </svg>
-      <span className={`${textClass} text-[#8447FF]`}>SpeakUp</span>
+      <span className={`${textClass} text-[#2b6c00]`}>SpeakUp</span>
     </div>
   );
 }

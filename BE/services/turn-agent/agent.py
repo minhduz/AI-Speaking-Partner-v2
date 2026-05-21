@@ -21,10 +21,35 @@ class TurnState(TypedDict):
     current_datetime: str
     turn_index: int
     is_onboarding: bool
+    # 'guided_learning' | 'free_talk' — set from the X-Session-Mode header. MUST be
+    # declared here: LangGraph's StateGraph only keeps channels present in this
+    # TypedDict, so an undeclared key is silently dropped before any node runs
+    # (that's why free talk was never detected — session_mode arrived as None).
+    session_mode: str
     active_mission: str
     voice_id: str
     speech_rate: float
     conversation_style: str
+    # Exercise deck card context (populated from X-Deck-* headers)
+    deck_active: bool
+    deck_status: str          # not_started | in_progress | completed | ended_early | abandoned | none
+    deck_end_reason: str      # user_chose_free_talk | user_wants_to_end | user_clicked_end | completed_deck | ""
+    deck_is_continuation: bool
+    card_index: int
+    card_total: int
+    card_type: str
+    card_title: str
+    card_task: str
+    card_attempts: int
+    card_retry_allowed: bool
+    card_success_criteria: list
+    # Greeting text — sent only on turn 1 by FE so the AI knows what it just
+    # asked. Empty on all other turns.
+    greeting_text: str
+    # Consolidated insight from prior sessions (struggled_with, energy, mission
+    # recommendation, etc.). Used by build_prompt_node to inject practice
+    # lead-in context once warmup is done. Empty for first-ever sessions.
+    session_insight: dict
     # Intermediates (populated by nodes)
     transcript: str
     confidence: float

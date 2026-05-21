@@ -23,7 +23,10 @@ async def stt_node(state: dict) -> dict:
 
     transcript   = ""
     confidence   = 0.9
-    pronunciation = {"score": 0.85, "per_word": []}
+    # Pronunciation scoring is not available (Soniox is STT-only, not a
+    # pronunciation assessor). score=None means "not measured" — the FE and
+    # the session evaluation must not surface a fabricated number.
+    pronunciation = {"score": None, "per_word": []}
 
     async with aiohttp.ClientSession() as sess:
         async with sess.post(

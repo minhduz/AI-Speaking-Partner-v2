@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from openai import AsyncOpenAI
 
@@ -9,7 +11,54 @@ from layers.short_term import ShortTermMemory
 from layers.long_term import LongTermMemory
 from layers import onboarding_state as onboarding
 from layers import today_challenge
+from layers import session_evaluation
+from layers.exercise_deck import ExerciseDeckService
 from db import database, settings
+
+
+def _build_deck_context(deck: dict | None) -> dict | None:
+    """
+    Distil the deck blob into the fields the consolidation LLM actually needs.
+    Returning None means "no deck this session" — the prompt branch should skip
+    deck-aware reasoning entirely.
+    """
+    if not deck or not deck.get("cards"):
+        return None
+    cards = deck["cards"]
+    completed = sum(1 for c in cards if c.get("status") == "completed")
+    skipped   = sum(1 for c in cards if c.get("status") == "skipped")
+    card_results = [
+        {
+            "type":     c.get("type"),
+            "result":   c.get("result"),
+            "status":   c.get("status"),
+            "attempts": c.get("attempts", 0),
+        }
+        for c in cards
+    ]
+    # Cards that weren't completed — useful for next-session continuation offer.
+    unfinished = [
+        {
+            "title":            c.get("title"),
+            "type":             c.get("type"),
+            "task":             c.get("task"),
+            "success_criteria": c.get("success_criteria"),
+            "expected_duration_seconds": c.get("expected_duration_seconds", 60),
+        }
+        for c in cards
+        if c.get("status") in ("skipped", "not_started") and c.get("title")
+    ]
+    return {
+        "session_type":       deck.get("session_type"),
+        "mission":            deck.get("mission"),
+        "deck_status":        deck.get("status"),
+        "end_reason":         deck.get("end_reason"),
+        "completed_cards":    completed,
+        "skipped_cards":      skipped,
+        "total_cards":        len(cards),
+        "card_results":       card_results,
+        "unfinished_cards":   unfinished,
+    }
 
 
 # Maps onboarding motivation → a recommended challenge for the next session.
@@ -82,7 +131,20 @@ def _usd(prompt: int = 0, completion: int = 0, embed: int = 0) -> float:
          + embed * _EMBED_PRICE / 1_000_000
 
 
-async def run_consolidation(user_id: str, session_id: str):
+def _safe_zoneinfo(tz_name: str | None) -> ZoneInfo:
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        log.warning("invalid user timezone %r; falling back to UTC", tz_name)
+        return ZoneInfo("UTC")
+
+
+def _format_offset(dt: datetime) -> str:
+    offset = dt.strftime("%z")
+    return f"{offset[:3]}:{offset[3:]}" if offset else "+00:00"
+
+
+async def run_consolidation(user_id: str, session_id: str, user_timezone: str = "UTC"):
     """
     Runs after every session ends.
 
@@ -113,9 +175,14 @@ async def run_consolidation(user_id: str, session_id: str):
             await _mark_done(user_id, session_id, 0, 0)
             return
 
-        # 2. Resolve session start time
+        # 2. Resolve session start time. Keep UTC for storage/comparison, but
+        # anchor LLM temporal extraction in the user's own timezone so phrases
+        # like "this afternoon at 13:00" are not incorrectly stamped as UTC.
         session_start_utc = _parse_session_time(messages)
-        log.info("step 2 — session time: %s", session_start_utc.isoformat())
+        user_tz = _safe_zoneinfo(user_timezone)
+        session_start_local = session_start_utc.astimezone(user_tz)
+        log.info("step 2 — session time: utc=%s local=%s tz=%s",
+                 session_start_utc.isoformat(), session_start_local.isoformat(), user_tz.key)
 
         # 3. LLM extracts long-term and short-term facts in parallel — only use last 60 messages
         CONSOLIDATION_WINDOW = 60
@@ -126,12 +193,48 @@ async def run_consolidation(user_id: str, session_id: str):
         conversation = "\n".join(
             f"{m['role'].upper()}: {m['content']}" for m in messages_to_extract
         )
+
+        # Phase 6 — read deck blob from Redis. session.end() already marked
+        # end_reason before triggering consolidation, so the blob reflects how
+        # the session ended (completed / ended_early / abandoned).
+        try:
+            raw_deck = await ExerciseDeckService.get_deck(session_id)
+        except Exception as deck_err:
+            log.warning("step 3 — deck fetch failed: %s", deck_err)
+            raw_deck = None
+        deck_context = _build_deck_context(raw_deck)
+        if deck_context:
+            log.info(
+                "step 3 — deck_context  status=%s  end_reason=%s  cards=%d/%d  skipped=%d",
+                deck_context["deck_status"], deck_context["end_reason"],
+                deck_context["completed_cards"], deck_context["total_cards"],
+                deck_context["skipped_cards"],
+            )
+        else:
+            log.info("step 3 — no deck for this session (free-form turn flow)")
+
+        # Start the user-facing breakdown immediately. It has its own focused
+        # LLM pass and persists to sessions.breakdown independently, so the UI
+        # can show coaching feedback while memory consolidation continues.
+        asyncio.create_task(_build_and_persist_breakdown(
+            user_id=user_id,
+            session_id=session_id,
+            raw_deck=raw_deck,
+            messages=messages,
+            session_start_utc=session_start_utc,
+        ))
+        log.info("step 2.5 — session breakdown task started  session=%s", session_id)
+
         log.info("step 3 — calling LLM (combined long-term + short-term) from %d messages",
                  len(messages_to_extract))
         extract_usage = None
         try:
             _all, extract_usage = await _extract_all_facts(
-                conversation, session_start_utc, user_turn_count=_count_user_turns(messages_to_extract)
+                conversation, session_start_utc,
+                user_timezone=user_tz.key,
+                session_start_local=session_start_local,
+                user_turn_count=_count_user_turns(messages_to_extract),
+                deck_context=deck_context,
             )
             raw_facts: list[dict]    = _all.get("long_term", [])
             raw_st_facts: list[dict] = _all.get("short_term", [])
@@ -141,6 +244,19 @@ async def run_consolidation(user_id: str, session_id: str):
             raw_facts, raw_st_facts, session_insight = [], [], None
         log.info("step 3 — long-term: %d raw facts, short-term: %d raw facts, session_insight=%s",
                  len(raw_facts), len(raw_st_facts), "yes" if session_insight else "no")
+
+        # Inject unfinished deck info deterministically — no LLM needed.
+        # If the deck ended early with cards still not done, store them so the
+        # next session can offer to retry them (deck continuation feature).
+        if deck_context and session_insight is not None:
+            unfinished = deck_context.get("unfinished_cards", [])
+            if unfinished and deck_context.get("deck_status") == "ended_early":
+                session_insight["unfinished_deck_cards"] = unfinished
+                session_insight["deck_mission"] = deck_context.get("mission")
+                log.info(
+                    "step 3 — injected unfinished_deck_cards=%d  mission=%r",
+                    len(unfinished), deck_context.get("mission"),
+                )
 
         # 3b. If this user has an onboarding state in Redis, this is their first
         # speaking session. Fold the extracted onboarding signals into the
@@ -251,6 +367,11 @@ async def run_consolidation(user_id: str, session_id: str):
                 "next_challenge",
                 "speaking_duration_estimate",
                 "energy_level",
+                # Phase 6 — deck-aware trajectory fields
+                "code_switch_pattern",
+                "code_switch_trigger",
+                "deck_completion",
+                "recommended_next_mode",
                 # Onboarding-enriched fields (present on first-session insight only)
                 "is_first_session_insight",
                 "source",
@@ -259,6 +380,9 @@ async def run_consolidation(user_id: str, session_id: str):
                 "speaking_style",
                 "emotional_energy",
                 "recommended_next_session",
+                # Deck continuation fields (deterministically injected above)
+                "unfinished_deck_cards",
+                "deck_mission",
             )
             if session_insight and _has_insight_content(session_insight):
                 insight_payload = {
@@ -362,6 +486,102 @@ async def run_consolidation(user_id: str, session_id: str):
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+async def _build_and_persist_breakdown(
+    *,
+    user_id: str,
+    session_id: str,
+    raw_deck: dict | None,
+    messages: list[dict],
+    session_start_utc: datetime,
+):
+    """
+    Build the visible coaching report independently from memory consolidation.
+
+    This task is intentionally started as soon as we have messages + deck data.
+    Persist a useful deterministic report first so the frontend does not poll
+    forever, then overwrite it with the richer LLM report when ready.
+    """
+    fallback_report = session_evaluation.build_report(
+        session_insight=None,
+        raw_deck=raw_deck,
+        messages=messages,
+        session_start_utc=session_start_utc,
+        session_id=session_id,
+    )
+    await _persist_session_breakdown(
+        user_id=user_id,
+        session_id=session_id,
+        report=fallback_report,
+    )
+
+    try:
+        report = await asyncio.wait_for(
+            session_evaluation.build_rich_report(
+                openai_client=_openai,
+                raw_deck=raw_deck,
+                messages=messages,
+                session_start_utc=session_start_utc,
+                session_id=session_id,
+            ),
+            timeout=45,
+        )
+    except Exception as report_err:
+        log.error(
+            "step 2.5 — rich session breakdown FAILED, keeping fallback  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            report_err,
+            exc_info=True,
+        )
+        return
+
+    try:
+        await database.execute(
+            "UPDATE speaking_app.sessions SET breakdown = $1::jsonb WHERE id = $2",
+            json.dumps(report, ensure_ascii=False, default=str),
+            session_id,
+        )
+        log.info(
+            "step 2.5 — session breakdown persisted  session=%s  quality=%s  corrections=%d  radar=%d",
+            session_id,
+            report.get("quality", "unknown"),
+            len(report.get("corrections", [])),
+            len(report.get("skill_radar", [])),
+        )
+    except Exception as persist_err:
+        log.error(
+            "step 2.5 — session breakdown persist FAILED  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            persist_err,
+            exc_info=True,
+        )
+
+
+async def _persist_session_breakdown(*, user_id: str, session_id: str, report: dict):
+    try:
+        await database.execute(
+            "UPDATE speaking_app.sessions SET breakdown = $1::jsonb WHERE id = $2",
+            json.dumps(report, ensure_ascii=False, default=str),
+            session_id,
+        )
+        log.info(
+            "step 2.5 - session breakdown persisted  session=%s  quality=%s  corrections=%d  radar=%d",
+            session_id,
+            report.get("quality", "unknown"),
+            len(report.get("corrections", [])),
+            len(report.get("skill_radar", [])),
+        )
+    except Exception as persist_err:
+        log.error(
+            "step 2.5 - session breakdown persist FAILED  user=%s  session=%s: %s",
+            user_id,
+            session_id,
+            persist_err,
+            exc_info=True,
+        )
+
+
 def _parse_session_time(messages: list[dict]) -> datetime:
     try:
         ts = messages[0].get("timestamp")
@@ -408,6 +628,7 @@ def _merge(existing: list[dict], new_facts: list[dict]) -> list[dict]:
                 break
         if not replaced:
             result.append(new)
+
     return result
 
 
@@ -487,17 +708,27 @@ async def _batch_embed(texts: list[str]) -> tuple[list[list[float]], int]:
 async def _extract_all_facts(
     conversation: str,
     session_start_utc: datetime,
+    user_timezone: str = "UTC",
+    session_start_local: datetime | None = None,
     user_turn_count: int = 0,
+    deck_context: dict | None = None,
 ) -> tuple[dict, object]:
     """
     Single LLM call that extracts long-term facts, short-term facts, AND
     a structured `session_insight` block used to drive trajectory.
     Returns {"long_term": [...], "short_term": [...], "session_insight": {...} | None}.
     """
-    fmt_time  = session_start_utc.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-    week_end  = (session_start_utc + timedelta(days=7)).strftime("%A, %B %d, %Y")
-    example_abs = (session_start_utc + timedelta(minutes=10)).strftime(
-        "%I:%M %p on %A, %B %d, %Y UTC"
+    local_start = session_start_local or session_start_utc
+    tz_offset = _format_offset(local_start)
+    fmt_time = (
+        f"{local_start.strftime('%A, %B %d, %Y at %I:%M %p')} "
+        f"{user_timezone} (UTC{tz_offset})"
+    )
+    week_end  = (local_start + timedelta(days=7)).strftime("%A, %B %d, %Y")
+    example_dt = local_start + timedelta(minutes=10)
+    example_abs = (
+        f"{example_dt.strftime('%I:%M %p on %A, %B %d, %Y')} "
+        f"{user_timezone} (UTC{_format_offset(example_dt)})"
     )
     # Sessions shorter than 4 user turns can't reliably be judged for trajectory.
     insight_too_short = user_turn_count < 4
@@ -511,7 +742,11 @@ async def _extract_all_facts(
         '    "improved_vs_before":          string | null,\n'
         '    "next_challenge":              string | null,\n'
         '    "speaking_duration_estimate":  "short" | "medium" | "long" | null,\n'
-        '    "energy_level":                "low" | "medium" | "high" | null\n'
+        '    "energy_level":                "low" | "medium" | "high" | null,\n'
+        '    "code_switch_pattern":         "none" | "low" | "medium" | "high" | null,\n'
+        '    "code_switch_trigger":         "vocabulary_gap" | "grammar_uncertainty" | "both" | "unknown" | null,\n'
+        '    "deck_completion":             object | null,\n'
+        '    "recommended_next_mode":       "new_deck" | "resume_deck" | "lighter_deck" | "quick_practice" | null\n'
         "  }\n"
         "Rules:\n"
         "- `struggled_with` MUST be specific and behavioral, never vague.\n"
@@ -521,6 +756,9 @@ async def _extract_all_facts(
         "  GOOD: \"Ask the user to tell a 2-minute story without stopping\".\n"
         "- `speaking_duration_estimate`: rough estimate of how much the user spoke overall.\n"
         "- `energy_level`: based on engagement and response depth.\n"
+        "- `code_switch_pattern` / `code_switch_trigger`: did the user fall back to their native language?\n"
+        "  If yes, was it because they didn't know the word (vocabulary_gap), didn't know how to phrase it (grammar_uncertainty), or both?\n"
+        "  Use \"none\" + null trigger if the user stayed in the target language throughout.\n"
         "- Extract from USER turns only, never from the AI coach's turns.\n"
     )
     if insight_too_short:
@@ -528,13 +766,42 @@ async def _extract_all_facts(
             "- THIS SESSION HAD FEWER THAN 4 USER TURNS — set ALL fields to null.\n"
         )
 
+    # Phase 6 — deck-aware instructions. Only injected when a deck exists for
+    # this session; otherwise the prompt stays unchanged so consolidation of
+    # free-form turn sessions isn't affected.
+    deck_block = ""
+    if deck_context and not insight_too_short:
+        deck_json = json.dumps(deck_context, ensure_ascii=False)
+        deck_block = (
+            "\n── deck context for THIS session ──\n"
+            f"{deck_json}\n"
+            "Use this when populating `deck_completion` and `recommended_next_mode`:\n"
+            "- `deck_completion` MUST be an object: "
+            '{"status": "completed"|"ended_early"|"abandoned", '
+            '"completed_cards": int, "total_cards": int, '
+            '"end_reason": string}. Copy directly from the deck context above.\n'
+            "- This session may be PARTIALLY completed. Do NOT treat early ending as failure.\n"
+            "- Extract useful progress from completed/attempted cards only — ignore cards that were never attempted.\n"
+            "- If `end_reason == \"low_energy_detected\"` or the user signalled tiredness → set "
+            '`recommended_next_mode = "lighter_deck"`.\n'
+            "- If `deck_status == \"ended_early\"` and several cards remain → "
+            '`recommended_next_mode = "resume_deck"`.\n'
+            "- If `deck_status == \"completed\"` → `recommended_next_mode = \"new_deck\"` "
+            "and `next_challenge` should advance to the next skill.\n"
+            "- If `end_reason == \"idle_timeout\"` → do NOT assume motivation or emotion. "
+            "Set `energy_level = null` and `recommended_next_mode = \"quick_practice\"`.\n"
+            "- `next_challenge` MUST be coherent with the deck mission, not invent a new one.\n"
+        )
+    insight_instructions += deck_block
+
     res = await _openai.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
                 "content": (
-                    f"The conversation took place on {fmt_time}.\n\n"
+                    f"The conversation took place on {fmt_time}.\n"
+                    f"All relative times in the user's words are relative to {user_timezone}, not UTC.\n\n"
                     "Extract facts about the USER from this conversation.\n"
                     "Return ONLY valid JSON with this exact structure:\n"
                     "{\n"
@@ -551,18 +818,18 @@ async def _extract_all_facts(
                     "Extract facts even when stated as corrections or clarifications:\n"
                     "  'I mean my dog named Kiki'  → {\"content\": \"User has a dog named Kiki\", \"priority\": \"normal\"}\n"
                     "  'Actually I have two cats'  → {\"content\": \"User has two cats\", \"priority\": \"normal\"}\n"
-                    "For time-sensitive facts embed the absolute date/time in content:\n"
+                    "For time-sensitive facts embed the absolute local date/time in content with timezone:\n"
                     f"  Bad:  'User has an exam in 10 minutes'\n"
                     f"  Good: 'User has an exam at {example_abs}'\n\n"
                     "── short_term ──\n"
                     f"ONLY USER facts relevant within the next 7 days (by {week_end}).\n"
                     "Each object: {\"content\": string, \"priority\": \"urgent\"|\"high\"}\n"
-                    "Content MUST describe the event AND its absolute date/time:\n"
+                    "Content MUST describe the event AND its absolute local date/time with timezone:\n"
                     f"  BAD:  '{example_abs}'\n"
                     f"  GOOD: 'User has a meeting at {example_abs}'\n"
                     "Include only: upcoming meetings, appointments, deadlines, exams within 7 days, "
                     "active urgent situations.\n"
-                    "Never use relative terms — always absolute date/time.\n"
+                    "Never use relative terms — always absolute date/time in the user's timezone.\n"
                     "Return empty array if no qualifying facts.\n\n"
                     + insight_instructions +
                     "\nDO NOT extract (for long_term / short_term):\n"
@@ -596,6 +863,14 @@ async def _extract_all_facts(
         return {"long_term": [], "short_term": [], "session_insight": None}, usage
 
 
+def _st_merge_key(content: str) -> str:
+    key = content.lower().strip()
+    key = re.sub(r"\b0(\d:\d{2}\s*[ap]m)\b", r"\1", key)
+    key = re.sub(r"\s+\(?utc[+-]?\d{0,2}:?\d{0,2}\)?$", "", key)
+    key = re.sub(r"\s+[a-z_]+/[a-z_]+(?:\s+\(utc[+-]\d{2}:\d{2}\))?$", "", key)
+    return key[:90]
+
+
 def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
     """
     Merge new short-term facts into existing.
@@ -618,16 +893,27 @@ def _merge_st(existing: list[dict], new_facts: list[dict]) -> list[dict]:
             # Always insert SESSION_INSIGHT first (highest retrieval priority).
             result.insert(0, new)
             continue
-        key = new["content"].lower().strip()[:60]
+        key = _st_merge_key(new["content"])
         replaced = False
         for i, ef in enumerate(result):
-            if ef["content"].lower().strip()[:60] == key:
+            if _st_merge_key(ef["content"]) == key:
                 result[i] = new
                 replaced = True
                 break
         if not replaced:
             result.append(new)
-    return result
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for fact in result:
+        content = fact.get("content", "")
+        key = SESSION_INSIGHT_PREFIX if content.startswith(SESSION_INSIGHT_PREFIX) else _st_merge_key(content)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(fact)
+    return deduped
+
 
 
 def _count_user_turns(messages: list[dict]) -> int:

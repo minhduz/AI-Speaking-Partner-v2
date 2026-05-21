@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 settings = Settings()
 soniox_client = SonioxClient(api_key=settings.soniox_api_key)
 app = FastAPI(title="Speech Service")
+_tts_semaphore = asyncio.Semaphore(2)  # max 2 concurrent Soniox TTS connections
 log = logging.getLogger("speech-service")
 
 SONIOX_TTS_VOICES = {
@@ -274,7 +275,9 @@ async def stt(audio: UploadFile = File(...)):
     return {
         "transcript":    result["text"],
         "confidence":    result["confidence"],
-        "pronunciation": {"score": 0.85, "per_word": []},
+        # Soniox is STT-only — it does not assess pronunciation. score=None
+        # means "not measured"; never fabricate a number here.
+        "pronunciation": {"score": None, "per_word": []},
     }
 
 
@@ -337,7 +340,8 @@ async def stt_stream(audio: UploadFile = File(...)):
             yield f"data: {json.dumps({'text': item['text'], 'is_final': item['is_final']})}\n\n"
 
         transcript = last_text.strip()
-        yield f"data: {json.dumps({'done': True, 'transcript': transcript, 'confidence': 0.92, 'pronunciation': {'score': 0.85, 'per_word': []}})}\n\n"
+        # Pronunciation is not assessed (Soniox is STT-only). score=None.
+        yield f"data: {json.dumps({'done': True, 'transcript': transcript, 'confidence': 0.92, 'pronunciation': {'score': None, 'per_word': []}})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -576,19 +580,20 @@ async def _run_soniox_tts_batch(
     voice: str | None = None,
     speech_rate: float | None = None,
 ) -> bytes:
-    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-    fut: asyncio.Future = loop.create_future()
+    async with _tts_semaphore:
+        loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
 
-    def run():
-        config = _build_tts_config(voice, speech_rate, audio_format="mp3")
-        try:
-            with soniox_client.realtime.tts.connect(config=config) as session:
-                session.send_text_chunk(text, text_end=False)
-                session.finish()
-                chunks = list(session.receive_audio_chunks())
-                loop.call_soon_threadsafe(fut.set_result, b"".join(chunks))
-        except Exception as e:
-            loop.call_soon_threadsafe(fut.set_exception, e)
+        def run():
+            config = _build_tts_config(voice, speech_rate, audio_format="mp3")
+            try:
+                with soniox_client.realtime.tts.connect(config=config) as session:
+                    session.send_text_chunk(text, text_end=False)
+                    session.finish()
+                    chunks = list(session.receive_audio_chunks())
+                    loop.call_soon_threadsafe(fut.set_result, b"".join(chunks))
+            except Exception as e:
+                loop.call_soon_threadsafe(fut.set_exception, e)
 
-    threading.Thread(target=run, daemon=True).start()
-    return await fut
+        threading.Thread(target=run, daemon=True).start()
+        return await fut

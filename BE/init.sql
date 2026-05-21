@@ -19,6 +19,7 @@ DO $$ BEGIN CREATE USER dictionary_user WITH PASSWORD 'dictionary_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 GRANT ALL ON SCHEMA speaking_app TO orchestrator_user;
+GRANT USAGE ON SCHEMA speaking_app TO memory_user;
 GRANT ALL ON SCHEMA billing      TO billing_user;
 GRANT ALL ON SCHEMA memory       TO memory_user;
 GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS speaking_app.sessions (
   is_archived              BOOLEAN   DEFAULT false,
   archived_at              TIMESTAMP,
   started_at               TIMESTAMP DEFAULT NOW(),
-  ended_at                 TIMESTAMP
+  ended_at                 TIMESTAMP,
+  breakdown                JSONB
 );
 
 CREATE TABLE IF NOT EXISTS speaking_app.turns (
@@ -206,6 +208,10 @@ ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS native_language  VARCHAR
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal    VARCHAR;
 ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR;
+ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS breakdown JSONB;
+
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
 ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
 ALTER TABLE billing.payment_orders ALTER COLUMN plan_id DROP NOT NULL;
@@ -259,17 +265,46 @@ CREATE TABLE IF NOT EXISTS dictionary.user_history (
   user_id           UUID      NOT NULL REFERENCES speaking_app.users(id) ON DELETE CASCADE,
   word_id           UUID      NOT NULL REFERENCES dictionary.cache(id) ON DELETE CASCADE,
   context_sentence  TEXT,
+  status            VARCHAR   NOT NULL DEFAULT 'new',
+  review_count      INT       NOT NULL DEFAULT 0,
+  mastery_score     FLOAT     NOT NULL DEFAULT 0,
+  interval_days     FLOAT     NOT NULL DEFAULT 1,
+  last_reviewed_at  TIMESTAMP,
+  next_review_at    TIMESTAMP,
+  is_archived        BOOLEAN   NOT NULL DEFAULT false,
+  archived_at        TIMESTAMP,
   created_at        TIMESTAMP DEFAULT NOW()
 );
 
+-- Idempotent dictionary flashcard migrations for existing databases.
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS context_sentence TEXT;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS status           VARCHAR NOT NULL DEFAULT 'new';
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS review_count     INT     NOT NULL DEFAULT 0;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS mastery_score    FLOAT   NOT NULL DEFAULT 0;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS interval_days    FLOAT   NOT NULL DEFAULT 1;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS last_reviewed_at TIMESTAMP;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS next_review_at   TIMESTAMP;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS is_archived      BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE dictionary.user_history ADD COLUMN IF NOT EXISTS archived_at      TIMESTAMP;
+
 CREATE INDEX IF NOT EXISTS idx_dictionary_cache_word ON dictionary.cache(word);
 CREATE INDEX IF NOT EXISTS idx_dictionary_history_user ON dictionary.user_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_user_status ON dictionary.user_history(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_next_review ON dictionary.user_history(next_review_at);
+CREATE INDEX IF NOT EXISTS idx_dictionary_history_archived ON dictionary.user_history(user_id, is_archived);
+
+-- Transfer ownership so orchestrator_user can run ALTER TABLE migrations
+ALTER TABLE speaking_app.users    OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.sessions OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.turns    OWNER TO orchestrator_user;
 
 -- Grant table-level permissions
 GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL TABLES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL TABLES IN SCHEMA memory       TO memory_user;
 GRANT ALL ON ALL TABLES IN SCHEMA dictionary   TO dictionary_user;
+GRANT SELECT (id) ON speaking_app.sessions TO memory_user;
+GRANT UPDATE (breakdown) ON speaking_app.sessions TO memory_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA speaking_app TO orchestrator_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA memory       TO memory_user;

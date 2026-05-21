@@ -1,36 +1,277 @@
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #4a6741;
-  --color-primary-dark: #3d5535;
-  --color-cream: #f5f2ea;
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  /* ── "Vibrant Play" design system ──────────────────────────────── */
+  /* Primary (Green) */
+  --color-vp-primary:           #2b6c00;
+  --color-vp-primary-container: #58cc02;
+  --color-vp-on-primary:        #ffffff;
+  --color-vp-on-primary-container: #1e5000;
+  --color-vp-primary-fixed-dim: #6be026;
+
+  /* Secondary (Blue) */
+  --color-vp-secondary:           #006590;
+  --color-vp-secondary-container: #2fb8ff;
+  --color-vp-on-secondary:        #ffffff;
+  --color-vp-on-secondary-container: #004666;
+
+  /* Tertiary (Orange / Streak) */
+  --color-vp-tertiary:           #8c5000;
+  --color-vp-tertiary-container: #ff9c27;
+  --color-vp-on-tertiary:        #ffffff;
+  --color-vp-on-tertiary-container: #683a00;
+
+  /* Surface */
+  --color-vp-surface:                   #f9f9f9;
+  --color-vp-surface-container-lowest:  #ffffff;
+  --color-vp-surface-container-low:     #f3f3f3;
+  --color-vp-surface-container:         #eeeeee;
+  --color-vp-surface-container-high:    #e8e8e8;
+  --color-vp-surface-container-highest: #e2e2e2;
+  --color-vp-on-surface:                #1a1c1c;
+  --color-vp-on-surface-variant:        #3f4a36;
+  --color-vp-outline:                   #6f7b64;
+  --color-vp-outline-variant:           #becbb1;
+
+  /* Error */
+  --color-vp-error:           #ba1a1a;
+  --color-vp-error-container: #ffdad6;
+
+  /* Legacy — keep existing font vars */
+  --font-sans: var(--font-lexend), var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, monospace;
 }
 
+/* ─── "Vibrant Play" Lip Buttons ───────────────────────────────────────── */
+/* Primary (green) lip button */
+.vp-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  background-color: #58cc02;
+  color: #1e5000;
+  font-family: var(--font-lexend), Lexend, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #1f5100;
+  transition: box-shadow 80ms ease, transform 80ms ease, background-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.vp-btn-primary:hover {
+  background-color: #67dd0d;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 #1f5100;
+}
+.vp-btn-primary:active {
+  box-shadow: 0 0px 0 #1f5100;
+  transform: translateY(4px);
+  background-color: #58cc02;
+}
+
+/* Secondary (blue) lip button */
+.vp-btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  background-color: #2fb8ff;
+  color: #004666;
+  font-family: var(--font-lexend), Lexend, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #004c6e;
+  transition: box-shadow 80ms ease, transform 80ms ease, background-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.vp-btn-secondary:hover {
+  background-color: #4fc5ff;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 #004c6e;
+}
+.vp-btn-secondary:active {
+  box-shadow: 0 0px 0 #004c6e;
+  transform: translateY(4px);
+  background-color: #2fb8ff;
+}
+
+/* Ghost lip button */
+.vp-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  background-color: #ffffff;
+  color: #006590;
+  font-family: var(--font-lexend), Lexend, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  border: 2px solid #e2e2e2;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #e2e2e2;
+  transition: box-shadow 80ms ease, transform 80ms ease, background-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.vp-btn-ghost:hover {
+  background-color: #f3f3f3;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 #e2e2e2;
+}
+.vp-btn-ghost:active {
+  box-shadow: 0 0px 0 #e2e2e2;
+  transform: translateY(4px);
+  background-color: #ffffff;
+}
+
+/* Danger (red) lip button */
+.vp-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 28px;
+  background-color: #ba1a1a;
+  color: #ffffff;
+  font-family: var(--font-lexend), Lexend, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 16px;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 0 #93000a;
+  transition: box-shadow 80ms ease, transform 80ms ease, background-color 120ms ease;
+  user-select: none;
+  white-space: nowrap;
+}
+.vp-btn-danger:hover {
+  background-color: #d32020;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 0 #93000a;
+}
+.vp-btn-danger:active {
+  box-shadow: 0 0px 0 #93000a;
+  transform: translateY(4px);
+  background-color: #ba1a1a;
+}
+
+/* ─── Card border (no shadow, 2px solid) ──────────────────────────────── */
+.vp-card {
+  border: 2px solid #e2e2e2;
+  border-radius: 20px;
+  background: #ffffff;
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.vp-card:hover {
+  transform: translateY(-2px);
+}
+
+/* ─── Nav active state ────────────────────────────────────────────────── */
+.vp-nav-active {
+  background-color: #58cc02;
+  color: #1e5000;
+  border-bottom: 3px solid #2b6c00;
+  border-radius: 12px;
+}
+
+/* ─── Progress bar ────────────────────────────────────────────────────── */
+.vp-progress-bar {
+  height: 16px;
+  border-radius: 9999px;
+  overflow: hidden;
+  background: #e2e2e2;
+}
+.vp-progress-fill {
+  height: 100%;
+  border-radius: 9999px;
+  background: #2fb8ff;
+  transition: width 1s ease-out;
+}
+
+/* ─── Legacy lib ──────────────────────────────────────────────────────── */
 body {
-  background-color: #f5f2ea;
-  color: #1a1a1a;
-  font-family: var(--font-sans);
+  background-color: #f9f9f9;
+  color: #1a1c1c;
+  font-family: var(--font-lexend), Lexend, var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* ─── PWA / Mobile-first ─────────────────────────────────────────────── */
+
+/* Prevent pull-to-refresh & overscroll bounce in standalone PWA mode */
+html, body {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Remove the gray tap-highlight rectangle on iOS/Android */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Remove 300ms tap delay on tappable elements */
+button, a, [role="button"], label {
+  touch-action: manipulation;
+}
+
+/* Prevent accidental text selection on UI controls */
+button, [role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Momentum scrolling for scroll containers (iOS) */
+.overflow-y-auto, .overflow-y-scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Safe-area CSS custom properties — readable in JS if needed */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+}
+
 @keyframes reveal {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes barGrow {
+  from { height: 0; }
 }
 
 @utility animate-reveal {
   animation: reveal 0.4s ease-out forwards;
+}
+
+@utility animate-slide-up {
+  animation: slideUp 0.35s ease-out forwards;
 }
 
 @utility perspective-1000 {

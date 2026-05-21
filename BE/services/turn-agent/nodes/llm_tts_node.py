@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import aiohttp
@@ -15,6 +16,23 @@ _GEMINI_OUT = 0.40
 _SENTENCE_RE = re.compile(r"([\s\S]*?[.!?]+(?:\s+|$))")
 _TTS_MIN_CHARS = 42
 _TTS_MAX_CHARS = 80
+
+# Sentinel marking the start of the deck-eval JSON block emitted by the LLM at the
+# end of its response when a deck is active. Held back from TTS so the user never
+# hears "EVAL passed true ...".
+# Matches all observed variants the LLM produces:
+#   EVAL:{    EVAL: {    EVAL {         ← standard JSON form
+#   EVALUATION:  EVALUATION: {          ← LLM sometimes writes the full word
+_EVAL_RE = re.compile(r"EVAL(?:UATION)?\s*:\s*\{|EVAL(?:UATION)?\s+\{|EVALUATION\s*:")
+
+# Sentinel the LLM emits after its farewell when it decides the session should end.
+# Stripped from TTS and converted to a session_ended SSE event.
+_SESSION_END_MARKER = "SESSION_END"
+
+# Sentinel the LLM emits when user picks a new topic during continuation offer.
+# Format: DECK_NEW_TOPIC:{"topic":"..."} — stripped from TTS, triggers deck regeneration.
+_DECK_NEW_TOPIC_RE = re.compile(r"DECK_NEW_TOPIC\s*:\s*\{")
+
 
 
 def _split_tts_segment(buffer: str, force: bool = False) -> tuple[str | None, str]:
@@ -54,6 +72,10 @@ async def llm_tts_node(state: dict) -> dict:
     """
     writer = get_stream_writer()
     full_response = ""
+    eval_buffer = ""
+    eval_started = False
+    deck_new_topic_buffer = ""
+    deck_new_topic_started = False
 
     system = state["system_prompt"]
     summary = state.get("conversation_summary", "")
@@ -70,7 +92,42 @@ async def llm_tts_node(state: dict) -> dict:
         for m in state.get("recent_messages", [])
         if m.get("role") and m.get("content")
     ]
-    messages_for_llm = recent + [{"role": "user", "content": state["transcript"]}]
+    # Turn 1 only: the FE sends the greeting it just played as `greeting_text`.
+    # Prepend it as the AI's prior turn so the LLM sees the question it just
+    # asked. Without this, a short user reply like "good" arrives context-less
+    # and the AI either re-asks the same question or responds off-topic.
+    # `recent` is empty on turn 1 (no prior turns persisted yet), so this is
+    # the only mechanism to feed the greeting into the LLM context.
+    greeting_text = (state.get("greeting_text") or "").strip()
+    if greeting_text and not recent:
+        recent = [{"role": "assistant", "content": greeting_text}]
+    # Empty transcript means an internal UI-driven turn (e.g. user clicked
+    # "Let's go", Next card, or deck completed). Some LLM providers return an
+    # empty stream for an empty user message, so send a context-specific synthetic
+    # instruction to let the system prompt drive the response. Keep
+    # state['transcript'] unchanged so card intro/eval logic still sees it empty.
+    _deck_end_reason = (state.get("deck_end_reason") or "").strip()
+    _deck_status = (state.get("deck_status") or "").strip()
+    if not state["transcript"].strip() and _deck_status == "ended_early":
+        if _deck_end_reason == "user_chose_free_talk":
+            llm_user_content = "[User declined the exercise — they want to chat freely]"
+        elif _deck_end_reason == "user_wants_to_end":
+            llm_user_content = "[User declined the exercise — they may want to end the session]"
+        else:
+            llm_user_content = "[User skipped through the exercises]"
+    elif not state["transcript"].strip() and state.get("deck_active"):
+        # User clicked Next / accepted a card — no speech. A bare "Continue."
+        # collides with the prior assistant line ("Tap Next when you're ready!"),
+        # so the model just acknowledges ("Sounds good, let's keep going") instead
+        # of reading the new task. Make the intent explicit to match the system
+        # prompt's ACTION REQUIRED so it announces this card's task aloud.
+        llm_user_content = (
+            "[User advanced to the next exercise card and is waiting. "
+            "Introduce this card's task and invite them to try it now — do not just acknowledge.]"
+        )
+    else:
+        llm_user_content = state["transcript"].strip() or "Continue."
+    messages_for_llm = recent + [{"role": "user", "content": llm_user_content}]
 
     # Producer puts (segment_text, synth_task) tuples onto the queue in order.
     # Consumer awaits each task and emits the segment event when audio is ready.
@@ -80,7 +137,10 @@ async def llm_tts_node(state: dict) -> dict:
     speech_rate = state.get("speech_rate") or 1.0
     tts_payload_base = {"voice": voice_id, "speech_rate": speech_rate}
 
-    async with aiohttp.ClientSession() as sess:
+    session_end_seen = False
+
+    timeout = aiohttp.ClientTimeout(total=120, connect=10, sock_read=60)
+    async with aiohttp.ClientSession(timeout=timeout) as sess:
 
         async def synthesize(text: str) -> str:
             """POST /tts → returns MP3 base64. Empty string on failure."""
@@ -99,32 +159,116 @@ async def llm_tts_node(state: dict) -> dict:
                 return ""
 
         async def produce() -> None:
-            nonlocal full_response
+            """
+            Streams the LLM response into two destinations:
+              - tts_buffer: spoken text that gets segmented + synthesized.
+              - eval_buffer: everything from the EVAL: marker onward, held back
+                from TTS and parsed after the stream completes.
+
+            Boundary safety: the marker "EVAL:" can land split across chunks
+            (e.g. "EV" + "AL:"). To avoid flushing a partial prefix into TTS,
+            we keep the last (len(marker) - 1) chars of tts_buffer pinned in a
+            holdback whenever no marker has been seen yet.
+            """
+            nonlocal full_response, eval_buffer, eval_started, session_end_seen
+            nonlocal deck_new_topic_buffer, deck_new_topic_started
             tts_buffer = ""
+            # Retain enough chars to catch any marker split across chunks.
+            holdback = max(len("EVAL:{"), len(_SESSION_END_MARKER), len("DECK_NEW_TOPIC:{")) - 1
             try:
                 async with sess.post(
                     f"{settings.llm_gateway_url}/stream",
                     json={"system": system, "messages": messages_for_llm},
                 ) as resp:
                     resp.raise_for_status()
-                    async for chunk_bytes in resp.content.iter_chunked(256):
-                        text = chunk_bytes.decode("utf-8", errors="replace")
-                        if not text:
-                            continue
-                        full_response += text
-                        tts_buffer += text
+                    try:
+                        async for chunk_bytes in resp.content.iter_chunked(256):
+                            text = chunk_bytes.decode("utf-8", errors="replace")
+                            if not text:
+                                continue
+                            full_response += text
 
-                        while True:
-                            segment, tts_buffer = _split_tts_segment(tts_buffer)
-                            if not segment:
-                                break
-                            task = asyncio.create_task(synthesize(segment))
-                            await seg_queue.put((segment, task))
+                            if eval_started:
+                                eval_buffer += text
+                                continue
 
-                segment, _ = _split_tts_segment(tts_buffer, force=True)
-                if segment:
-                    task = asyncio.create_task(synthesize(segment))
-                    await seg_queue.put((segment, task))
+                            if deck_new_topic_started:
+                                deck_new_topic_buffer += text
+                                continue
+
+                            tts_buffer += text
+
+                            # SESSION_END is a control marker, not spoken content. It can
+                            # appear before or after EVAL; strip it before any TTS split.
+                            session_idx = tts_buffer.find(_SESSION_END_MARKER)
+                            if session_idx >= 0:
+                                session_end_seen = True
+                                tts_buffer = (
+                                    tts_buffer[:session_idx].rstrip()
+                                    + " "
+                                    + tts_buffer[session_idx + len(_SESSION_END_MARKER):].lstrip()
+                                ).strip()
+
+                            eval_match = _EVAL_RE.search(tts_buffer)
+                            if eval_match:
+                                # Split at the marker: prefix → TTS (flush all), rest → eval.
+                                # Preserve the opening "{" that the regex consumed.
+                                eval_buffer = "{" + tts_buffer[eval_match.end():]
+                                tts_buffer = tts_buffer[:eval_match.start()].rstrip()
+                                eval_started = True
+
+                                # Flush remaining TTS-eligible text now that the boundary is known.
+                                while True:
+                                    segment, tts_buffer = _split_tts_segment(tts_buffer)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
+                                if segment:
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                continue
+
+                            dnt_match = _DECK_NEW_TOPIC_RE.search(tts_buffer)
+                            if dnt_match:
+                                deck_new_topic_buffer = "{" + tts_buffer[dnt_match.end():]
+                                tts_buffer = tts_buffer[:dnt_match.start()].rstrip()
+                                deck_new_topic_started = True
+
+                                while True:
+                                    segment, tts_buffer = _split_tts_segment(tts_buffer)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                segment, tts_buffer = _split_tts_segment(tts_buffer, force=True)
+                                if segment:
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                continue
+
+                            # No marker yet — only segment from the safe portion, keeping a
+                            # holdback at the tail in case the marker spans the next chunk.
+                            if len(tts_buffer) > holdback:
+                                safe = tts_buffer[:-holdback] if holdback else tts_buffer
+                                pinned = tts_buffer[-holdback:] if holdback else ""
+                                while True:
+                                    segment, safe = _split_tts_segment(safe)
+                                    if not segment:
+                                        break
+                                    task = asyncio.create_task(synthesize(segment))
+                                    await seg_queue.put((segment, task))
+                                tts_buffer = safe + pinned
+                    except aiohttp.ClientPayloadError as e:
+                        log.warning("[llm_tts] LLM stream cut short (%s) — flushing partial response", e)
+
+                    # Stream ended. Flush whatever is left in tts_buffer (no marker found,
+                    # or the pinned holdback after the marker was already handled).
+                    segment, _ = _split_tts_segment(tts_buffer, force=True)
+                    if segment:
+                        task = asyncio.create_task(synthesize(segment))
+                        await seg_queue.put((segment, task))
             finally:
                 await seg_queue.put(None)
 
@@ -139,7 +283,110 @@ async def llm_tts_node(state: dict) -> dict:
 
         await asyncio.gather(produce(), consume())
 
+        # Diagnostic for the "AI sometimes cuts off mid-sentence" report.
+        # ends_clean false on the spoken portion (slice before EVAL:) means the
+        # LLM truncated or the holdback/flush dropped tail bytes — either way,
+        # this tells us where to look on the next reproduction.
+        eval_match_diag = _EVAL_RE.search(full_response)
+        marker_pos = eval_match_diag.start() if eval_match_diag else -1
+        spoken_portion = full_response if marker_pos < 0 else full_response[:marker_pos]
+        spoken_clean = spoken_portion.rstrip()
+        spoken_ends_clean = spoken_clean.endswith((".", "!", "?", '"', "'", "”", "’"))
+        tail_repr = full_response[-80:].replace("\n", "\\n")
+        log.info(
+            "[llm_tts] stream end  full_len=%d  spoken_len=%d  eval_started=%s  session_end_seen=%s  spoken_ends_clean=%s  tail=%r",
+            len(full_response), len(spoken_portion), eval_started, session_end_seen, spoken_ends_clean, tail_repr,
+        )
+
+        if session_end_seen:
+            writer({"type": "session_ended"})
+            log.info("[llm_tts] session_ended signal emitted  session=%s", state.get("session_id"))
+
+        if deck_new_topic_started:
+            parsed_topic = _parse_deck_new_topic(deck_new_topic_buffer)
+            if parsed_topic:
+                writer({"type": "deck_new_topic", "topic": parsed_topic})
+                log.info("[llm_tts] deck_new_topic emitted  topic=%r  session=%s", parsed_topic, state.get("session_id"))
+            else:
+                log.warning("[llm_tts] DECK_NEW_TOPIC block present but failed to parse  raw=%r", deck_new_topic_buffer[:200])
+
+        # ── Phase 5 — Deck evaluation handling ────────────────────────────
+        # When a deck is active, the LLM appends `EVAL:{...json...}` at the very end
+        # of its response. produce() already split that block off from TTS so the
+        # user never hears it. Now: parse it, push an `eval` SSE event for instant
+        # FE button updates, and PUT the merged card_update to memory-service so the
+        # poll-based reconciliation (and Phase 6 consolidation) sees the result too.
+        if eval_started and state.get("deck_active") and state.get("session_id"):
+            parsed_eval = _parse_eval_block(eval_buffer)
+            if parsed_eval is not None:
+                card_index = int(state.get("card_index", 0))
+                prior_attempts = int(state.get("card_attempts", 0))
+                passed = bool(parsed_eval.get("passed"))
+
+                # Phase 7 — `confusion` retries don't count as attempts. The
+                # user asked for clarification, not failed the task. Without
+                # this, "what does that mean?" would burn 1 of 3 attempts and
+                # auto-advance prematurely.
+                detected = parsed_eval.get("detectedIssues") or []
+                detected_lower = [str(d).lower() for d in detected]
+                is_confusion_retry = (
+                    not passed and "confusion" in detected_lower
+                )
+                attempts = prior_attempts if is_confusion_retry else prior_attempts + 1
+
+                if passed:
+                    result = "passed"
+                elif attempts >= 3:
+                    result = "partial"
+                else:
+                    result = "not_passed"
+
+                card_update = {
+                    "status": "completed" if passed else "in_progress",
+                    "attempts": attempts,
+                    "result": result,
+                    "feedback": parsed_eval.get("feedback", ""),
+                    "next_action": parsed_eval.get("nextAction", "next_card"),
+                }
+
+                writer({
+                    "type": "eval",
+                    "data": parsed_eval,
+                    "card_index": card_index,
+                })
+
+                log.info(
+                    "[llm_tts] eval parsed  session=%s  card=%d  passed=%s  nextAction=%s  attempts=%d",
+                    state.get("session_id"), card_index, passed,
+                    parsed_eval.get("nextAction"), attempts,
+                )
+
+                try:
+                    async with sess.put(
+                        f"{settings.memory_service_url}/exercise-deck/{state['session_id']}/card",
+                        json=card_update,
+                    ) as r:
+                        if r.status != 200:
+                            log.warning(
+                                "[llm_tts] card update HTTP %s  session=%s",
+                                r.status, state.get("session_id"),
+                            )
+                        else:
+                            log.info(
+                                "[llm_tts] card updated via memory-service  session=%s  idx=%d",
+                                state.get("session_id"), card_index,
+                            )
+                except Exception as e:
+                    log.warning("[llm_tts] memory-service card update failed: %s", e)
+            else:
+                log.warning(
+                    "[llm_tts] EVAL block present but failed to parse  session=%s  raw=%r",
+                    state.get("session_id"), eval_buffer[:200],
+                )
+
     input_tokens  = len(state["transcript"]) // 4
+    # Count only the spoken portion against the user's quota — the EVAL block is
+    # a system artifact, not user-facing content.
     output_tokens = len(full_response) // 4
     tokens_used   = input_tokens + output_tokens
     est_cost_usd  = (input_tokens * _GEMINI_IN + output_tokens * _GEMINI_OUT) / 1_000_000
@@ -150,4 +397,93 @@ async def llm_tts_node(state: dict) -> dict:
     )
     writer({"type": "tokens_counted", "tokens_used": tokens_used, "est_cost_usd": est_cost_usd})
 
-    return {"full_response": full_response, "tokens_used": tokens_used}
+    # Strip the EVAL block from full_response before returning so downstream nodes
+    # (e.g. session-history persistence) don't store it in conversation logs.
+    spoken_response = full_response
+    eval_match_strip = _EVAL_RE.search(spoken_response)
+    if eval_match_strip:
+        spoken_response = spoken_response[:eval_match_strip.start()].rstrip()
+
+    # Strip SESSION_END from persisted text.
+    if _SESSION_END_MARKER in spoken_response:
+        spoken_response = spoken_response.replace(_SESSION_END_MARKER, "").rstrip()
+
+    # Strip DECK_NEW_TOPIC block from persisted text.
+    dnt_strip = _DECK_NEW_TOPIC_RE.search(spoken_response)
+    if dnt_strip:
+        spoken_response = spoken_response[:dnt_strip.start()].rstrip()
+
+    return {"full_response": spoken_response, "tokens_used": tokens_used}
+
+
+def _parse_eval_block(raw: str) -> dict | None:
+    """
+    Parse the JSON object the LLM emits after `EVAL:`. The LLM can be sloppy —
+    extra whitespace, trailing prose, or a stray ```json fence — so we extract
+    the first balanced {...} from the buffer and ignore anything else.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    # Strip a leading code fence if the model emitted one.
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        return None
+    try:
+        parsed = json.loads(text[start:end])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict) or "passed" not in parsed:
+        return None
+    return parsed
+
+
+def _parse_deck_new_topic(raw: str) -> str | None:
+    """
+    Parse the JSON object the LLM emits after `DECK_NEW_TOPIC:`.
+    Returns the topic string, or None if the block is malformed.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    end = -1
+    for i in range(start, len(text)):
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        return None
+    try:
+        parsed = json.loads(text[start:end])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    topic = (parsed.get("topic") or "").strip()
+    return topic or None

@@ -1,6 +1,6 @@
 import { Controller, Post, Put, Get, Param, Body, Query, UseGuards, Req, Res, HttpCode } from '@nestjs/common';
 import { Response } from 'express';
-import { IsString } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
 import { UserService } from '../user/user.service';
@@ -13,6 +13,16 @@ class EndSessionDto {
   reason?: 'user_clicked' | 'voice_intent' | 'idle_timeout' | 'tab_close';
 }
 class TodayChallengeDto { @IsString() challenge: string; }
+class StartSessionDto {
+  // Optional — defaults to 'guided_learning' on the server side if missing.
+  // The validation decorators are REQUIRED: with ValidationPipe({ whitelist: true })
+  // any property lacking a class-validator decorator is silently stripped from
+  // the parsed body. Without these, the FE's `mode: 'free_talk'` would be dropped
+  // and the controller would fall back to 'guided_learning'.
+  @IsOptional()
+  @IsIn(['guided_learning', 'free_talk'])
+  mode?: 'guided_learning' | 'free_talk';
+}
 
 function formatDatetimeInTimezone(date: Date, timezone: string): string {
   try {
@@ -31,27 +41,6 @@ function formatDatetimeInTimezone(date: Date, timezone: string): string {
   }
 }
 
-// Take the first whitespace-separated word — addresses users by a single given
-// name ("Đức" from "Đức Nguyễn Minh") instead of dumping the full stored name
-// into the prompt. Returns empty string for null/empty input.
-function firstName(fullName: string | null | undefined): string {
-  if (!fullName) return '';
-  return fullName.trim().split(/\s+/)[0] ?? '';
-}
-
-// One-line tone primer per conversation style. Mirrored in memory-service so
-// turn responses follow the same persona as the greeting.
-const STYLE_HINTS: Record<string, string> = {
-  friendly:     'Tone: warm and casual, like a supportive friend. Use contractions and natural phrasing.',
-  formal:       'Tone: polite and respectful, with complete sentences and no slang.',
-  casual:       'Tone: relaxed and brief, like texting a buddy.',
-  playful:      'Tone: light and witty, gentle humor when it fits naturally.',
-  professional: 'Tone: clear, focused, and expert — like a tutor on the clock.',
-};
-function styleHint(style: string | null | undefined): string {
-  return STYLE_HINTS[style ?? 'friendly'] ?? STYLE_HINTS.friendly;
-}
-
 function resolveClientDatetime(queryDatetime: string | undefined, timezone: string): string {
   if (queryDatetime) {
     try {
@@ -62,6 +51,70 @@ function resolveClientDatetime(queryDatetime: string | undefined, timezone: stri
     } catch { /* fall through */ }
   }
   return formatDatetimeInTimezone(new Date(), timezone);
+}
+
+// ── Free Talk greeting context helpers ─────────────────────────────────────
+function getLocalHour(timezone: string | undefined): number | null {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone ?? 'UTC',
+      hour: 'numeric',
+      hour12: false,
+    }).formatToParts(new Date()).find((p) => p.type === 'hour')?.value;
+    if (!part) return null;
+    const n = Number.parseInt(part, 10);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function partOfDayFromHour(hour: number | null): string | null {
+  if (hour == null) return null;
+  if (hour < 5)  return 'late night';
+  if (hour < 12) return 'morning';
+  if (hour < 17) return 'afternoon';
+  if (hour < 22) return 'evening';
+  return 'late night';
+}
+
+function formatDaysAgoLabel(daysAgo: number | null): string | null {
+  if (daysAgo == null) return null;
+  if (daysAgo === 0) return 'earlier today';
+  return `${daysAgo} day${daysAgo === 1 ? '' : 's'} ago`;
+}
+
+interface FreeTalkContext {
+  partOfDay: string | null;
+  recentTopic: string | null;
+  daysAgoLabel: string | null;
+  continuityLine: string;
+  absenceLine: string;
+}
+
+// Builds the variable parts of the Free Talk greeting prompt. Kept as a pure
+// helper so the streamGreetingForUser body stays readable and the layered
+// fallback logic (continuity → time-of-day → default) is testable in isolation.
+function buildFreeTalkContext(
+  user: { timezone?: string } | null | undefined,
+  insight: { last_topic?: unknown } | null | undefined,
+  daysAgo: number | null,
+  isAbsent5Plus: boolean,
+): FreeTalkContext {
+  const partOfDay = partOfDayFromHour(getLocalHour(user?.timezone));
+  const rawTopic = typeof insight?.last_topic === 'string' ? insight.last_topic.trim() : '';
+  const recentTopic = !isAbsent5Plus && rawTopic.length > 0 ? rawTopic : null;
+  const daysAgoLabel = formatDaysAgoLabel(daysAgo);
+
+  const continuityLine = recentTopic && daysAgo !== null && daysAgo <= 3 && daysAgoLabel
+    ? `They were talking about "${recentTopic}" ${daysAgoLabel}. You MAY reference it lightly — do not interrogate.`
+    : '';
+
+  const absenceLine = isAbsent5Plus && daysAgo !== null
+    ? `They have not spoken in ${daysAgo} days — keep it gentle, no enthusiasm, no guilt.`
+    : '';
+
+  return { partOfDay, recentTopic, daysAgoLabel, continuityLine, absenceLine };
 }
 
 // Matches one complete sentence ending in .!? followed by whitespace or EOS.
@@ -110,9 +163,17 @@ export class SessionController {
     private cfg: ConfigService,
   ) {}
 
-  // POST /session/start → { session_id }
+  // POST /session/start → { session_id, is_first_session }
+  // Body: { mode?: 'guided_learning' | 'free_talk' } — defaults to 'guided_learning'.
   @Post('start')
-  start(@Req() req) { return this.sessionService.start(req.user.id); }
+  start(@Req() req, @Body() body: StartSessionDto) {
+    const mode = body?.mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+    return this.sessionService.start(req.user.id, mode);
+  }
+
+  // GET /session/quota: current daily session allowance without creating a session
+  @Get('quota')
+  quota(@Req() req) { return this.sessionService.getQuota(req.user.id); }
 
   // GET /session/list?page=1&limit=25
   @Get('list')
@@ -121,9 +182,16 @@ export class SessionController {
   }
 
   // GET /session/greeting/stream — pre-session greeting (no session ID needed)
+  // ?mode=free_talk swaps the prompt to a casual "friend" tone (no missions).
   @Get('greeting/stream')
-  greetingStreamAnon(@Req() req, @Res() res: Response, @Query('datetime') dt?: string) {
-    return this.streamGreetingForUser(req.user.id, res, dt);
+  greetingStreamAnon(
+    @Req() req,
+    @Res() res: Response,
+    @Query('datetime') dt?: string,
+    @Query('mode') mode?: string,
+  ) {
+    const normalizedMode = mode === 'free_talk' ? 'free_talk' : 'guided_learning';
+    return this.streamGreetingForUser(req.user.id, res, dt, undefined, normalizedMode);
   }
 
   // GET /session/insight — proxies to memory-service for the FE mission card.
@@ -175,11 +243,80 @@ export class SessionController {
     return { session_id: sessionId, ...closing };
   }
 
+  // GET /session/:id/deck — get exercise deck state for a session
+  @Get(':id/deck')
+  getDeck(@Param('id') sessionId: string) {
+    return this.sessionService.getDeck(sessionId);
+  }
+
+  // GET /session/:id/evaluation — user-facing end-of-session report.
+  // Returns {status:'pending'} until consolidation finishes building it.
+  @Get(':id/evaluation')
+  getEvaluation(@Param('id') sessionId: string, @Req() req) {
+    return this.sessionService.getEvaluation(sessionId, req.user.id);
+  }
+
+  // POST /session/:id/deck — create or replace exercise deck for a session
+  @Post(':id/deck')
+  createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {
+    return this.sessionService.createDeck(sessionId, body);
+  }
+
+  // PUT /session/:id/deck/card — update current card (after evaluation)
+  @Put(':id/deck/card')
+  @HttpCode(200)
+  updateDeckCard(@Param('id') sessionId: string, @Body() body: any) {
+    return this.sessionService.updateDeckCard(sessionId, body);
+  }
+
+  // PUT /session/:id/deck/next — advance to next card
+  @Put(':id/deck/next')
+  @HttpCode(200)
+  nextDeckCard(@Param('id') sessionId: string) {
+    return this.sessionService.advanceDeck(sessionId);
+  }
+
+  // PUT /session/:id/deck/advance — alias for /next (backward compat)
+  @Put(':id/deck/advance')
+  @HttpCode(200)
+  advanceDeck(@Param('id') sessionId: string) {
+    return this.sessionService.advanceDeck(sessionId);
+  }
+
+  // PUT /session/:id/deck/skip — mark current card as skipped + advance
+  @Put(':id/deck/skip')
+  @HttpCode(200)
+  skipDeckCard(@Param('id') sessionId: string) {
+    return this.sessionService.skipDeckCard(sessionId);
+  }
+
+  // PUT /session/:id/deck/status — update deck status
+  @Put(':id/deck/status')
+  @HttpCode(200)
+  updateDeckStatus(@Param('id') sessionId: string, @Body() body: { status: string }) {
+    return this.sessionService.updateDeckStatus(sessionId, body.status);
+  }
+
+  // PUT /session/:id/deck/end — mark deck ended with reason
+  @Put(':id/deck/end')
+  @HttpCode(200)
+  endDeck(@Param('id') sessionId: string, @Body() body: { end_reason?: string }) {
+    return this.sessionService.endDeck(sessionId, body?.end_reason ?? 'user_clicked_end');
+  }
+
+  // PUT /session/:id/deck/regenerate — generate a fresh deck for a user-supplied topic
+  @Put(':id/deck/regenerate')
+  @HttpCode(200)
+  regenerateDeck(@Param('id') sessionId: string, @Body() body: { topic: string }, @Req() req) {
+    return this.sessionService.regenerateDeckFromTopic(req.user.id, sessionId, body.topic ?? '');
+  }
+
   private async streamGreetingForUser(
     userId: string,
     res: Response,
     clientDatetime?: string,
     sessionId?: string,
+    mode: 'guided_learning' | 'free_talk' = 'guided_learning',
   ): Promise<void> {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -205,15 +342,21 @@ export class SessionController {
       const speechUrl = this.cfg.get('SPEECH_SERVICE_URL');
       const logPrefix = sessionId ? `[Greeting][session=${sessionId}]` : '[Greeting]';
 
-      // Bumped from 400 to 800 so the SESSION_INSIGHT JSON chunk (and other
-      // short-term facts surfaced via retrieval) isn't truncated mid-payload.
-      const MAX_CONTEXT_CHARS = 800;
+      // Slim greeting: 1 snippet, max 200 chars. The greeting is one sentence —
+      // it does not need (or benefit from) a long context dump. Heavy context
+      // (session_insight, today_challenge, mission) is injected per-turn by the
+      // turn-agent, not here.
+      const MAX_CONTEXT_CHARS = 200;
       const trimmedContext = greetingContext.length > MAX_CONTEXT_CHARS
         ? greetingContext.slice(0, MAX_CONTEXT_CHARS) + '…'
         : greetingContext;
 
       const hasInsight = insight?.has_insight === true;
+      // First-session users are force-onboarded server-side (start() ignores
+      // free_talk on first session). For a returning user picking Free Talk we
+      // skip the onboarding prompt entirely and use the free-talk greeting.
       const shouldUseOnboarding = isOnboarding && !hasInsight;
+      const isFreeTalk = mode === 'free_talk' && !shouldUseOnboarding;
       const activeMissionCandidates = [
         todayChallenge,
         typeof insight?.active_mission === 'string' ? insight.active_mission.trim() : '',
@@ -226,24 +369,37 @@ export class SessionController {
       const isAbsent5Plus = daysAgo !== null && daysAgo >= 5;
 
       const targetLang = user?.targetLanguage ?? 'English';
-      const profileLines = [
-        user?.name ? `- Name: ${user.name}` : '',
-        user?.level ? `- Level: ${user.level}` : '',
-        user?.learningGoal ? `- Learning goal: ${user.learningGoal}` : '',
-        user?.nativeLanguage ? `- Native language: ${user.nativeLanguage}` : '',
-      ].filter(Boolean).join('\n');
 
       let systemPrompt: string;
-      const activeMissionBlock = activeMission
-        ? [
-            `ACTIVE MISSION (highest priority — this is what today's session is about):`,
-            `"${activeMission}"`,
-            `The greeting MUST reference this mission. Do not reference any other challenge.`,
-            `Previous-session challenges are background context only and must not replace this mission.`,
-          ].join('\n')
-        : '';
 
-      if (shouldUseOnboarding) {
+      if (isFreeTalk) {
+        const { partOfDay, recentTopic, daysAgoLabel, continuityLine, absenceLine } =
+          buildFreeTalkContext(user, insight, daysAgo, isAbsent5Plus);
+        systemPrompt = [
+          `You are a friendly AI conversation partner greeting someone for a Free Talk session.`,
+          `Speak ONLY in ${targetLang}. Never switch to the user's native language.`,
+          '',
+          user?.name ? `Name to use: ${user.name}` : '',
+          partOfDay ? `Local time of day: ${partOfDay}.` : '',
+          continuityLine,
+          absenceLine,
+          '',
+          `FREE TALK GREETING STYLE:`,
+          `1. Output EXACTLY ONE short sentence (≤ 14 words). No preamble, no second sentence.`,
+          `2. Tone: friend, not teacher. Casual, curious, and relaxed.`,
+          `3. Pick ONE natural opener (do NOT label which):`,
+          recentTopic && daysAgoLabel
+            ? `   • Reference the recent topic lightly ("How did the ${recentTopic} go?" / "Still thinking about ${recentTopic}?").`
+            : '',
+          partOfDay
+            ? `   • Soft hello tied to time of day ("Evening, ${user?.name ?? 'friend'} — long day?").`
+            : '',
+          `   • Simple open question ("What's on your mind?" / "Anything you want to chat about?").`,
+          `4. Do NOT mention missions, exercises, challenges, practice, lessons, breakdowns, or progress.`,
+          `5. Do NOT offer a menu of topics. Let the user lead.`,
+          `6. No emojis. No translation. No native-language fallback.`,
+        ].filter(Boolean).join('\n');
+      } else if (shouldUseOnboarding) {
         // Onboarding greeting — first speaking session ever. Conversational,
         // not survey-style. Discovers motivation/style/confidence via natural
         // dialogue; data is silently extracted by the turn-agent in parallel.
@@ -254,7 +410,6 @@ export class SessionController {
           '',
           `Known profile:`,
           `- Name: ${user?.name ?? 'unknown'}`,
-          `- Native language: ${user?.nativeLanguage ?? 'unknown'}`,
           `- Target language: ${targetLang}`,
           `- Self-reported level: ${user?.level ?? 'unknown'}`,
           `- Learning goal: ${user?.learningGoal ?? 'unknown'}`,
@@ -276,99 +431,46 @@ export class SessionController {
           `- Do not ask "What is your weakness?" / "What is your CEFR level?" / "Are you A1/B1/C1?".`,
           `- Do not mention IELTS unless the goal explicitly mentions exams.`,
           `- Do not mention onboarding, profiling, memory extraction, or that you're learning about them.`,
-          `- Speak primarily in ${targetLang}.`,
-          `- If the user mixes in ${user?.nativeLanguage ?? 'their native language'}, you may briefly mirror it to reduce pressure, then guide them back to ${targetLang}.`,
+          `- Speak ONLY in ${targetLang} in every user-visible sentence.`,
+          `- If the user writes or speaks in their native language, understand it silently but reply in ${targetLang}.`,
+          `- Never mirror, translate into, or continue in the user's native language.`,
           `- No emojis.`,
         ].filter(Boolean).join('\n');
-      } else if (hasInsight) {
-        // Case A — returning user. Reference last session, give one mission.
-        const struggled = insight.struggled_with ?? 'nothing specific noted';
-        const improved  = insight.improved_vs_before ?? 'nothing noted yet';
-        const nextChall = activeMission ?? insight.next_challenge ?? 'pick up where they left off';
-        const energy    = insight.energy_level ?? 'medium';
-
-        const absenceNote = isAbsent5Plus
-          ? `\nNote: This user hasn't spoken in ${daysAgo} days. Do NOT be enthusiastic or act like nothing happened. Open gently — acknowledge the gap without making them feel guilty. Then still end with today's mission, but soften it.`
+      } else {
+        // ────────────────────────────────────────────────────────────────────
+        // Slim greeting (session 2+).
+        //
+        // Heavy context — session_insight, today_challenge, active_mission,
+        // recommendations — is NO LONGER injected here. The turn-agent owns
+        // those: it injects them into every in-session turn via build_prompt_node
+        // so the AI can drive practice from turn 3-4 onwards (after warm chat).
+        //
+        // The greeting itself is now a single warm line that may reference one
+        // recent-context snippet. Replies to it are preserved by the
+        // greeting_text payload mechanism (sent on the first user turn → stored
+        // as turn 1 in short-term so the LLM never loses what it just asked).
+        // ────────────────────────────────────────────────────────────────────
+        const absenceLine = isAbsent5Plus
+          ? `The user hasn't spoken in ${daysAgo} days — open gently, no enthusiasm. Do not make them feel guilty.`
           : '';
 
-        // Case A-bis — last session was the user's FIRST conversation. Open warmly,
-        // referencing the soft signal we got, not the structured insight fields.
-        // Do NOT mention onboarding, profiling, weakness, or CEFR labels.
-        const isFirstInsight = insight.is_first_session_insight === true;
-        let firstSessionBlock = '';
-        if (isFirstInsight) {
-          const motivation = insight.inferred_motivation;
-          const recommended = insight.recommended_next_session?.suggested_challenge;
-          firstSessionBlock = [
-            ``,
-            `CONTEXT: Last time was the user's first conversation with you.`,
-            motivation ? `- Soft motivation signal: ${motivation}` : '',
-            recommended ? `- Recommended starter for today: ${recommended}` : '',
-            ``,
-            `Open warmly and naturally — something like "Last time, I got a feel for your speaking style. Today let's start with something simple and real." Adapt the wording. Reference the motivation/context implicitly, never the labels.`,
-            `Do NOT say: "Based on your onboarding insight" / "I extracted your weakness" / "Your confidence signal is..." / "Last session you struggled with X."`,
-          ].filter(Boolean).join('\n');
-        }
-
         systemPrompt = [
-          `You are a sharp, warm AI speaking coach greeting a returning user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
+          `You are a warm AI speaking partner greeting a returning user.`,
+          `Speak ONLY in ${targetLang}. Never switch to the user's native language, even if they use it first.`,
+          `Right now: ${formattedDatetime}.`,
           '',
-          profileLines ? `User profile:\n${profileLines}` : '',
+          user?.name ? `User: ${user.name}` : '',
+          trimmedContext ? `\nOne recent snippet to weave in (only if natural — do NOT quote it verbatim):\n${trimmedContext}` : '',
+          absenceLine ? `\n${absenceLine}` : '',
           '',
-          activeMissionBlock,
-          activeMissionBlock ? '' : '',
-          `Last session insight:`,
-          `- They struggled with: ${struggled}`,
-          `- They improved on: ${improved}`,
-          `- Recommended challenge from memory: ${insight.next_challenge ?? 'none'}`,
-          `- Active mission for today: ${nextChall}`,
-          `- Their energy last time: ${energy}`,
-          absenceNote,
-          firstSessionBlock,
-          trimmedContext ? `\nAdditional recent context (use sparingly):\n${trimmedContext}` : '',
-          '',
-          `YOUR GREETING MUST:`,
-          `1. Reference something specific from last session naturally — not robotically. BAD: "Last session you struggled with X." GOOD: weave it into a casual line.`,
-          `2. Give them ONE clear mission for today as a challenge, not a suggestion.`,
-          `3. Be 2-3 sentences MAX. No preamble. Start talking, don't introduce yourself.`,
-          `4. Match their energy — if "low", be gentler. If "high", be direct.`,
-          `5. Do NOT use emojis. Do NOT say "Great to see you!" or any generic opener.`,
-          '',
-          `TEMPORAL REASONING: Recent context may mention events at specific times. Compare them to RIGHT NOW (${formattedDatetime}). If an event has already passed, ask how it went — do not wish them luck for it.`,
-        ].filter(Boolean).join('\n');
-      } else if (activeMission) {
-        systemPrompt = [
-          `You are a sharp, warm AI speaking coach greeting a user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
-          '',
-          profileLines ? `User profile:\n${profileLines}` : '',
-          '',
-          activeMissionBlock,
-          '',
-          `YOUR GREETING:`,
-          `1. Greet them naturally${user?.name ? ` by name (${user.name})` : ''}.`,
-          `2. Start today's active mission directly.`,
-          `3. Ask exactly ONE question that gets them into the mission.`,
-          `4. 2 sentences MAX. No emojis.`,
-        ].filter(Boolean).join('\n');
-      } else {
-        // Case B — returning user with no usable insight/mission yet. Never call
-        // this a first session; consolidation may simply be late or too thin.
-        systemPrompt = [
-          `You are a warm AI speaking coach greeting a returning user.`,
-          `Speak in ${targetLang} or whatever language the user uses naturally.`,
-          `The current date and time RIGHT NOW is: ${formattedDatetime}.`,
-          '',
-          profileLines ? `User profile:\n${profileLines}` : '',
-          '',
-          `YOUR GREETING:`,
-          `1. Welcome them back naturally by name${user?.name ? '' : ' if you know it'}.`,
-          `2. Give them ONE simple practice direction based on their learning goal.`,
-          `3. Do not say this is their first session. Do not mention missing memory or missing insight.`,
-          `4. 2 sentences MAX. No emojis.`,
+          `YOUR GREETING — STRICT RULES:`,
+          `1. Output EXACTLY ONE sentence, max 25 words. No preamble, no second sentence.`,
+          `2. Be warm and natural — if the snippet mentions an upcoming interview, meeting, exam, deadline, or appointment, make that the greeting's main context.`,
+          `3. Never say "last session", "based on your insight", or quote labels.`,
+          `4. Do NOT mention any challenge, practice, exercise, or mission — that is handled later in conversation, not here.`,
+          `5. Ending with ONE short question is fine (the system preserves context) — or close with a soft "ready when you are".`,
+          `6. No emojis. No generic openers like "Great to see you!" or "How can I help you today?".`,
+          `7. If the recent snippet mentions a past event, ask how it went; if a future event, acknowledge it gently and compare to right now.`,
         ].filter(Boolean).join('\n');
       }
 
@@ -384,6 +486,7 @@ export class SessionController {
       console.log(`${logPrefix}   insight      : has=${hasInsight} daysAgo=${daysAgo ?? 'n/a'} absent5+=${isAbsent5Plus}`);
       console.log(`${logPrefix}   activeMission: ${activeMission ?? '(none)'}`);
       console.log(`${logPrefix}   onboarding   : raw=${isOnboarding} effective=${shouldUseOnboarding}`);
+      console.log(`${logPrefix}   mode         : requested=${mode} freeTalk=${isFreeTalk}`);
       console.log(`${logPrefix}   system prompt:\n${systemPrompt.split('\n').map(l => `    | ${l}`).join('\n')}`);
       console.log(`${logPrefix} ────────────────────────────────────────────────`);
 
@@ -429,8 +532,25 @@ export class SessionController {
         const [segment] = splitTtsSegment(ttsBuffer, true);
         if (segment) flushSegment(segment);
         await segmentChain;
+
+        // Diagnostic: greeting truncations show up as endsClean=false or an
+        // abrupt tail (e.g. "...I want"). If the LLM is stopping early we'll
+        // see the cut here before the FE ever does.
+        const tail = fullText.slice(-80).replace(/\n/g, '\\n');
+        const endsClean = /[.!?]['"”]?\s*$/.test(fullText);
+        console.log(
+          `${logPrefix} ── greeting stream end  len=${fullText.length}  endsClean=${endsClean}  tail="${tail}"`,
+        );
+
         send({ type: 'done', greeting: fullText });
         res.end();
+
+        // Fire-and-forget: generate deck after greeting completes (session-tied route only)
+        if (sessionId) {
+          this.sessionService
+            .generateDeck(userId, sessionId, user, insight, activeMission, isOnboarding)
+            .catch((err) => console.error(`[Deck] generateDeck failed session=${sessionId}:`, err?.message));
+        }
       });
 
     } catch {
