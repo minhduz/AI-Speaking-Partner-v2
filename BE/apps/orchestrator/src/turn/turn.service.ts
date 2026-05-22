@@ -109,18 +109,26 @@ export class TurnService {
   }
 
   /**
-   * Returns true when the given session is the user's first-ever speaking session.
+   * Returns true when the given session is the user's first real speaking session.
    * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs
-   * onboarding intent extraction during the first session.
+   * onboarding intent extraction during the first session. Zero-turn refresh
+   * orphans do not count as prior speaking sessions.
    */
   async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
     if (!sessionId) return false;
     const session = await this.sessionRepo.findOne({ where: { id: sessionId, userId } });
     if (!session) return false;
-    const earlier = await this.sessionRepo.count({
+    const earlier = await this.sessionRepo.find({
       where: { userId, startedAt: LessThan(session.startedAt) },
+      select: ['id', 'status', 'endReason'],
     });
-    return earlier === 0;
+    for (const prior of earlier) {
+      const hasTurns = (await this.turnRepo.count({ where: { sessionId: prior.id } })) > 0;
+      if (hasTurns || prior.status === 'ended' || (prior.status === 'abandoned' && prior.endReason !== 'orphan')) {
+        return false;
+      }
+    }
+    return true;
   }
 
   async getActiveMission(userId: string): Promise<string | null> {

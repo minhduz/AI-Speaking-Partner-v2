@@ -403,6 +403,7 @@ def _build_free_talk_mode_block(state: dict) -> str:
         "- Do NOT push for longer answers, create productive discomfort, or steer back to active missions.\n"
         "- Avoid stale lines like \"we were just talking about...\" unless the user explicitly asks to continue the old topic.\n"
         "- Follow-up questions are optional. Ask at most ONE, and only after you have actually responded to what they asked.\n"
+        "- If the user clearly wants to stop, end, or says goodbye, give ONE warm farewell sentence and append SESSION_END on the same line.\n"
         f"- Speak only in {target_lang} in user-visible text unless the user explicitly asks for translation or a word meaning.\n"
         "- No EVAL block. No exercise/card/deck language.\n"
     )
@@ -774,7 +775,26 @@ async def build_prompt_node(state: dict) -> dict:
     turn_index = int(state.get("turn_index", 1) or 1)
     is_onboarding = bool(state.get("is_onboarding", False))
     session_mode = (state.get("session_mode") or "guided_learning").strip()
-    is_free_talk_session = session_mode == "free_talk" and not is_onboarding
+    deck_status = (state.get("deck_status") or "none").strip()
+    deck_end_reason = (state.get("deck_end_reason") or "").strip()
+    has_user_transcript = bool(transcript.strip())
+    deck_free_talk_followup = (
+        has_user_transcript
+        and deck_status == "ended_early"
+        and deck_end_reason == "user_chose_free_talk"
+    )
+    post_onboarding_free_talk = (
+        is_onboarding
+        and has_user_transcript
+        and (
+            deck_status == "completed"
+            or (deck_status == "ended_early" and deck_end_reason != "user_wants_to_end")
+        )
+    )
+    effective_is_onboarding = is_onboarding and not post_onboarding_free_talk
+    is_free_talk_session = (
+        session_mode == "free_talk" and not effective_is_onboarding
+    ) or post_onboarding_free_talk or deck_free_talk_followup
     active_mission = (state.get("active_mission") or "").strip()
 
     # DEBUG: surface exactly what mode signal arrived. raw_session_mode=None means
@@ -782,10 +802,10 @@ async def build_prompt_node(state: dict) -> dict:
     # not sending it); ='guided_learning' means the session is genuinely guided in DB.
     log.info(
         "── build_prompt MODE-DEBUG  session=%s  raw_session_mode=%r  resolved=%s  "
-        "is_free_talk=%s  is_onboarding=%s  deck_status=%r  active_mission=%r",
+        "is_free_talk=%s  is_onboarding=%s  effective_onboarding=%s  deck_status=%r  active_mission=%r",
         session_id, state.get("session_mode"), session_mode,
-        is_free_talk_session, is_onboarding,
-        state.get("deck_status"), active_mission[:40],
+        is_free_talk_session, is_onboarding, effective_is_onboarding,
+        deck_status, active_mission[:40],
     )
 
     # Free talk = pure friend conversation. Strip every guided-learning signal up
@@ -793,12 +813,13 @@ async def build_prompt_node(state: dict) -> dict:
     # node can resurrect instructor behavior. Long-term memory facts are untouched.
     if is_free_talk_session:
         state.update(_free_talk_overrides())
+        state["is_onboarding"] = False
         active_mission = ""
 
     # During the user's first speaking session ONLY, run intent extraction
     # in parallel with the main turn. asyncio.create_task() schedules it on the same
     # event loop without blocking; the coroutine guarantees failure isolation.
-    if is_onboarding and transcript.strip():
+    if effective_is_onboarding and transcript.strip():
         task = asyncio.create_task(_fire_onboarding_extraction(user_id, session_id, transcript))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
@@ -840,7 +861,7 @@ async def build_prompt_node(state: dict) -> dict:
 
         # Suppress mission block whenever the deck owns the next AI turn — otherwise
         # the "Stay on this mission" instruction overrides deck-specific instructions.
-        _suppress_mission_block = is_free_talk_session or (not is_onboarding and (
+        _suppress_mission_block = is_free_talk_session or (not effective_is_onboarding and (
             deck_active                                                         # card in_progress
             or (deck_status == "not_started" and turn_index >= 3)              # offer pending
             or (deck_status in ("completed", "ended_early") and not transcript) # deck ending
@@ -850,7 +871,7 @@ async def build_prompt_node(state: dict) -> dict:
         if mission_block and not _suppress_mission_block:
             system_prompt += mission_block
 
-        if is_onboarding:
+        if effective_is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             phase = get_onboarding_phase(turn_index, onboarding_state)
             # Only inject the generic onboarding phase guidance before the deck starts.
@@ -1134,7 +1155,7 @@ async def build_prompt_node(state: dict) -> dict:
         )
         deck_active = bool(state.get("deck_active", False))
         deck_status = (state.get("deck_status") or "none").strip()
-        if is_onboarding:
+        if effective_is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             fallback += build_onboarding_block(state, turn_index, onboarding_state)
             fallback += _render_learned_block(onboarding_state)

@@ -1,0 +1,168 @@
+version: "3.9"
+
+services:
+  # ─── DATABASES ───────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: speaking_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: speaking_app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./BE/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - speaking_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: speaking_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - speaking_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── NESTJS SERVICES ─────────────────────────────────────────
+  orchestrator:
+    build:
+      context: ./BE/apps/orchestrator
+      dockerfile: Dockerfile
+    container_name: speaking_orchestrator
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file: ./BE/apps/orchestrator/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  billing-service:
+    build:
+      context: ./BE/apps/billing-service
+      dockerfile: Dockerfile
+    container_name: speaking_billing
+    restart: always
+    env_file: ./BE/apps/billing-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  llm-gateway:
+    build:
+      context: ./BE/apps/llm-gateway
+      dockerfile: Dockerfile
+    container_name: speaking_llm_gateway
+    restart: always
+    env_file: ./BE/apps/llm-gateway/.env
+    networks:
+      - speaking_net
+
+  dictionary-service:
+    build:
+      context: ./BE/apps/dictionary-service
+      dockerfile: Dockerfile
+    container_name: speaking_dictionary
+    restart: always
+    env_file: ./BE/apps/dictionary-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  # ─── PYTHON SERVICES ─────────────────────────────────────────
+  memory-service:
+    build:
+      context: ./BE/services/memory-service
+      dockerfile: Dockerfile
+    container_name: speaking_memory
+    restart: always
+    env_file: ./BE/services/memory-service/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - speaking_net
+
+  speech-service:
+    build:
+      context: ./BE/services/speech-service
+      dockerfile: Dockerfile
+    container_name: speaking_speech
+    restart: always
+    ports:
+      - "127.0.0.1:8010:8010"
+    env_file: ./BE/services/speech-service/.env
+    networks:
+      - speaking_net
+
+  turn-agent:
+    build:
+      context: ./BE/services/turn-agent
+      dockerfile: Dockerfile
+    container_name: speaking_turn_agent
+    restart: always
+    env_file: ./BE/services/turn-agent/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      memory-service:
+        condition: service_started
+      speech-service:
+        condition: service_started
+      llm-gateway:
+        condition: service_started
+    networks:
+      - speaking_net
+
+  # ─── FRONTEND ────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./FE
+      dockerfile: Dockerfile
+      args:
+        # Sẽ được override bằng biến môi trường lúc build
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost}
+        NEXT_PUBLIC_SPEECH_SERVICE_URL: ${NEXT_PUBLIC_SPEECH_SERVICE_URL:-http://localhost/speech}
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+    container_name: speaking_frontend
+    restart: always
+    ports:
+      - "127.0.0.1:3002:3002"
+    environment:
+      - PORT=3002
+      - NODE_ENV=production
+      - BACKEND_URL=http://orchestrator:3000
+    networks:
+      - speaking_net
+
+networks:
+  speaking_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

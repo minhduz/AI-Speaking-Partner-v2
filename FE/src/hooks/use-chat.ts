@@ -304,6 +304,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // The mode actually in effect for the live session (echoed back from BE,
   // since onboarding can force guided_learning even if user picked free_talk).
   const [activeSessionMode, setActiveSessionMode] = useState<SessionMode | null>(null);
+  const activeSessionModeRef = useRef<SessionMode | null>(null);
+
+  useEffect(() => {
+    activeSessionModeRef.current = activeSessionMode;
+  }, [activeSessionMode]);
 
   // Hydrate the next-session mode from localStorage once on mount.
   useEffect(() => {
@@ -729,6 +734,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
+    activeSessionModeRef.current = null;
     setActiveSessionMode(null);
     const quota = await checkSessionQuota();
     const greetingMode = quota?.is_first_session === false ? nextSessionMode : 'guided_learning';
@@ -871,9 +877,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const pollDeck = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
+    if ((activeSessionModeRef.current as SessionMode | null) === 'free_talk') {
+      setCurrentDeck(null);
+      return;
+    }
     try {
       const deck = await sessionService.getDeck(sid);
       if (sessionIdRef.current !== sid) return;
+      if ((activeSessionModeRef.current as SessionMode | null) === 'free_talk') {
+        setCurrentDeck(null);
+        return;
+      }
       // Never let a stale poll revert to a lower card index — this can happen
       // when the interval fires while advanceDeckCard's PUT is still in flight,
       // causing the auto-advance useEffect to re-trigger for an already-passed card.
@@ -892,13 +906,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // for responsiveness; this just catches anything missed.
   useEffect(() => {
     if (!currentSessionId) return;
+    if (activeSessionMode === 'free_talk') {
+      setCurrentDeck(null);
+      return;
+    }
     void pollDeck();
     const interval = window.setInterval(pollDeck, 3000);
     return () => {
       window.clearInterval(interval);
       setCurrentDeck(null);
     };
-  }, [currentSessionId, pollDeck]);
+  }, [activeSessionMode, currentSessionId, pollDeck]);
 
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
@@ -1041,6 +1059,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
               setCurrentSessionId(session_id);
               isFirstSessionRef.current = Boolean(is_first_session);
               effectiveSessionMode = resolvedMode;
+              activeSessionModeRef.current = resolvedMode;
               setActiveSessionMode(resolvedMode);
             })
             .finally(() => { sessionStartPromiseRef.current = null; });
@@ -1234,6 +1253,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Clear the just-ended session's mode now that the recap is dismissed —
     // initSession will reset state but this is the canonical place to drop
     // any cross-flow leftovers.
+    activeSessionModeRef.current = null;
     setActiveSessionMode(null);
     setMessages([]);
     setStatus('ready');
@@ -1503,6 +1523,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           `Deck did not switch to free talk (status=${deck?.status ?? 'none'}, reason=${deck?.end_reason ?? 'none'})`,
         );
       }
+      activeSessionModeRef.current = 'free_talk';
+      setActiveSessionMode('free_talk');
       setCurrentDeck(null);
       void processTurn('');
     } catch (err) {
