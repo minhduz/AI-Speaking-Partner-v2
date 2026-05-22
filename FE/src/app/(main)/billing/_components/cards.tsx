@@ -76,7 +76,9 @@ export function CurrentPlanCard({ subscription, usage, quota, isPro, planLabel, 
   subscription: Subscription | null; usage: Usage | null; quota?: SessionQuota | null;
   isPro: boolean; planLabel: string; onCancel: () => void;
 }) {
-  const isUnlimited = usage?.is_unlimited ?? false;
+  // Pro subscribers always get unlimited sessions & practice length, regardless
+  // of the per-session limits the backend reports for the free tier.
+  const isUnlimited = isPro || (usage?.is_unlimited ?? false);
   const sessionsToday = quota?.sessions_used ?? usage?.sessions_used ?? 0;
   const dailyLimit = quota?.daily_session_limit ?? usage?.daily_session_limit ?? -1;
 

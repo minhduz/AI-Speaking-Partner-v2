@@ -175,7 +175,7 @@ export default function BillingPage() {
 
                 <div className="grid grid-cols-2 gap-3 md:min-w-[260px]">
                   <MiniStat label="Plan" value={isPro ? 'Pro' : 'Free'} tone={isPro ? 'green' : 'gray'} />
-                  <MiniStat label="Sessions" value={usage?.is_unlimited ? '∞' : String(usage?.daily_session_limit ?? '—')} tone="blue" />
+                  <MiniStat label="Sessions" value={isPro || usage?.is_unlimited ? '∞' : String(usage?.daily_session_limit ?? '—')} tone="blue" />
                 </div>
               </div>
             </section>
