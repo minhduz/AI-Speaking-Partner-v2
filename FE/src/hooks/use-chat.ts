@@ -95,6 +95,7 @@ export type ChatStatus = 'idle' | 'greeting' | 'ready' | 'recording' | 'processi
 export interface UseChatReturn {
   messages: ChatMessage[];
   status: ChatStatus;
+  isSpeaking: boolean;
   greetingSentences: string[];
   isRecording: boolean;
   analyser: AnalyserNode | null;
@@ -272,6 +273,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
+  // Reactive mirror of isPlayingRef — true while the agent's TTS is actually
+  // playing. Drives UI gating (e.g. the deck Next button stays disabled until
+  // the agent finishes speaking). Kept as state because isPlayingRef is a ref.
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [greetingSentences, setGreetingSentences] = useState<string[]>([]);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -599,6 +604,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const processSegmentQueue = useCallback(async () => {
     if (isPlayingRef.current) return;
     isPlayingRef.current = true;
+    if (mountedRef.current) setIsSpeaking(true);
     try {
       while (segmentQueueRef.current.length > 0) {
         const item = segmentQueueRef.current.shift()!;
@@ -626,6 +632,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
     } finally {
       isPlayingRef.current = false;
+      if (mountedRef.current) setIsSpeaking(false);
       resolveSegmentIdle();
     }
   }, [appendEmptySegment, updateLastSegment, resolveSegmentIdle]);
@@ -771,6 +778,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     nextPlayTimeRef.current = 0;
     lastScheduleRef.current = Promise.resolve();
     isPlayingRef.current = false;
+    setIsSpeaking(false);
     const ctx = sharedPlaybackCtxRef.current;
     if (ctx && ctx.state !== 'closed') {
       ctx.close().catch(() => {});
@@ -1702,6 +1710,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   return {
     messages,
     status,
+    isSpeaking,
     greetingSentences,
     isRecording: status === 'recording',
     analyser,

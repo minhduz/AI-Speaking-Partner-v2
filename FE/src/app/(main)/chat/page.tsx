@@ -51,6 +51,7 @@ export default function ChatPage() {
   const {
     messages,
     status,
+    isSpeaking,
     greetingSentences,
     isRecording,
     analyser,
@@ -237,6 +238,23 @@ export default function ChatPage() {
     currentDeck.cards.length > 0;
   const onboardingPanelVisible = hasOnboardingPanelContent(isOnboardingSession, onboardingState);
 
+  // Card the deck is currently sitting on (only meaningful while in_progress).
+  const activeDeckCard =
+    currentDeck && currentDeck.status === 'in_progress'
+      ? currentDeck.cards[currentDeck.current_card_index]
+      : null;
+  // After an eval, the card shows Next/Finish (next_action 'next_card' | 'finish_session').
+  // 'retry' is excluded — there the user must speak again, so the mic stays open.
+  const deckAwaitingAdvance =
+    deckVisible && !!activeDeckCard?.result && activeDeckCard?.next_action !== 'retry';
+
+  // Block the mic so the user can't talk over the agent / is forced to use the card:
+  //  - not_started: agent is presenting the challenge; user must tap Accept/Reject.
+  //  - awaiting advance: eval is in, Next/Finish is the only way forward — force the tap.
+  // (Once accepted and mid-challenge, the mic is open so they can actually answer.)
+  const micBlockedByDeck =
+    (deckVisible && currentDeck?.status === 'not_started') || deckAwaitingAdvance;
+
   // ── CLOSING_MODE overlay ────────────────────────────────────────────────────
   // Three phases: (1) farewell playing, (2) choices [View recap/breakdown]/[Exit],
   // (3) the evaluation board. Blocks all interaction until the user exits.
@@ -376,7 +394,7 @@ export default function ChatPage() {
                 key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
                 deck={currentDeck!}
                 isLighter={lighterMode}
-                isProcessing={status === 'processing'}
+                isProcessing={status === 'processing' || isSpeaking}
                 onAccept={() => void acceptDeckChallenge()}
                 onReject={() => void rejectDeckChallenge()}
                 onFreeTalk={() => void chooseDeckFreeTalk()}
@@ -389,18 +407,26 @@ export default function ChatPage() {
           </div>
         )}
 
-        {/* Conversation — greeting + message bubbles, with a tablet/desktop insight rail. */}
+        {/* Insight rail — floats on the right so the chat stays centered on screen
+            (mirrors the deck card, which floats on the left). Hidden on mobile. */}
+        {onboardingPanelVisible && (
+          <div className="pointer-events-none fixed top-24 right-8 z-30 hidden w-[260px] md:block lg:right-10 lg:w-[280px]">
+            <div className="pointer-events-auto">
+              <OnboardingPanel
+                isVisible={isOnboardingSession}
+                state={onboardingState}
+                className="max-h-[calc(100vh-9rem)] overflow-y-auto"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Conversation — greeting + message bubbles. Always centered; side cards float over. */}
         <div className="min-h-0 flex-1 overflow-hidden px-4 sm:px-6">
-          <div
-            className={
-              onboardingPanelVisible
-                ? 'mx-auto grid h-full w-full max-w-[1040px] grid-cols-1 gap-5 md:grid-cols-[minmax(0,1fr)_248px] lg:grid-cols-[minmax(0,1fr)_280px]'
-                : 'h-full'
-            }
-          >
+          <div className="h-full">
             <div
               ref={scrollContainerRef}
-              className="min-h-0 overflow-y-auto py-4 flex flex-col items-center gap-3"
+              className="h-full min-h-0 overflow-y-auto py-4 flex flex-col items-center gap-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >
               <div className="w-full max-w-md flex flex-col gap-3">
             {messages.length === 0 && greetingSentences.length > 0 && (
@@ -430,16 +456,6 @@ export default function ChatPage() {
                 <div ref={messagesEndRef} />
               </div>
             </div>
-
-            {onboardingPanelVisible && (
-              <div className="hidden min-h-0 py-4 md:block">
-                <OnboardingPanel
-                  isVisible={isOnboardingSession}
-                  state={onboardingState}
-                  className="sticky top-0 max-h-full overflow-y-auto"
-                />
-              </div>
-            )}
           </div>
         </div>
 
@@ -454,7 +470,7 @@ export default function ChatPage() {
           onStartMic={handleStartMic}
           onStopMic={handleStopMic}
           isRecording={isRecording}
-          disabled={micDisabled}
+          disabled={micDisabled || micBlockedByDeck}
         />
 
         {wordDictionary.isOpen && CORNER_STYLES.map((cs, i) => (
@@ -685,7 +701,7 @@ export default function ChatPage() {
           onStartMic={handleStartMic}
           onStopMic={handleStopMic}
           isRecording={isRecording}
-          disabled={micDisabled}
+          disabled={micDisabled || micBlockedByDeck}
           disabledReason={isLimitReached ? 'Limit reached' : undefined}
           hideMic={reviewMode}
         />
@@ -1764,7 +1780,8 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          className="vp-btn-primary text-sm"
+          disabled={isProcessing}
+          className="vp-btn-primary text-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
           style={{ padding: '8px 20px', borderRadius: '12px' }}
         >
           {isLighter ? 'Done ✓' : 'Next →'}
@@ -1785,7 +1802,8 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          className="vp-btn-primary text-sm"
+          disabled={isProcessing}
+          className="vp-btn-primary text-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
           style={{ padding: '8px 20px', borderRadius: '12px', background: '#58cc02', boxShadow: '0 4px 0 #1f5100' }}
         >
           Finish ✓
