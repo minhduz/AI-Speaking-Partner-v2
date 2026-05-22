@@ -105,7 +105,8 @@ export class SessionService {
   /**
    * Returns true for pre-session onboarding greetings.
    * A single active orphan can happen on refresh before the user really speaks;
-   * keep that as onboarding. Any ended session means they are returning.
+   * keep that as onboarding. Once the user has any persisted turn, it is a real
+   * session even if token accounting stayed at 0.
    * Used by the greeting route BEFORE a session exists (no sessionId available).
    * Counts all sessions including orphaned/ended ones to stay deterministic.
    */
@@ -120,26 +121,36 @@ export class SessionService {
         select: ['id', 'status', 'totalTokens'],
       }),
     ]);
+    const onlySessionHasTurns = onlySession
+      ? (await this.turnRepo.count({ where: { sessionId: onlySession.id } })) > 0
+      : false;
     return total === 0 || (
       total === 1
       && completedOrAbandoned === 0
-      && (onlySession?.totalTokens ?? 0) === 0
+      && !onlySessionHasTurns
     );
   }
 
   /**
-   * Returns true when the given session is the user's first session ever.
+   * Returns true when the given session is the user's first real session.
    * Preferred over isFirstSession when a sessionId is in hand (greeting tied to id,
-   * turn routing) because it's stable across orphaned-session edge cases.
+   * turn routing) because it can ignore zero-turn refresh orphans.
    */
   async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
     if (!sessionId) return false;
     const session = await this.repo.findOne({ where: { id: sessionId, userId } });
     if (!session) return false;
-    const earlier = await this.repo.count({
+    const earlier = await this.repo.find({
       where: { userId, startedAt: LessThan(session.startedAt) },
+      select: ['id', 'status', 'endReason'],
     });
-    return earlier === 0;
+    for (const prior of earlier) {
+      const hasTurns = (await this.turnRepo.count({ where: { sessionId: prior.id } })) > 0;
+      if (hasTurns || prior.status === 'ended' || (prior.status === 'abandoned' && prior.endReason !== 'orphan')) {
+        return false;
+      }
+    }
+    return true;
   }
 
   async start(userId: string, mode: 'guided_learning' | 'free_talk' = 'guided_learning') {
@@ -162,6 +173,9 @@ export class SessionService {
         select: ['id', 'status', 'totalTokens'],
       }),
     ]);
+    const onlySessionBeforeStartHasTurns = onlySessionBeforeStart
+      ? (await this.turnRepo.count({ where: { sessionId: onlySessionBeforeStart.id } })) > 0
+      : false;
 
     // Close any orphaned active sessions (e.g. page refresh without clicking "New Chat").
     // Mark as 'abandoned' (not 'ended') since the user didn't consciously close them.
@@ -179,13 +193,13 @@ export class SessionService {
     }
 
     // First-session detection: preserve refresh/orphan behavior. If the only
-    // prior row was an active orphan and no session has ever ended, this is still
-    // the first real speaking session.
+    // prior row has no turns and no session has ever ended, this is still the
+    // first real speaking session. A zero-token session with turns is real.
     const isFirstSession = sessionsBeforeStart === 0
       || (
         sessionsBeforeStart === 1
         && completedOrAbandonedBefore === 0
-        && (onlySessionBeforeStart?.totalTokens ?? 0) === 0
+        && !onlySessionBeforeStartHasTurns
       );
 
     // Onboarding gate: the very first session MUST run guided onboarding so we
@@ -509,6 +523,7 @@ export class SessionService {
   }
 
   async regenerateDeckFromTopic(userId: string, sessionId: string, topic: string): Promise<void> {
+    if (await this.isFreeTalkSession(sessionId)) return;
     const [user, insight] = await Promise.all([
       this.userService.findById(userId).catch(() => null),
       this.getSessionInsight(userId),
@@ -536,6 +551,10 @@ export class SessionService {
     activeMission: string | null,
     isOnboarding: boolean,
   ): Promise<void> {
+    if (await this.isFreeTalkSession(sessionId)) {
+      console.log(`[Deck] skip generation for free_talk session=${sessionId}`);
+      return;
+    }
     const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
     const llmUrl    = this.cfg.get('LLM_GATEWAY_URL');
 
@@ -876,6 +895,9 @@ export class SessionService {
   }
 
   async getDeck(sessionId: string): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) {
+      return { status: 'none', session_id: sessionId, cards: [] };
+    }
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}`;
     try {
       const { data } = await firstValueFrom<any>(this.http.get<any>(url));
@@ -887,6 +909,10 @@ export class SessionService {
   }
 
   async createDeck(sessionId: string, body: { mission_source?: string; cards?: any[] }): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) {
+      console.log(`[Deck] skip create for free_talk session=${sessionId}`);
+      return { status: 'none', session_id: sessionId, cards: [] };
+    }
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}`;
     try {
       const { data } = await firstValueFrom<any>(this.http.post<any>(url, body));
@@ -961,6 +987,7 @@ export class SessionService {
   }
 
   async advanceDeck(sessionId: string): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) return { status: 'none', session_id: sessionId, cards: [] };
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/next`;
     try {
       const { data } = await firstValueFrom<any>(this.http.put<any>(url, {}));
@@ -972,6 +999,7 @@ export class SessionService {
   }
 
   async skipDeckCard(sessionId: string): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) return { status: 'none', session_id: sessionId, cards: [] };
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/skip`;
     try {
       const { data } = await firstValueFrom<any>(this.http.put<any>(url, {}));
@@ -983,6 +1011,7 @@ export class SessionService {
   }
 
   async updateDeckCard(sessionId: string, body: any): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) return { status: 'none', session_id: sessionId, cards: [] };
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/card`;
     try {
       const { data } = await firstValueFrom<any>(this.http.put<any>(url, body));
@@ -994,6 +1023,7 @@ export class SessionService {
   }
 
   async updateDeckStatus(sessionId: string, status: string): Promise<any> {
+    if (await this.isFreeTalkSession(sessionId)) return { status: 'none', session_id: sessionId, cards: [] };
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/status`;
     try {
       const { data } = await firstValueFrom<any>(this.http.put<any>(url, { status }));
@@ -1008,6 +1038,9 @@ export class SessionService {
     const url = `${this.cfg.get('MEMORY_SERVICE_URL')}/exercise-deck/${sessionId}/end`;
     try {
       const { data } = await firstValueFrom<any>(this.http.put<any>(url, { end_reason: endReason }));
+      if (endReason === 'user_chose_free_talk') {
+        await this.repo.update(sessionId, { mode: 'free_talk' });
+      }
       return data;
     } catch (err: any) {
       console.error(`[Session] endDeck failed session=${sessionId}:`, err?.message);
@@ -1024,6 +1057,14 @@ export class SessionService {
       select: ['id', 'title', 'status', 'startedAt', 'mode'],
     });
     return { items, total, page, limit, hasMore: (page - 1) * limit + items.length < total };
+  }
+
+  private async isFreeTalkSession(sessionId: string): Promise<boolean> {
+    const session = await this.repo.findOne({
+      where: { id: sessionId },
+      select: ['id', 'mode'],
+    }).catch(() => null);
+    return session?.mode === 'free_talk';
   }
 
   private async triggerConsolidation(userId: string, sessionId: string) {

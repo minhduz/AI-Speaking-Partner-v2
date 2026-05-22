@@ -55,9 +55,18 @@ export class UsageService {
 
     let usage = await this.repo.findOne({ where: { userId, periodStart: start } });
     if (!usage) {
-      usage = this.repo.create({ userId, periodStart: start, periodEnd: end });
-      await this.repo.save(usage);
+      try {
+        usage = this.repo.create({ userId, periodStart: start, periodEnd: end });
+        await this.repo.save(usage);
+      } catch (err: any) {
+        // Handle race condition: another request already inserted the record
+        if (err?.code === '23505') {
+          usage = await this.repo.findOne({ where: { userId, periodStart: start } });
+        } else {
+          throw err;
+        }
+      }
     }
-    return usage;
+    return usage!;
   }
 }
