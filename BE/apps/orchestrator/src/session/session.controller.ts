@@ -277,6 +277,7 @@ export class SessionController {
     });
   }
 
+<<<<<<< HEAD
   // POST /session/:id/translate — translate a short text to Vietnamese
   @Post(':id/translate')
   @HttpCode(200)
@@ -289,6 +290,8 @@ export class SessionController {
     return this.sessionService.translateToVietnamese(req.user.id, text ?? '');
   }
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   // POST /session/:id/deck — create or replace exercise deck for a session
   @Post(':id/deck')
   createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {

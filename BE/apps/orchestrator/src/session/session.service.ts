@@ -624,8 +624,12 @@ export class SessionService {
       nativeLang,
     });
     const cached = this.getToolboxCache(cacheKey);
+<<<<<<< HEAD
     // Skip stale fallback entries so the LLM gets a fresh chance.
     if (cached && !cached.fallback && (tab !== 'phrases' || cached.deterministic === true)) return cached;
+=======
+    if (cached && (tab !== 'phrases' || cached.deterministic === true)) return cached;
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
     const levelLabel = level === 'beginner' ? 'A1–A2 (Beginner)'
       : level === 'elementary' ? 'A2–B1 (Elementary)'
@@ -711,15 +715,26 @@ export class SessionService {
         messages: [{ role: 'user', content: userMessage }],
       });
       const raw: string = llmRes.data?.response_text?.trim() ?? '{}';
+<<<<<<< HEAD
       console.log(`[Toolbox] LLM raw tab=${tab} len=${raw.length} start=${JSON.stringify(raw.slice(0, 80))} end=${JSON.stringify(raw.slice(-80))}`);
       const parsed = this.extractJsonFromLlmResponse(raw);
+=======
+      // Strip markdown code fences if the LLM wraps output in ```json ... ```
+      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const parsed = JSON.parse(cleaned);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       const result = { tab, topic, level, task, ...parsed };
       this.setToolboxCache(cacheKey, result);
       return result;
     } catch (err: any) {
+<<<<<<< HEAD
       console.error(`[Toolbox] generateToolboxContent failed tab=${tab} topic=${topic} task=${task?.slice(0, 60)}:`, err?.message);
       // Do NOT cache fallback — let the next request retry the LLM.
       return {
+=======
+      console.error(`[Toolbox] generateToolboxContent failed tab=${tab}:`, err?.message);
+      const result = {
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         tab,
         topic,
         level,
@@ -727,6 +742,7 @@ export class SessionService {
         fallback: true,
         ...this.buildToolboxFallback(tab, targetLang, nativeLang, task, topic),
       };
+<<<<<<< HEAD
     }
   }
 
@@ -778,6 +794,13 @@ export class SessionService {
     throw new Error('No valid JSON found in LLM response');
   }
 
+=======
+      this.setToolboxCache(cacheKey, result);
+      return result;
+    }
+  }
+
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   private getToolboxCacheKey(userId: string, input: Record<string, unknown>): string {
     return JSON.stringify({
       version: this.toolboxCacheVersion,

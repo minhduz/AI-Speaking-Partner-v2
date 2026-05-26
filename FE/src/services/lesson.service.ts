@@ -1,6 +1,10 @@
 import { httpClient } from '@/lib/http-client';
 
+<<<<<<< HEAD
 export type LessonState = 'locked' | 'unlocked' | 'in_progress' | 'under_review' | 'completed' | 'needs_retry';
+=======
+export type LessonState = 'locked' | 'unlocked' | 'in_progress' | 'completed' | 'needs_retry';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
 export interface LessonPathItem {
   lesson_id: string;
@@ -80,12 +84,16 @@ export interface StartLessonResponse {
 
 export type LessonAttemptStatus =
   | 'in_progress'
+<<<<<<< HEAD
   | 'under_review'
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   | 'passed'
   | 'needs_retry'
   | 'failed'
   | 'abandoned';
 
+<<<<<<< HEAD
 export type ScoringStatus =
   | 'submitted'
   | 'ai_scored'
@@ -101,6 +109,8 @@ export type NodeStatus =
   | 'needs_practice'
   | 'retry_required';
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 export type LessonNextAction =
   | 'next_lesson'
   | 'retry_lesson'
@@ -115,6 +125,7 @@ export type TeacherReviewStatusOnAttempt =
   | 'revised'
   | 'rejected';
 
+<<<<<<< HEAD
 export type SkillBreakdown = Record<string, number>;
 
 /** The AI's fast-feedback scoring view for an attempt. */
@@ -167,6 +178,8 @@ export interface TeacherReviewFeedback {
   updated_at: string;
 }
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 export interface LessonAttemptResult {
   attempt: {
     id: string;
@@ -179,6 +192,7 @@ export interface LessonAttemptResult {
     ai_feedback: Record<string, unknown> | null;
     started_at: string;
     completed_at: string | null;
+<<<<<<< HEAD
     // Hybrid Scoring lifecycle
     scoring_status: ScoringStatus;
     review_required: boolean;
@@ -190,6 +204,8 @@ export interface LessonAttemptResult {
     node_status: NodeStatus;
     /** Why a finalized attempt didn't pass/unlock (null when passed). */
     retry_reason: string | null;
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   };
   lesson: {
     id: string;
@@ -211,8 +227,18 @@ export interface LessonAttemptResult {
     feedback: string | null;
   }>;
   stats: { cards_completed: number; cards_total: number };
+<<<<<<< HEAD
   ai_review: AiReview;
   teacher_review: TeacherReviewView;
+=======
+  teacher_review: {
+    id: string;
+    status: 'pending' | 'approved' | 'revised' | 'rejected';
+    final_score: number | null;
+    comment: string | null;
+    reviewed_at: string | null;
+  } | null;
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 }
 
 export const lessonService = {
@@ -222,6 +248,7 @@ export const lessonService = {
     httpClient.post<StartLessonResponse>(`/lessons/${id}/start`, {}),
   getAttempt: (attemptId: string) =>
     httpClient.get<LessonAttemptResult>(`/lessons/attempts/${attemptId}`),
+<<<<<<< HEAD
   requestTeacherReview: (attemptId: string) =>
     httpClient.post<{
       review_id: string;
@@ -243,4 +270,6 @@ export const lessonService = {
       created_at: string;
       updated_at: string;
     }>(`/lessons/reviews/${reviewId}/feedback`, payload),
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 };

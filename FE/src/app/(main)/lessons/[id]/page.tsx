@@ -2,7 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
+<<<<<<< HEAD
 import { ArrowLeft, Play, Lock, CheckCircle2, RotateCcw, Star, Sparkles, ListChecks } from 'lucide-react';
+=======
+import { ArrowLeft, Play, Lock, CheckCircle2, RotateCcw, Star, Sparkles } from 'lucide-react';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
@@ -12,7 +16,10 @@ const STATE_LABEL: Record<LessonDetail['progress']['state'], { text: string; ton
   locked:      { text: 'Locked',       tone: '#6f7b64', bg: '#f3f3f3' },
   unlocked:    { text: 'Ready',        tone: '#1e5000', bg: '#e8f9d3' },
   in_progress: { text: 'In progress',  tone: '#5b3f00', bg: '#fff3c4' },
+<<<<<<< HEAD
   under_review:{ text: 'Reviewing',    tone: '#1e3a7a', bg: '#dceaff' },
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   completed:   { text: 'Completed',    tone: '#1e5000', bg: '#bdee8c' },
   needs_retry: { text: 'Needs retry',  tone: '#7a1e1e', bg: '#fde2e2' },
 };
@@ -136,6 +143,7 @@ export default function LessonDetailPage() {
                     >
                       <Lock size={18} /> Complete the previous lesson to unlock
                     </button>
+<<<<<<< HEAD
                   ) : detail.progress.state === 'under_review' ? (
                     <button
                       disabled
@@ -144,6 +152,8 @@ export default function LessonDetailPage() {
                     >
                       <ListChecks size={18} /> Waiting for teacher review
                     </button>
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                   ) : (
                     <button
                       onClick={handleStart}

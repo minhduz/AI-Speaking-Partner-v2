@@ -7,7 +7,10 @@ import {
 
 export type LessonAttemptStatus =
   | 'in_progress'
+<<<<<<< HEAD
   | 'under_review'
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   | 'passed'
   | 'needs_retry'
   | 'failed'
@@ -38,6 +41,7 @@ export class LessonAttempt {
   @Column({ name: 'ai_feedback', type: 'jsonb', nullable: true }) aiFeedback: Record<string, unknown> | null;
   @Column({ name: 'next_action', default: 'none' }) nextAction: LessonNextAction;
   @Column({ name: 'teacher_review_status', default: 'not_required' }) teacherReviewStatus: TeacherReviewStatusOnAttempt;
+<<<<<<< HEAD
 
   // ── Scoring lifecycle (Hybrid Scoring) ──────────────────────────────────
   // 'submitted' | 'ai_scored' | 'needs_review' | 'human_scored' | 'finalized' | 'disputed'
@@ -53,6 +57,8 @@ export class LessonAttempt {
   @Column({ name: 'final_score_breakdown', type: 'jsonb', nullable: true }) finalScoreBreakdown: Record<string, number> | null;
   @Column({ name: 'finalized_at', type: 'timestamptz', nullable: true }) finalizedAt: Date | null;
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   @CreateDateColumn({ name: 'started_at' }) startedAt: Date;
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true }) completedAt: Date | null;
 }

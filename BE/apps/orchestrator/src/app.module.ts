@@ -11,8 +11,11 @@ import { HistoryModule } from "./history/history.module";
 import { ProgressModule } from "./progress/progress.module";
 import { DictionaryModule } from "./dictionary/dictionary.module";
 import { LessonModule } from "./lesson/lesson.module";
+<<<<<<< HEAD
 import { AdminModule } from "./admin/admin.module";
 import { TurnAudioModule } from "./turn/turn-audio.module";
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
 @Module({
   imports: [
@@ -45,8 +48,11 @@ import { TurnAudioModule } from "./turn/turn-audio.module";
     ProgressModule,
     DictionaryModule,
     LessonModule,
+<<<<<<< HEAD
     AdminModule,
     TurnAudioModule,
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   ],
 })
 export class AppModule {}

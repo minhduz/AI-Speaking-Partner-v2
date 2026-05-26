@@ -17,8 +17,11 @@ export interface LessonToolboxContext {
   level?: string;
   /** The active card task text */
   currentTask?: string;
+<<<<<<< HEAD
   /** Index of the active card — forces cache-miss on card advance */
   cardIndex?: number;
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 }
 
 interface VocabItem {
@@ -59,7 +62,10 @@ function getToolboxCacheKey(tab: ToolboxTabKey, ctx: LessonToolboxContext): stri
     topic: ctx.topic ?? '',
     level: ctx.level ?? 'beginner',
     task: ctx.currentTask ?? '',
+<<<<<<< HEAD
     cardIndex: ctx.cardIndex ?? 0,
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   });
 }
 
@@ -85,21 +91,30 @@ async function fetchToolboxTab(
     task: ctx.currentTask ?? '',
   });
   const data = await httpClient.get<ToolboxResponse>(`/session/${sessionId}/toolbox?${params.toString()}`);
+<<<<<<< HEAD
   // Only cache successful LLM results — fallback data must not be cached so
   // the next open retries the LLM instead of showing stale generic words.
   if (!data?.fallback) {
     toolboxResponseCache.set(cacheKey, data);
   }
+=======
+  toolboxResponseCache.set(cacheKey, data);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   return data;
 }
 
 // ─── Tab components ───────────────────────────────────────────────────────────
 
+<<<<<<< HEAD
 function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFlashcard?: (word: string, meaning: string, example: string, pronunciation?: string) => Promise<void> }) {
+=======
+function VocabTab({ ctx }: { ctx: LessonToolboxContext }) {
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<VocabItem[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState(false);
+<<<<<<< HEAD
   const [addingIdx, setAddingIdx] = useState<number | null>(null);
   const [addedIdxs, setAddedIdxs] = useState<Set<number>>(new Set());
   const prevKey = useRef('');
@@ -109,6 +124,14 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
     if (key === prevKey.current) return;
     prevKey.current = key;
     setAddedIdxs(new Set());
+=======
+  const prevKey = useRef('');
+
+  useEffect(() => {
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+    if (key === prevKey.current) return;
+    prevKey.current = key;
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
     if (!ctx.sessionId) {
       setLoading(false);
@@ -138,7 +161,11 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
+<<<<<<< HEAD
   }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
+=======
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   if (loading) {
     return (
@@ -160,6 +187,7 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
     );
   }
 
+<<<<<<< HEAD
   const handleAddFlashcard = async (e: React.MouseEvent, i: number, item: VocabItem) => {
     e.stopPropagation();
     if (!onAddFlashcard || addingIdx !== null || addedIdxs.has(i)) return;
@@ -174,6 +202,8 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
     }
   };
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   return (
     <div className="flex flex-col gap-2 py-2">
       <p className="text-[10px] font-extrabold uppercase tracking-widest px-4 mb-1" style={{ color: '#6f7b64' }}>
@@ -196,6 +226,7 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
                 <span className="text-[11px] font-medium" style={{ color: '#9e9e9e' }}>{item.pronunciation}</span>
               )}
             </div>
+<<<<<<< HEAD
             <div className="flex items-center gap-1.5 shrink-0">
               {onAddFlashcard && (
                 <span
@@ -220,6 +251,13 @@ function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFla
                 <ChevronRight size={14} style={{ color: '#becbb1' }} />
               )}
             </div>
+=======
+            {expanded === i ? (
+              <ChevronDown size={14} style={{ color: '#58cc02', flexShrink: 0 }} />
+            ) : (
+              <ChevronRight size={14} style={{ color: '#becbb1', flexShrink: 0 }} />
+            )}
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           </div>
           <p className="text-xs font-semibold mt-0.5" style={{ color: '#6f7b64' }}>{item.meaning}</p>
           {expanded === i && (
@@ -243,7 +281,11 @@ function PhrasesTab({ ctx }: { ctx: LessonToolboxContext }) {
   const prevKey = useRef('');
 
   useEffect(() => {
+<<<<<<< HEAD
     const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}|${ctx.cardIndex ?? 0}`;
+=======
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     if (key === prevKey.current) return;
     prevKey.current = key;
 
@@ -273,7 +315,11 @@ function PhrasesTab({ ctx }: { ctx: LessonToolboxContext }) {
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
+<<<<<<< HEAD
   }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
+=======
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   if (loading) {
     return (
@@ -334,7 +380,11 @@ function SampleTab({ ctx }: { ctx: LessonToolboxContext }) {
   const prevKey = useRef('');
 
   useEffect(() => {
+<<<<<<< HEAD
     const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}|${ctx.cardIndex ?? 0}`;
+=======
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     if (key === prevKey.current) return;
     prevKey.current = key;
 
@@ -368,7 +418,11 @@ function SampleTab({ ctx }: { ctx: LessonToolboxContext }) {
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
+<<<<<<< HEAD
   }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
+=======
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   if (loading) {
     return (
@@ -462,11 +516,17 @@ interface LessonToolboxProps {
   ctx: LessonToolboxContext;
   /** Floating position mode: 'panel' (desktop right rail) | 'sheet' (mobile bottom sheet) */
   mode?: 'panel' | 'sheet';
+<<<<<<< HEAD
   /** Called when user taps '+' on a vocab word to add it to flashcards */
   onAddFlashcard?: (word: string, meaning: string, example: string, pronunciation?: string) => Promise<void>;
 }
 
 export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet', onAddFlashcard }: LessonToolboxProps) {
+=======
+}
+
+export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet' }: LessonToolboxProps) {
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   const [tab, setTab] = useState<ToolboxTab>('vocab');
 
   const handleTabChange = useCallback((t: ToolboxTab) => {
@@ -559,7 +619,11 @@ export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet', onAddFlash
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto">
+<<<<<<< HEAD
         {tab === 'vocab'   && <VocabTab ctx={ctx} onAddFlashcard={onAddFlashcard} />}
+=======
+        {tab === 'vocab'   && <VocabTab ctx={ctx} />}
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         {tab === 'phrases' && <PhrasesTab ctx={ctx} />}
         {tab === 'sample'  && <SampleTab ctx={ctx} />}
       </div>

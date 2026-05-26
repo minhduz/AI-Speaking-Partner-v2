@@ -89,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_status   ON speaking_app.sessions(status
 CREATE INDEX IF NOT EXISTS idx_turns_session_id  ON speaking_app.turns(session_id);
 CREATE INDEX IF NOT EXISTS idx_turns_user_id     ON speaking_app.turns(user_id);
 CREATE INDEX IF NOT EXISTS idx_turns_data        ON speaking_app.turns USING GIN(data);
+<<<<<<< HEAD
  
 -- Per-turn user speech audio (private R2 storage; DB holds only metadata).
 -- lesson_attempt_id is a plain UUID here (lesson_attempts is created later by a
@@ -113,6 +114,9 @@ CREATE INDEX IF NOT EXISTS idx_turn_audio_session  ON speaking_app.turn_audio(se
 CREATE INDEX IF NOT EXISTS idx_turn_audio_attempt  ON speaking_app.turn_audio(lesson_attempt_id);
 CREATE INDEX IF NOT EXISTS idx_turn_audio_user     ON speaking_app.turn_audio(user_id);
  
+=======
+
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 -- ─── MIGRATIONS for existing databases ───────────────────────
 -- Safe to run multiple times (ADD COLUMN IF NOT EXISTS is idempotent)
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id       VARCHAR UNIQUE;
@@ -124,7 +128,11 @@ ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR;
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS breakdown JSONB;
+<<<<<<< HEAD
  
+=======
+
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 -- ─── MEMORY SCHEMA ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory.memory_facts (
   id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),

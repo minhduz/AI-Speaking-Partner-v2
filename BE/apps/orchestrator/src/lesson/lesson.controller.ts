@@ -11,9 +11,13 @@ import {
 } from '@nestjs/common';
 import { IsIn, IsInt, IsOptional, IsString, Min, Max } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+<<<<<<< HEAD
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from '../user/user-role.enum';
+=======
+import { TeacherReviewGuard } from './guards/teacher-review.guard';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 import { LessonService } from './lesson.service';
 
 class UpdateReviewDto {
@@ -32,11 +36,14 @@ class UpdateReviewDto {
   comment?: string;
 }
 
+<<<<<<< HEAD
 class ReviewFeedbackDto {
   @IsInt() @Min(1) @Max(5) rating: number;
   @IsOptional() @IsString() comment?: string;
 }
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 @Controller('lessons')
 @UseGuards(JwtAuthGuard)
 export class LessonController {
@@ -55,6 +62,7 @@ export class LessonController {
     return this.lessons.getAttempt(req.user.id, attemptId);
   }
 
+<<<<<<< HEAD
   // POST /lessons/attempts/:attemptId/request-review — learner sends their own
   // completed attempt to teacher review (idempotent; never resets progress).
   @Post('attempts/:attemptId/request-review')
@@ -75,6 +83,8 @@ export class LessonController {
     });
   }
 
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   // GET /lessons/:id — lesson detail, cards, current progress, in-progress attempt id.
   @Get(':id')
   detail(@Req() req, @Param('id') id: string) {
@@ -91,12 +101,22 @@ export class LessonController {
   }
 }
 
+<<<<<<< HEAD
 // Reviewer surface — requires a logged-in user whose role is TEACHER or ADMIN.
 // JwtAuthGuard populates request.user (incl. role); RolesGuard enforces @Roles.
 // Learners (role=student) get 403.
 @Controller('teacher-review')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.TEACHER, UserRole.ADMIN)
+=======
+// Reviewer surface — requires a JWT (must be logged in) AND a static reviewer
+// token via x-teacher-review-token header. Guard runs after JwtAuthGuard so a
+// missing/invalid token always returns 403 (never reveals 401-vs-403 to learners
+// without auth). Token comes from TEACHER_REVIEW_TOKEN env; if unset, the guard
+// fails closed and every request gets 403.
+@Controller('teacher-review')
+@UseGuards(JwtAuthGuard, TeacherReviewGuard)
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 export class TeacherReviewController {
   constructor(private lessons: LessonService) {}
 

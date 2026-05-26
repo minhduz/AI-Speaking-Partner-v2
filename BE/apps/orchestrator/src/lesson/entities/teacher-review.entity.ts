@@ -5,7 +5,10 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 
+<<<<<<< HEAD
 // The review *decision* axis (unchanged, kept for back-compat + attempt sync).
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 export type TeacherReviewStatus = 'pending' | 'approved' | 'revised' | 'rejected';
 
 @Entity({ schema: 'speaking_app', name: 'teacher_reviews' })
@@ -18,6 +21,7 @@ export class TeacherReview {
   @Column({ type: 'text', nullable: true }) comment: string | null;
   @CreateDateColumn({ name: 'created_at' }) createdAt: Date;
   @Column({ name: 'reviewed_at', type: 'timestamptz', nullable: true }) reviewedAt: Date | null;
+<<<<<<< HEAD
 
   // ── Review-task workflow (separate axis from the decision `status`) ──────
   // 'pending' | 'assigned' | 'completed' | 'escalated' | 'cancelled'
@@ -38,4 +42,6 @@ export class TeacherReview {
   @Column({ name: 'human_score', type: 'int', nullable: true }) humanScore: number | null;
   @Column({ name: 'human_score_breakdown', type: 'jsonb', nullable: true }) humanScoreBreakdown: Record<string, number> | null;
   @Column({ name: 'completed_at', type: 'timestamptz', nullable: true }) completedAt: Date | null;
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 }

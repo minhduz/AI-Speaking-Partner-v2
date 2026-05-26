@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import {
   BadRequestException,
   ConflictException,
@@ -7,6 +8,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+=======
+import { Injectable, NotFoundException, HttpException, HttpStatus } from '@nestjs/common';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, LessThan } from 'typeorm';
 import { HttpService } from '@nestjs/axios';
@@ -26,6 +30,7 @@ import {
 } from './entities/lesson-attempt.entity';
 import { CardAttempt } from './entities/card-attempt.entity';
 import { TeacherReview, TeacherReviewStatus } from './entities/teacher-review.entity';
+<<<<<<< HEAD
 import { TeacherReviewFeedback } from './entities/teacher-review-feedback.entity';
 import { UserSkillMastery } from './entities/user-skill-mastery.entity';
 import { Session } from '../session/entities/session.entity';
@@ -50,6 +55,10 @@ import {
   compareReviewTasks,
   type LessonOutcome,
 } from './scoring/scoring-decision';
+=======
+import { Session } from '../session/entities/session.entity';
+import { User } from '../user/entities/user.entity';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
 // Goals that the curriculum personalizes scenario text for. Anything else
 // (including "other" and missing) maps to "general" (no scenario prefix).
@@ -117,13 +126,19 @@ export class LessonService {
     @InjectRepository(LessonAttempt) private attempts: Repository<LessonAttempt>,
     @InjectRepository(CardAttempt) private cardAttempts: Repository<CardAttempt>,
     @InjectRepository(TeacherReview) private reviews: Repository<TeacherReview>,
+<<<<<<< HEAD
     @InjectRepository(TeacherReviewFeedback) private reviewFeedback: Repository<TeacherReviewFeedback>,
     @InjectRepository(UserSkillMastery) private mastery: Repository<UserSkillMastery>,
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     @InjectRepository(Session) private sessions: Repository<Session>,
     @InjectRepository(User) private users: Repository<User>,
     private http: HttpService,
     private cfg: ConfigService,
+<<<<<<< HEAD
     private turnAudio: TurnAudioService,
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   ) {}
 
   // ── Path / detail ────────────────────────────────────────────────────────
@@ -139,10 +154,13 @@ export class LessonService {
     // Ensure each lesson has a progress row. The first lesson of the path
     // unlocks automatically; everything else stays locked until completion.
     await this.ensureInitialUnlock(userId, allLessons, progressByLesson);
+<<<<<<< HEAD
     const bestScoresByLesson = await this.finalizedBestScoresByLesson(
       userId,
       allLessons.map((l) => l.id),
     );
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
     type Item = {
       lesson_id: string;
@@ -160,6 +178,7 @@ export class LessonService {
       next_lesson_id: string | null;
     };
 
+<<<<<<< HEAD
     const lastAttemptIds = progressRows.map((p) => p.lastAttemptId).filter(Boolean) as string[];
     const reviewHoldAttempts = lastAttemptIds.length
       ? await this.attempts.find({
@@ -175,6 +194,10 @@ export class LessonService {
         p && rawState !== 'completed' && p.lastAttemptId && reviewHoldAttemptIds.has(p.lastAttemptId)
           ? 'under_review'
           : rawState;
+=======
+    const items: Item[] = allLessons.map((l) => {
+      const p = progressByLesson.get(l.id);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       return {
         lesson_id: l.id,
         title: l.title,
@@ -185,8 +208,13 @@ export class LessonService {
         objective: l.objective,
         is_review: l.isReview,
         pass_score: l.passScore,
+<<<<<<< HEAD
         state,
         best_score: state === 'under_review' ? null : (bestScoresByLesson.get(l.id) ?? p?.bestScore ?? null),
+=======
+        state: p?.state ?? 'locked',
+        best_score: p?.bestScore ?? null,
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         last_attempt_id: p?.lastAttemptId ?? null,
         next_lesson_id: l.nextLessonId,
       };
@@ -202,13 +230,20 @@ export class LessonService {
       continueLesson = items.find((i) => i.lesson_id === inProgressAttempt.lessonId) ?? null;
     }
 
+<<<<<<< HEAD
     // Recommended next: actionable lessons first; under-review only if nothing
     // else can be opened, so the UI can explain the waiting state.
+=======
+    // Recommended next: first unlocked-but-not-completed, then any in_progress.
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     const recommended =
       items.find((i) => i.state === 'in_progress') ??
       items.find((i) => i.state === 'unlocked') ??
       items.find((i) => i.state === 'needs_retry') ??
+<<<<<<< HEAD
       items.find((i) => i.state === 'under_review') ??
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       null;
 
     // Group by level/topic/unit for the lesson path UI.
@@ -235,12 +270,15 @@ export class LessonService {
       order: { orderIndex: 'ASC' },
     });
     const progress = await this.upsertProgress(userId, lessonId);
+<<<<<<< HEAD
     const reviewHoldAttempt = progress.lastAttemptId
       ? await this.attempts.findOne({
           where: { id: progress.lastAttemptId, userId, lessonId, status: 'under_review' },
         })
       : null;
     const bestScore = await this.finalizedBestScore(userId, lessonId);
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     const inProgressAttempt = await this.attempts.findOne({
       where: { userId, lessonId, status: 'in_progress' },
       order: { startedAt: 'DESC' },
@@ -279,11 +317,19 @@ export class LessonService {
       },
       cards: personalizedCards,
       progress: {
+<<<<<<< HEAD
         state: reviewHoldAttempt && progress.state !== 'completed' ? 'under_review' : progress.state,
         best_score: reviewHoldAttempt && progress.state !== 'completed' ? null : (bestScore ?? progress.bestScore),
         last_attempt_id: progress.lastAttemptId,
       },
       in_progress_attempt_id: reviewHoldAttempt ? null : (inProgressAttempt?.id ?? null),
+=======
+        state: progress.state,
+        best_score: progress.bestScore,
+        last_attempt_id: progress.lastAttemptId,
+      },
+      in_progress_attempt_id: inProgressAttempt?.id ?? null,
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       personalized: goal !== 'general' && personalizedCards.some((c) => c.is_personalized),
     };
   }
@@ -307,6 +353,7 @@ export class LessonService {
         HttpStatus.FORBIDDEN,
       );
     }
+<<<<<<< HEAD
     if (progress.state === 'under_review') {
       throw new ConflictException({
         error: 'LESSON_UNDER_REVIEW',
@@ -328,6 +375,8 @@ export class LessonService {
         });
       }
     }
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
     let attempt = await this.attempts.findOne({
       where: { userId, lessonId, status: 'in_progress' },
@@ -435,6 +484,7 @@ export class LessonService {
       where: { lessonAttemptId: attemptId },
       order: { createdAt: 'ASC' },
     });
+<<<<<<< HEAD
     const completed = cards.filter((c) => c.status === 'completed').length;
 
     const taskType = this.normalizeTaskType(lesson?.taskType);
@@ -464,6 +514,15 @@ export class LessonService {
       retryReason = lessonRetryReasonText(outcome.blockReason);
     }
 
+=======
+    const review = await this.reviews.findOne({
+      where: { lessonAttemptId: attemptId },
+      order: { createdAt: 'DESC' },
+    });
+
+    const completed = cards.filter((c) => c.status === 'completed').length;
+
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     return {
       attempt: {
         id: attempt.id,
@@ -476,6 +535,7 @@ export class LessonService {
         ai_feedback: attempt.aiFeedback,
         started_at: attempt.startedAt,
         completed_at: attempt.completedAt,
+<<<<<<< HEAD
         // Scoring lifecycle (Hybrid Scoring)
         scoring_status: attempt.scoringStatus,
         review_required: attempt.reviewRequired,
@@ -486,6 +546,8 @@ export class LessonService {
         finalized_at: attempt.finalizedAt,
         node_status: nodeStatus,
         retry_reason: retryReason,
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       },
       lesson: lesson
         ? {
@@ -512,6 +574,7 @@ export class LessonService {
         cards_completed: completed,
         cards_total: cards.length,
       },
+<<<<<<< HEAD
       // AI feedback is always available; teacher review is the optional human pass.
       ai_review: {
         score: aiScoreExposed,
@@ -671,6 +734,20 @@ export class LessonService {
     );
   }
 
+=======
+      teacher_review: review
+        ? {
+            id: review.id,
+            status: review.status,
+            final_score: review.finalScore,
+            comment: review.comment,
+            reviewed_at: review.reviewedAt,
+          }
+        : null,
+    };
+  }
+
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   async getTeacherReviewQueue() {
     const rows = await this.reviews.find({
       where: { status: 'pending' },
@@ -686,14 +763,18 @@ export class LessonService {
       items: rows.map((r) => {
         const a = attemptById.get(r.lessonAttemptId);
         const l = a ? lessonById.get(a.lessonId) : undefined;
+<<<<<<< HEAD
         // Under-review attempts have attempt.score = null; the AI score lives in
         // the review snapshot (or attempt.aiScore), so surface that for the UI.
         const snapshotAi = (r.aiScoreSnapshot as { ai_score?: number } | null)?.ai_score;
         const aiScore = snapshotAi ?? a?.aiScore ?? a?.score ?? null;
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         return {
           review_id: r.id,
           lesson_attempt_id: r.lessonAttemptId,
           status: r.status,
+<<<<<<< HEAD
           task_status: r.taskStatus,
           task_type: r.taskType,
           priority: r.priority,
@@ -704,6 +785,11 @@ export class LessonService {
           user_id: a?.userId ?? r.studentId ?? null,
           ai_score: aiScore,
           score: aiScore,
+=======
+          created_at: r.createdAt,
+          user_id: a?.userId ?? null,
+          score: a?.score ?? null,
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           lesson: l
             ? { id: l.id, title: l.title, level: l.level, topic: l.topic, unit: l.unit }
             : null,
@@ -712,6 +798,7 @@ export class LessonService {
     };
   }
 
+<<<<<<< HEAD
   /**
    * Legacy teacher-review PATCH. A real decision (approved/revised/rejected)
    * delegates to submitHumanReview, which requires the task to already be
@@ -719,6 +806,8 @@ export class LessonService {
    * /review-tasks/next → /review-tasks/:id/assign, not self-pick from the queue.
    * A bare 'pending' save (e.g. noting) only updates fields and does not assign.
    */
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   async updateTeacherReview(
     reviewId: string,
     reviewerId: string,
@@ -726,6 +815,7 @@ export class LessonService {
   ) {
     const review = await this.reviews.findOne({ where: { id: reviewId } });
     if (!review) throw new NotFoundException('Review not found');
+<<<<<<< HEAD
 
     const status = update.status ?? review.status;
     if (status !== 'pending') {
@@ -742,6 +832,17 @@ export class LessonService {
     if (typeof update.final_score === 'number') review.finalScore = update.final_score;
     if (update.comment !== undefined) review.comment = update.comment;
     await this.reviews.save(review);
+=======
+    const status = update.status ?? review.status;
+    review.status = status;
+    review.reviewerId = reviewerId;
+    if (typeof update.final_score === 'number') review.finalScore = update.final_score;
+    if (update.comment !== undefined) review.comment = update.comment;
+    if (status !== 'pending') review.reviewedAt = new Date();
+    await this.reviews.save(review);
+
+    await this.attempts.update({ id: review.lessonAttemptId }, { teacherReviewStatus: status });
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     return { review_id: review.id, status: review.status };
   }
 
@@ -772,7 +873,11 @@ export class LessonService {
     const attempt = await this.attempts.findOne({ where: { id: params.attemptId } });
     if (!attempt) return null;
     if (attempt.status !== 'in_progress') {
+<<<<<<< HEAD
       // Already finalized / under review — return the persisted shape.
+=======
+      // Already finalized — return the persisted shape.
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       return {
         status: attempt.status,
         score: attempt.score ?? 0,
@@ -839,10 +944,19 @@ export class LessonService {
       await this.cardAttempts.save(rows);
     }
 
+<<<<<<< HEAD
     const aiScore =
       cardScores.length > 0
         ? Math.round(cardScores.reduce((sum, c) => sum + c.score, 0) / cardScores.length)
         : 0;
+=======
+    const finalScore =
+      cardScores.length > 0
+        ? Math.round(cardScores.reduce((sum, c) => sum + c.score, 0) / cardScores.length)
+        : 0;
+    const lastCard = cardScores[cardScores.length - 1];
+    const lastPassed = lastCard?.result === 'passed';
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
     const isAbandoned =
       params.sessionEndReason === 'idle_timeout' ||
@@ -852,7 +966,41 @@ export class LessonService {
 
     const completedAny = cardScores.some((c) => c.status === 'completed');
 
+<<<<<<< HEAD
     // Common AI feedback blob (kept for back-compat with the FE).
+=======
+    let status: LessonAttemptStatus;
+    let nextAction: LessonNextAction;
+    if (isAbandoned && !completedAny) {
+      status = 'abandoned';
+      nextAction = 'continue_later';
+    } else if (finalScore >= lesson.passScore && lastPassed) {
+      status = 'passed';
+      nextAction = lesson.nextLessonId ? 'next_lesson' : 'none';
+    } else if (finalScore >= 50) {
+      status = 'needs_retry';
+      nextAction = 'retry_lesson';
+    } else {
+      status = 'failed';
+      nextAction = 'remedial_drill';
+    }
+
+    // Teacher review gating.
+    const lastFailedButPassed = lastCard?.result === 'failed' && status === 'passed';
+    const aiMissing = !cardScores.length || cardScores.every((c) => c.result === null);
+    const needsReview =
+      lesson.isReview ||
+      (finalScore >= 60 && finalScore <= 75) ||
+      lastFailedButPassed ||
+      aiMissing;
+    const teacherReviewStatus: 'not_required' | 'pending' = needsReview ? 'pending' : 'not_required';
+
+    attempt.status = status;
+    attempt.score = finalScore;
+    attempt.nextAction = nextAction;
+    attempt.teacherReviewStatus = teacherReviewStatus;
+    attempt.completedAt = new Date();
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     attempt.aiFeedback = {
       card_scores: cardScores.map((cs) => ({
         runtime_card_id: cs.runtimeCardId,
@@ -864,6 +1012,7 @@ export class LessonService {
       deck_status: params.deck?.status ?? null,
       deck_end_reason: params.deck?.end_reason ?? null,
     };
+<<<<<<< HEAD
     attempt.completedAt = new Date();
 
     // Abandoned with nothing completed → don't score, allow resume. Unchanged.
@@ -1118,6 +1267,31 @@ export class LessonService {
       : Math.max(progress.bestScore ?? 0, finalScore);
 
     if (outcome.status === 'passed' && outcome.unlock) {
+=======
+    await this.attempts.save(attempt);
+
+    if (needsReview) {
+      const existing = await this.reviews.findOne({
+        where: { lessonAttemptId: attempt.id, status: 'pending' },
+      });
+      if (!existing) {
+        await this.reviews.save(
+          this.reviews.create({
+            lessonAttemptId: attempt.id,
+            status: 'pending',
+          }),
+        );
+      }
+    }
+
+    // Progression: update lesson progress + maybe unlock next lesson.
+    const progress = await this.upsertProgress(attempt.userId, lesson.id);
+    const wasAlreadyCompleted = progress.state === 'completed';
+    progress.lastAttemptId = attempt.id;
+    progress.bestScore = Math.max(progress.bestScore ?? 0, finalScore);
+
+    if (status === 'passed') {
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       progress.state = 'completed';
       progress.completedAt = new Date();
       await this.progress.save(progress);
@@ -1133,6 +1307,7 @@ export class LessonService {
     } else if (wasAlreadyCompleted) {
       progress.state = 'completed';
       await this.progress.save(progress);
+<<<<<<< HEAD
     } else {
       progress.state = 'needs_retry';
       await this.progress.save(progress);
@@ -2039,6 +2214,23 @@ export class LessonService {
       stats,
       recent_history: history.items,
       recent_feedback: feedback.items,
+=======
+    } else if (status === 'failed' || status === 'needs_retry') {
+      progress.state = 'needs_retry';
+      await this.progress.save(progress);
+    } else if (status === 'abandoned') {
+      progress.state = 'in_progress';
+      await this.progress.save(progress);
+    } else {
+      await this.progress.save(progress);
+    }
+
+    return {
+      status,
+      score: finalScore,
+      next_action: nextAction,
+      teacher_review_status: teacherReviewStatus,
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     };
   }
 
