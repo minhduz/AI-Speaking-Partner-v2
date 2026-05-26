@@ -35,4 +35,9 @@ export class Session {
   // End-of-session evaluation report, written by the consolidation worker.
   // Null until consolidation finishes (or for sessions that predate the feature).
   @Column({ type: 'jsonb', nullable: true }) breakdown: Record<string, unknown> | null;
+  // Curriculum-first pivot: when this session backs a lesson attempt, the
+  // attempt's id is stamped here. NULL for Free Talk and for legacy non-lesson
+  // guided sessions. Used to gate legacy deck-generation paths from clobbering
+  // a lesson deck and to drive lesson scoring/progression on session end.
+  @Column({ name: 'lesson_attempt_id', type: 'uuid', nullable: true }) lessonAttemptId: string | null;
 }

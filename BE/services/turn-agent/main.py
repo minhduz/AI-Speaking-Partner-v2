@@ -91,6 +91,10 @@ async def turn_stream(request: Request):
         "is_onboarding":    h.get("x-is-onboarding", "false").lower() == "true",
         "session_mode":     h.get("x-session-mode", "guided_learning"),
         "active_mission":   _decode_header(h.get("x-active-mission")),
+        # Curriculum-first: when set, this entire session is a lesson runtime.
+        # Memory missions / session insight steering must be suppressed end-to-end.
+        "is_lesson_session": h.get("x-lesson-session", "false").lower() == "true",
+        "lesson_title":      _decode_header(h.get("x-lesson-title")),
         "voice_id":         h.get("x-voice-id", "Adrian"),
         "speech_rate":      float(h.get("x-speech-rate", "1.0")),
         "conversation_style": h.get("x-conversation-style", "friendly"),
@@ -160,6 +164,9 @@ async def turn_stream_text(request: Request):
         "is_onboarding":        h.get("x-is-onboarding", "false").lower() == "true",
         "session_mode":         h.get("x-session-mode", "guided_learning"),
         "active_mission":       _decode_header(h.get("x-active-mission")),
+        # Curriculum-first: lesson sessions ignore memory missions / insight steering.
+        "is_lesson_session":    h.get("x-lesson-session", "false").lower() == "true",
+        "lesson_title":         _decode_header(h.get("x-lesson-title")),
         "voice_id":             h.get("x-voice-id", "Adrian"),
         "speech_rate":          float(h.get("x-speech-rate", "1.0")),
         "conversation_style":   h.get("x-conversation-style", "friendly"),

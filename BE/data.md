@@ -2,12 +2,11 @@
 
 ## Overview
 
-Two PostgreSQL schemas (`speaking_app`, `billing`, `memory`) and one Redis keyspace.
+PostgreSQL keeps the core app and memory schemas; Redis keeps short-term session state.
 
 ```
 PostgreSQL
-├── speaking_app   — core app data (users, sessions, turns)
-├── billing        — plans, subscriptions, payments, usage tracking
+├── speaking_app   — core app data (users, sessions, turns, lessons)
 └── memory         — pgvector long-term memory facts + consolidation jobs
 
 Redis
@@ -73,73 +72,6 @@ Redis
   "tokens_used":    312
 }
 ```
-
----
-
-## Schema: `billing`
-
-### `billing.plans`
-
-| Column | Type | Constraints | Default |
-|---|---|---|---|
-| `id` | uuid | PK | gen_random_uuid() |
-| `name` | text | NOT NULL | |
-| `interval` | text | NOT NULL | |
-| `price_vnd` | int | | `0` |
-| `token_limit` | int | | `50000` |
-| `session_limit` | int | | `10` |
-| `is_active` | boolean | | `true` |
-| `created_at` | timestamptz | | NOW() |
-
----
-
-### `billing.subscriptions`
-
-| Column | Type | Constraints | Default |
-|---|---|---|---|
-| `id` | uuid | PK | gen_random_uuid() |
-| `user_id` | uuid | NOT NULL | |
-| `plan_id` | uuid | FK → plans.id NOT NULL | |
-| `status` | text | | `'active'` |
-| `current_period_start` | timestamptz | NOT NULL | |
-| `current_period_end` | timestamptz | NOT NULL | |
-| `auto_renew` | boolean | | `true` |
-| `cancelled_at` | timestamptz | nullable | |
-| `created_at` | timestamptz | | NOW() |
-
----
-
-### `billing.payment_orders`
-
-| Column | Type | Constraints | Default |
-|---|---|---|---|
-| `id` | uuid | PK | gen_random_uuid() |
-| `user_id` | uuid | NOT NULL | |
-| `plan_id` | uuid | NOT NULL | |
-| `status` | text | | `'pending'` |
-| `amount_vnd` | int | NOT NULL | |
-| `content_code` | text | UNIQUE NOT NULL | |
-| `transaction_id` | text | UNIQUE nullable | |
-| `qr_url` | text | nullable | |
-| `expires_at` | timestamptz | NOT NULL | |
-| `paid_at` | timestamptz | nullable | |
-| `created_at` | timestamptz | | NOW() |
-
-**`status` values:** `pending` → `paid` | `expired` | `failed`
-
----
-
-### `billing.usage`
-
-| Column | Type | Constraints | Default |
-|---|---|---|---|
-| `id` | uuid | PK | gen_random_uuid() |
-| `user_id` | uuid | NOT NULL | |
-| `tokens_used` | int | | `0` |
-| `sessions_used` | int | | `0` |
-| `period_start` | timestamptz | NOT NULL | |
-| `period_end` | timestamptz | NOT NULL | |
-| `updated_at` | timestamptz | | NOW() |
 
 ---
 

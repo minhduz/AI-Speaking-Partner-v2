@@ -9,8 +9,8 @@ import { SessionModule } from "./session/session.module";
 import { TurnModule } from "./turn/turn.module";
 import { HistoryModule } from "./history/history.module";
 import { ProgressModule } from "./progress/progress.module";
-import { BillingProxyModule } from "./billing/billing-proxy.module";
 import { DictionaryModule } from "./dictionary/dictionary.module";
+import { LessonModule } from "./lesson/lesson.module";
 
 @Module({
   imports: [
@@ -41,8 +41,8 @@ import { DictionaryModule } from "./dictionary/dictionary.module";
     TurnModule,
     HistoryModule,
     ProgressModule,
-    BillingProxyModule,
     DictionaryModule,
+    LessonModule,
   ],
 })
 export class AppModule {}

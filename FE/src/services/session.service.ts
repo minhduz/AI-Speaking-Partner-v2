@@ -83,22 +83,6 @@ export interface SessionQuota {
   is_first_session?: boolean;
 }
 
-export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
-
-export class BillingLimitError extends Error {
-  code: BillingLimitCode;
-  limit?: number;
-  used?: number;
-
-  constructor(code: BillingLimitCode, limit?: number, used?: number) {
-    super(code);
-    this.name = 'BillingLimitError';
-    this.code = code;
-    this.limit = limit;
-    this.used = used;
-  }
-}
-
 export interface DeckCard {
   id: string;
   type: string;
@@ -131,7 +115,7 @@ export interface DeckEvalData {
 export interface ExerciseDeck {
   id: string;
   session_id: string;
-  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training';
+  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training' | 'lesson_runtime';
   mission: string;
   mission_source: string;
   reason: string;
@@ -143,6 +127,11 @@ export interface ExerciseDeck {
   updated_at: string;
   /** True when this deck continues an incomplete deck from a previous session. */
   is_continuation?: boolean;
+  /** Curriculum-first: present when the deck was minted from a lesson. */
+  lesson_id?: string | null;
+  lesson_attempt_id?: string | null;
+  lesson_title?: string | null;
+  pass_score?: number | null;
 }
 
 export interface SessionEvaluationCard {
@@ -263,9 +252,6 @@ export const sessionService = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
-      if (body?.error === 'SESSION_LIMIT_REACHED') {
-        throw new BillingLimitError('SESSION_LIMIT_REACHED', body.limit, body.used);
-      }
       throw new Error(body?.message ?? 'Failed to start session');
     }
     const data: StartSessionResponse = await res.json();
@@ -447,17 +433,21 @@ export const sessionService = {
   },
 
   /**
-   * Hard-end: marks session ended/abandoned + triggers consolidation.
+   * Hard-end: marks session ended/abandoned + triggers consolidation. Returns
+   * the lesson_attempt_id (if any) so the FE can fetch the lesson result.
    * Always call AFTER close() (or if closing fails).
    */
-  end: async (sessionId: string, reason: EndReason = 'user_clicked'): Promise<void> => {
+  end: async (sessionId: string, reason: EndReason = 'user_clicked'): Promise<{ lesson_attempt_id: string | null }> => {
     log(`POST /session/end`, { session_id: sessionId, reason });
-    await fetchWithAuth(`${API_BASE}/session/end`, {
+    const res = await fetchWithAuth(`${API_BASE}/session/end`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, reason }),
     });
     log(`POST /session/end → ok`);
+    if (!res.ok) return { lesson_attempt_id: null };
+    const data = await res.json().catch(() => null);
+    return { lesson_attempt_id: data?.lesson_attempt_id ?? null };
   },
 
   /**

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'speakup-v5';
+const CACHE_NAME = 'speakup-v6';
 
 // App shell — pre-cached on install
 const SHELL_ASSETS = [
@@ -10,7 +10,6 @@ const SHELL_ASSETS = [
   '/flashcards',
   '/profile',
   '/settings',
-  '/billing',
   '/manifest.json',
   '/icon-192.png',
   '/icon-512.png',
