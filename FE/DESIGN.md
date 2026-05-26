@@ -1,7 +1,7 @@
 ﻿# AI Speaking Partner — Frontend Design Language
 
-> **Reference implementation:** `src/app/(main)/billing/`
-> Every new screen should feel like a sibling of the Billing UI.
+> **Reference implementation:** `src/app/(main)/home/` and `src/app/(main)/lessons/[id]/`
+> Every new screen should feel like a sibling of the lesson-first learning UI.
 
 ---
 

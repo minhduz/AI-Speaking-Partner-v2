@@ -2,16 +2,13 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  BillingLimitError,
   sessionService,
-  type BillingLimitCode,
   type OnboardingState,
   type EndReason,
   type ExerciseDeck,
   type SessionEvaluation,
   type SessionMode,
 } from '@/services/session.service';
-import { billingService } from '@/services/billing.service';
 import { userService } from '@/services/user.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
@@ -100,7 +97,6 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
-  billingLimitCode: BillingLimitCode | null;
   currentSessionId: string | null;
   sessionTitle: string | null;
   sessionTitleUpdate: { sessionId: string; title: string } | null;
@@ -130,6 +126,8 @@ export interface UseChatReturn {
   evaluation: SessionEvaluation | null;
   /** True while polling for the evaluation report. */
   evaluationLoading: boolean;
+  /** Curriculum-first: lesson attempt id of the just-ended session, if any. */
+  endedLessonAttemptId: string | null;
   /** Fetch + show the evaluation board (polls while consolidation finishes). */
   viewEvaluation: () => Promise<void>;
   /** Leave the ended-session flow and reset to a fresh chat. */
@@ -269,7 +267,11 @@ type SegmentQueueItem = {
   audioReady: Promise<{ startTime: number; durationMs: number } | null>;
 };
 
-export function useChat(initialSessionId?: string): UseChatReturn {
+export function useChat(
+  initialSessionId?: string,
+  liveSessionId?: string,
+  modeOverride?: SessionMode,
+): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
@@ -280,7 +282,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [greetingSentences, setGreetingSentences] = useState<string[]>([]);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [billingLimitCode, setBillingLimitCode] = useState<BillingLimitCode | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [sessionTitleUpdate, setSessionTitleUpdate] = useState<{ sessionId: string; title: string } | null>(null);
@@ -311,13 +312,21 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   }, [activeSessionMode]);
 
   // Hydrate the next-session mode from localStorage once on mount.
+  // modeOverride (from ?mode=free_talk in URL) wins over saved storage so a
+  // user clicking "Start Free Talk" never silently inherits a stale guided
+  // selection from a previous session.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (modeOverride === 'free_talk' || modeOverride === 'guided_learning') {
+      window.queueMicrotask(() => setNextSessionModeState(modeOverride));
+      window.localStorage.setItem('speakup_next_session_mode', modeOverride);
+      return;
+    }
     const saved = window.localStorage.getItem('speakup_next_session_mode');
     if (saved === 'free_talk' || saved === 'guided_learning') {
-      setNextSessionModeState(saved);
+      window.queueMicrotask(() => setNextSessionModeState(saved));
     }
-  }, []);
+  }, [modeOverride]);
 
   // Public setter — also persists. Refuses to change mode while a session is
   // already live (sessionId is set) so we don't desync FE state vs BE.
@@ -343,6 +352,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [endChoices, setEndChoices] = useState(false);
   const [evaluation, setEvaluation] = useState<SessionEvaluation | null>(null);
   const [evaluationLoading, setEvaluationLoading] = useState(false);
+  // Curriculum-first: when the just-ended session was bound to a lesson
+  // attempt, BE returns the attempt id from /session/end and the FE pulls the
+  // lesson result via /lessons/attempts/:id to render the lesson outcome card.
+  const [endedLessonAttemptId, setEndedLessonAttemptId] = useState<string | null>(null);
   const endedSessionIdRef = useRef<string | null>(null);
   const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
   const [lighterMode, setLighterMode] = useState(false);
@@ -407,25 +420,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     }
   }, [turnsToMessages]);
 
-  const setBillingLimitError = useCallback((err: BillingLimitError) => {
-    setBillingLimitCode(err.code);
-    if (err.code === 'SESSION_LIMIT_REACHED') {
-      setErrorMessage(
-        `You've used your ${err.limit ?? 10} free sessions today. Upgrade to Pro for unlimited speaking practice.`,
-      );
-      return;
-    }
-    setErrorMessage(
-      `This session has reached the ${err.limit?.toLocaleString() ?? '30,000'} token limit. Start a new session or upgrade to Pro for longer practice.`,
-    );
-  }, []);
-
   const checkSessionQuota = useCallback(async () => {
     try {
-      const [quota, usage] = await Promise.all([
-        sessionService.getQuota().catch(() => null),
-        billingService.getUsage().catch(() => null),
-      ]);
+      const quota = await sessionService.getQuota().catch(() => null);
 
       const history = typeof quota?.is_first_session === 'boolean'
         ? null
@@ -440,24 +437,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           window.localStorage.setItem('speakup_next_session_mode', 'guided_learning');
         }
       }
-
-      // The orchestrator quota is the single source of truth for the *daily*
-      // gate: quota.sessions_used counts sessions started today. Do NOT gate on
-      // billing's usage.sessions_used — that's a *monthly* cumulative count, so
-      // comparing it to the daily limit would keep the user blocked for the rest
-      // of the month once they hit 10 in a day.
-      const quotaLimitReached =
-        !!quota &&
-        !quota.is_unlimited &&
-        !quota.can_start;
-
-      if (!quotaLimitReached) return quota;
-
-      setBillingLimitError(new BillingLimitError(
-        'SESSION_LIMIT_REACHED',
-        quota?.daily_session_limit ?? usage?.daily_session_limit ?? 10,
-        quota?.sessions_used ?? 0,
-      ));
       return quota;
     } catch (err) {
       console.error('[session quota]', err);
@@ -468,7 +447,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       return null;
     }
-  }, [setBillingLimitError]);
+  }, []);
 
   const enterReview = useCallback(async (sessionId: string) => {
     setReviewMode(true);
@@ -728,7 +707,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setStatus('idle');
     setMessages([]);
     setErrorMessage(null);
-    setBillingLimitCode(null);
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
@@ -767,10 +745,56 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (initialSessionId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void enterReview(initialSessionId);
+    } else if (liveSessionId) {
+      // Curriculum-first: a lesson was just started — the session + deck are
+      // already minted server-side. Bootstrap as a LIVE session: skip review,
+      // skip /session/start (BE created it), kick off the session-tied
+      // greeting + an immediate deck poll so the lesson card appears.
+      // eslint-disable-next-line react-hooks/immutability
+      sessionIdRef.current = liveSessionId;
+      setCurrentSessionId(liveSessionId);
+      setSessionStarted(true);
+      activeSessionModeRef.current = 'guided_learning';
+      setActiveSessionMode('guided_learning');
+      setStatus('greeting');
+      void sessionService.getDeck(liveSessionId)
+        .then((deck) => {
+          if (!mountedRef.current) return;
+          if (sessionIdRef.current !== liveSessionId) return;
+          setCurrentDeck(deck);
+        })
+        .catch(() => {});
+      void (async () => {
+        try {
+          // Reset audio scheduling so the first segment plays cleanly.
+          nextPlayTimeRef.current = 0;
+          lastScheduleRef.current = Promise.resolve();
+          const stream = await sessionService.streamGreeting(liveSessionId);
+          for await (const event of stream) {
+            if (event.type === 'segment') {
+              enqueueSegment(event.audio_b64, event.text, true);
+              void processSegmentQueue();
+            } else if (event.type === 'done') {
+              await waitForSegmentIdle();
+              if (mountedRef.current) setStatus('ready');
+              return;
+            } else if (event.type === 'error') {
+              if (mountedRef.current) setStatus('ready');
+              return;
+            }
+          }
+          await waitForSegmentIdle();
+          if (mountedRef.current) setStatus('ready');
+        } catch (err) {
+          console.error('[live-lesson greeting]', err);
+          if (mountedRef.current) setStatus('ready');
+        }
+      })();
+      // The standing currentSessionId-driven effect picks up the deck poll.
     } else {
       void initSession();
     }
-  }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
+  }, [authLoading, isAuthenticated, initSession, initialSessionId, liveSessionId, enterReview, enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
@@ -826,18 +850,25 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, []);
 
+  // Tab close / full-page navigation: fire-and-forget a beacon so the BE can
+  // mark the session abandoned. DO NOT call this in the effect cleanup —
+  // React 19 Strict Mode (and HMR) trigger cleanups on a mount that is NOT
+  // really unmounting, and SPA route changes inside the app do the same. Both
+  // would silently abandon an actively-running lesson session within ms of
+  // creation (the live-lesson bootstrap sets sessionIdRef synchronously, so
+  // cleanup sees a live sid and fires the beacon). Sessions left active by
+  // in-app navigation are cleaned up by the orchestrator's orphan sweep on
+  // the next /session/start, and by the lesson "reuse in-progress attempt"
+  // logic in LessonService.startLesson.
   useEffect(() => {
     const endOnLeave = () => {
       const sid = sessionIdRef.current;
       if (!sid) return;
-      sessionIdRef.current = null;
-      setCurrentSessionId(null);
       sessionService.endBeacon(sid); // sends reason: 'tab_close'
     };
     window.addEventListener('beforeunload', endOnLeave);
     return () => {
       window.removeEventListener('beforeunload', endOnLeave);
-      endOnLeave();
     };
   }, []);
 
@@ -1073,14 +1104,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           window.setTimeout(() => { void pollDeck(); }, 600);
           window.setTimeout(() => { void pollDeck(); }, 1800);
         }
-      } catch (err) {
+      } catch {
         setMessages((prev) => prev.filter((m) => !m.pending));
-        if (err instanceof BillingLimitError) {
-          setBillingLimitError(err);
-        } else {
-          setBillingLimitCode(null);
-          setErrorMessage('Failed to start session');
-        }
+        setErrorMessage('Failed to start session');
         setStatus('error');
         return;
       }
@@ -1088,7 +1114,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
     setStatus('processing');
     setErrorMessage(null);
-    setBillingLimitCode(null);
     nextPlayTimeRef.current = 0;
     lastScheduleRef.current = Promise.resolve();
 
@@ -1201,9 +1226,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           }
           return;
         } else if (event.type === 'error') {
-          if (event.message === 'SESSION_TOKEN_LIMIT_REACHED') {
-            throw new BillingLimitError('SESSION_TOKEN_LIMIT_REACHED', event.limit, event.used);
-          }
           throw new Error(event.message);
         }
       }
@@ -1220,15 +1242,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       setStatus('ready');
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.pending));
-      if (err instanceof BillingLimitError) {
-        setBillingLimitError(err);
-      } else {
-        setBillingLimitCode(null);
-        setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
-      }
+      setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
       setStatus('error');
     }
-  }, [activeSessionMode, enqueueSegment, nextSessionMode, modeSelectionLocked, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
+  }, [activeSessionMode, enqueueSegment, nextSessionMode, modeSelectionLocked, processSegmentQueue, waitForSegmentIdle, pollDeck]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -1247,6 +1264,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setEndChoices(false);
     setEvaluation(null);
     setEvaluationLoading(false);
+    setEndedLessonAttemptId(null);
     endedSessionIdRef.current = null;
     setIsEnding(false);
     setClosingText(null);
@@ -1319,7 +1337,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Talk recap vs a Guided breakdown). It is cleared in exitSession() once
     // the user dismisses the recap.
     setErrorMessage(null);
-    setBillingLimitCode(null);
 
     // CLOSING_MODE: only when user deliberately ends (button or voice intent)
     // For idle/tab_close we skip the closing message since user isn't there.
@@ -1378,7 +1395,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Hard-end: mark session in DB + trigger consolidation. Consolidation also
     // builds the user-facing evaluation report (fetched later via viewEvaluation).
     if (prevSessionId) {
-      await sessionService.end(prevSessionId, reason).catch(console.error);
+      const result = await sessionService.end(prevSessionId, reason).catch((err) => {
+        console.error(err);
+        return null;
+      });
+      if (result?.lesson_attempt_id) {
+        setEndedLessonAttemptId(result.lesson_attempt_id);
+      }
     }
 
     // Deliberate close → keep the overlay up and offer the evaluation board
@@ -1451,7 +1474,15 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // More cards remain — AI introduces the next one.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Last card done — AI transitions back to free conversation.
+          // Curriculum-first: a lesson deck reaching completed means the user
+          // pressed Finish on the final card. End the session immediately so
+          // LessonAttempt is finalized (status/score/next_action) instead of
+          // sitting in_progress until the user manually taps End.
+          if (deck.lesson_attempt_id) {
+            void endSessionRef.current('user_clicked');
+            return;
+          }
+          // Non-lesson decks (legacy paths): AI transitions back to free chat.
           void processTurn('');
         }
       }
@@ -1472,6 +1503,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // Mid-deck skip: AI introduces the next card's task.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
+          // Skipping the LAST card of a lesson also finalizes — otherwise the
+          // user has to press End manually after skipping the final boss.
+          if (deck.lesson_attempt_id) {
+            void endSessionRef.current('user_clicked');
+            return;
+          }
           // Last card skipped: AI asks what was difficult or if user wants another topic.
           void processTurn('');
         }
@@ -1507,7 +1544,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void processTurn('');
     } catch (err) {
       console.error('[rejectDeckChallenge]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
       setStatus('error');
     }
@@ -1529,7 +1565,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckFreeTalk]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not switch to free talk');
       setStatus('error');
     }
@@ -1549,7 +1584,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckEnd]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
       setStatus('error');
     }
@@ -1631,7 +1665,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
   const startMic = useCallback(() => {
     if (statusRef.current !== 'ready' && statusRef.current !== 'error') return;
-    if (billingLimitCode === 'SESSION_LIMIT_REACHED') return;
     statusRef.current = 'recording';
     isStoppingRef.current = false;
     pendingStopRef.current = false;
@@ -1664,14 +1697,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         audioCtxRef.current = null;
         setStatus('ready');
         if (!sessionIdRef.current) setSessionStarted(false);
-        if (err instanceof BillingLimitError) {
-          setBillingLimitError(err);
-        } else {
-          setBillingLimitCode(null);
-          setErrorMessage('Failed to start recording');
-        }
+        setErrorMessage('Failed to start recording');
       });
-  }, [billingLimitCode, setBillingLimitError, startRecording, runStop]);
+  }, [startRecording, runStop]);
 
   const stopMic = useCallback(() => {
     if (statusRef.current !== 'recording') return;
@@ -1714,7 +1742,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // comes back from an old session.
     setMessages([]);
     setErrorMessage(null);
-    setBillingLimitCode(null);
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
@@ -1737,7 +1764,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
-    billingLimitCode,
     currentSessionId,
     sessionTitle,
     sessionTitleUpdate,
@@ -1757,6 +1783,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     endChoices,
     evaluation,
     evaluationLoading,
+    endedLessonAttemptId,
     viewEvaluation,
     exitSession,
     sessionStarted,

@@ -92,26 +92,15 @@ export class TurnController {
     const send = (data: object) => res.write(`data: ${JSON.stringify(data)}\n\n`);
 
     try {
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
+      const [user, turnIndex, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
-        this.http.axiosRef
-          .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
-          .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
-        this.turnService.getSessionTokens(sessionId),
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
         this.turnService.getSessionInsight(req.user.id),
         this.turnService.getSessionMode(sessionId, req.user.id),
       ]);
-
-      const limits = limitsRes.data;
-      if (!limits.is_unlimited && sessionTokens >= limits.session_token_limit) {
-        send({ type: 'error', message: 'SESSION_TOKEN_LIMIT_REACHED', limit: limits.session_token_limit });
-        res.end();
-        return;
-      }
 
       const clientIso = req.headers['x-client-datetime'];
       const currentDatetime = clientIso
@@ -133,6 +122,14 @@ export class TurnController {
       const greetingText = typeof body.greeting_text === 'string' ? body.greeting_text.trim() : '';
       logDeckContext('stream-text', sessionId, deck);
 
+      // Curriculum-first: a lesson session must never see a memory-driven
+      // active_mission. The Lesson IS the mission — anything else from
+      // memory is noise that would push the AI off-curriculum on turn 1-2.
+      const isLessonSession = !!deck.lesson_attempt_id;
+      const effectiveActiveMission = isLessonSession ? '' : (activeMission || '');
+      const effectiveIsOnboarding = isLessonSession ? false : isOnboarding;
+      const effectiveSessionInsight = isLessonSession ? null : sessionInsight;
+
       const upstream = await this.http.axiosRef.post(
         `${this.cfg.get('TURN_AGENT_URL')}/turn/stream-text`,
         { transcript: body.transcript },
@@ -149,13 +146,15 @@ export class TurnController {
             'X-Learning-Goal':      encodeHeader(user?.learningGoal),
             'X-User-Timezone':      user?.timezone ?? 'UTC',
             'X-Current-Datetime':   currentDatetime,
-            'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Is-Onboarding':      effectiveIsOnboarding ? 'true' : 'false',
             'X-Session-Mode':       sessionMode,
-            'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Active-Mission':     effectiveActiveMission ? encodeURIComponent(effectiveActiveMission) : '',
+            'X-Lesson-Session':     isLessonSession ? 'true' : 'false',
+            'X-Lesson-Title':       deck.lesson_title ? encodeHeader(deck.lesson_title) : '',
             // Compact JSON of the consolidated insight from last session.
             // Turn-agent uses this to drive practice lead-in starting turn 3+.
             // Greeting endpoint NO LONGER reads insight — it lives here now.
-            'X-Session-Insight':    sessionInsight ? encodeURIComponent(JSON.stringify(sessionInsight)) : '',
+            'X-Session-Insight':    effectiveSessionInsight ? encodeURIComponent(JSON.stringify(effectiveSessionInsight)) : '',
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',
@@ -231,29 +230,16 @@ export class TurnController {
     }
 
     try {
-      // Parallel: user entity + turn index + limits + current session tokens + onboarding flag
-      const [user, turnIndex, limitsRes, sessionTokens, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
+      // Parallel: user entity + turn index + onboarding flag + memory/deck context.
+      const [user, turnIndex, isOnboarding, activeMission, deck, sessionInsight, sessionMode] = await Promise.all([
         this.turnService.getUserEntity(req.user.id),
         this.turnService.getTurnIndex(sessionId),
-        this.http.axiosRef
-          .get(`${this.cfg.get('BILLING_SERVICE_URL')}/internal/limits/${req.user.id}`)
-          .catch(() => ({ data: { is_unlimited: false, session_token_limit: 30000 } })),
-        this.turnService.getSessionTokens(sessionId),
         this.turnService.isOnboardingSession(req.user.id, sessionId),
         this.turnService.getActiveMission(req.user.id),
         this.turnService.getDeckInfo(sessionId),
         this.turnService.getSessionInsight(req.user.id),
         this.turnService.getSessionMode(sessionId, req.user.id),
       ]);
-
-      const limits = limitsRes.data;
-
-      // Session token limit check (free users only)
-      if (!limits.is_unlimited && sessionTokens >= limits.session_token_limit) {
-        send({ type: 'error', message: 'SESSION_TOKEN_LIMIT_REACHED', limit: limits.session_token_limit });
-        res.end();
-        return;
-      }
 
       // Resolve current datetime
       const clientIso = req.headers['x-client-datetime'];
@@ -277,6 +263,11 @@ export class TurnController {
       );
       logDeckContext('stream-audio', sessionId, deck);
 
+      const isLessonSession = !!deck.lesson_attempt_id;
+      const effectiveActiveMission = isLessonSession ? '' : (activeMission || '');
+      const effectiveIsOnboarding = isLessonSession ? false : isOnboarding;
+      const effectiveSessionInsight = isLessonSession ? null : sessionInsight;
+
       const upstream = await this.http.axiosRef.post(
         `${this.cfg.get('TURN_AGENT_URL')}/turn/stream`,
         formData,
@@ -293,13 +284,15 @@ export class TurnController {
             'X-Learning-Goal':      encodeHeader(user?.learningGoal),
             'X-User-Timezone':      user?.timezone ?? 'UTC',
             'X-Current-Datetime':   currentDatetime,
-            'X-Is-Onboarding':      isOnboarding ? 'true' : 'false',
+            'X-Is-Onboarding':      effectiveIsOnboarding ? 'true' : 'false',
             'X-Session-Mode':       sessionMode,
-            'X-Active-Mission':     activeMission ? encodeURIComponent(activeMission) : '',
+            'X-Active-Mission':     effectiveActiveMission ? encodeURIComponent(effectiveActiveMission) : '',
+            'X-Lesson-Session':     isLessonSession ? 'true' : 'false',
+            'X-Lesson-Title':       deck.lesson_title ? encodeHeader(deck.lesson_title) : '',
             // Compact JSON of the consolidated insight from last session.
             // Turn-agent uses this to drive practice lead-in starting turn 3+.
             // Greeting endpoint NO LONGER reads insight — it lives here now.
-            'X-Session-Insight':    sessionInsight ? encodeURIComponent(JSON.stringify(sessionInsight)) : '',
+            'X-Session-Insight':    effectiveSessionInsight ? encodeURIComponent(JSON.stringify(effectiveSessionInsight)) : '',
             'X-Voice-Id':           normalizeVoiceId(user?.voiceId),
             'X-Speech-Rate':        String(user?.speechRate ?? 1.0),
             'X-Conversation-Style': user?.conversationStyle ?? 'friendly',

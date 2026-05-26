@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     speech_service_url: str = "http://speech-service:8010"
     memory_service_url: str = "http://memory-service:8001"
     llm_gateway_url: str = "http://llm-gateway:8002"
-    billing_service_url: str = "http://billing-service:3001"
 
     class Config:
         env_file = ".env"

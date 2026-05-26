@@ -53,19 +53,6 @@ services:
     networks:
       - speaking_net
 
-  billing-service:
-    build:
-      context: ./BE/apps/billing-service
-      dockerfile: Dockerfile
-    container_name: speaking_billing
-    restart: always
-    env_file: ./BE/apps/billing-service/.env
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - speaking_net
-
   llm-gateway:
     build:
       context: ./BE/apps/llm-gateway

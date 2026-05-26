@@ -256,6 +256,27 @@ export class SessionController {
     return this.sessionService.getEvaluation(sessionId, req.user.id);
   }
 
+  // GET /session/:id/toolbox?topic=...&level=...&task=...&tab=vocab|phrases|sample
+  // Returns LLM-generated vocab / phrase patterns / sample response
+  // scoped to the current deck card context (topic, level, task description).
+  @Get(':id/toolbox')
+  getToolbox(
+    @Param('id') sessionId: string,
+    @Req() req,
+    @Query('topic') topic?: string,
+    @Query('level') level?: string,
+    @Query('task') task?: string,
+    @Query('tab') tab?: string,
+  ) {
+    return this.sessionService.generateToolboxContent(req.user.id, {
+      sessionId,
+      topic: topic ?? '',
+      level: level ?? 'beginner',
+      task: task ?? '',
+      tab: (tab as 'vocab' | 'phrases' | 'sample') ?? 'vocab',
+    });
+  }
+
   // POST /session/:id/deck — create or replace exercise deck for a session
   @Post(':id/deck')
   createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {
@@ -328,7 +349,7 @@ export class SessionController {
       // regardless of whether this is an anon (pre-session) or session-tied greeting.
       // session_insight drives the mission-based greeting (Case A vs B vs C).
       // Onboarding flag flips the greeting to the first-session prompt instead.
-      const [user, greetingContext, insight, todayChallenge, isOnboarding] = await Promise.all([
+      const [user, greetingContext, insight, todayChallenge, isOnboarding, sessionMeta] = await Promise.all([
         this.userService.findById(userId).catch(() => null),
         this.sessionService.getGreetingContext(userId),
         this.sessionService.getSessionInsight(userId),
@@ -336,6 +357,9 @@ export class SessionController {
         sessionId
           ? this.sessionService.isOnboardingSession(userId, sessionId)
           : this.sessionService.isFirstSession(userId),
+        sessionId
+          ? this.sessionService.getGreetingSessionMeta(userId, sessionId)
+          : Promise.resolve(null),
       ]);
 
       const formattedDatetime = resolveClientDatetime(clientDatetime, user?.timezone ?? 'UTC');
@@ -369,10 +393,27 @@ export class SessionController {
       const isAbsent5Plus = daysAgo !== null && daysAgo >= 5;
 
       const targetLang = user?.targetLanguage ?? 'English';
+      const isLessonSession = !!sessionMeta?.lessonAttemptId;
 
       let systemPrompt: string;
 
-      if (isFreeTalk) {
+      if (isLessonSession) {
+        const lessonTitle = sessionMeta?.title?.trim() || 'today\'s lesson';
+        systemPrompt = [
+          `You are greeting a learner who has opened a structured speaking lesson.`,
+          `Speak ONLY in ${targetLang}. Never switch to the user's native language.`,
+          '',
+          `Lesson title: ${lessonTitle}`,
+          '',
+          `LESSON GREETING STYLE:`,
+          `1. Output EXACTLY ONE short sentence, max 16 words.`,
+          `2. Mention that the lesson is starting, naturally.`,
+          `3. Do NOT ask a discovery question.`,
+          `4. Do NOT mention memory, missions, challenges, plans, subscriptions, or progress.`,
+          `5. Do NOT explain the lesson. The first card is already visible in the UI.`,
+          `6. No emojis.`,
+        ].join('\n');
+      } else if (isFreeTalk) {
         const { partOfDay, recentTopic, daysAgoLabel, continuityLine, absenceLine } =
           buildFreeTalkContext(user, insight, daysAgo, isAbsent5Plus);
         systemPrompt = [
@@ -537,7 +578,7 @@ export class SessionController {
         // abrupt tail (e.g. "...I want"). If the LLM is stopping early we'll
         // see the cut here before the FE ever does.
         const tail = fullText.slice(-80).replace(/\n/g, '\\n');
-        const endsClean = /[.!?]['"”]?\s*$/.test(fullText);
+        const endsClean = /[.!?]['""]?\s*$/.test(fullText);
         console.log(
           `${logPrefix} ── greeting stream end  len=${fullText.length}  endsClean=${endsClean}  tail="${tail}"`,
         );

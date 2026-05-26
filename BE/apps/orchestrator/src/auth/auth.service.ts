@@ -31,14 +31,6 @@ export class AuthService {
     });
     await this.userRepo.save(user);
 
-    // Initialise free subscription — fire and forget (non-blocking)
-    const billingUrl = this.cfg.get('BILLING_SERVICE_URL');
-    firstValueFrom(
-      this.http.post(`${billingUrl}/subscription/internal/subscription/init-free/${user.id}`, {}),
-    ).catch((err) =>
-      console.error('[Auth] Failed to init free subscription:', err.message),
-    );
-
     return this.tokens(user);
   }
 
@@ -94,16 +86,6 @@ export class AuthService {
         passwordHash: '', // no password for Google users
       });
       await this.userRepo.save(user);
-    }
-
-    // Init free subscription for new users
-    if (isNewUser) {
-      const billingUrl = this.cfg.get('BILLING_SERVICE_URL');
-      firstValueFrom(
-        this.http.post(`${billingUrl}/subscription/internal/subscription/init-free/${user.id}`, {}),
-      ).catch((err) =>
-        console.error('[Auth] Failed to init free subscription:', err.message),
-      );
     }
 
     return { ...this.tokens(user), isNewUser };

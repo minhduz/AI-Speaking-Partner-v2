@@ -9,7 +9,6 @@
     "dev": "npm run dev --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "orchestrator": "npm run start:dev -w apps/orchestrator",
-    "billing": "npm run start:dev -w apps/billing-service",
     "llm-gateway": "npm run start:dev -w apps/llm-gateway",
     "dictionary": "npm run start:dev -w apps/dictionary-service"
   }

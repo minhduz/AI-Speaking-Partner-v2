@@ -4,14 +4,11 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- ─── SCHEMAS ─────────────────────────────────────────────────
 CREATE SCHEMA IF NOT EXISTS speaking_app;
-CREATE SCHEMA IF NOT EXISTS billing;
 CREATE SCHEMA IF NOT EXISTS memory;
 CREATE SCHEMA IF NOT EXISTS dictionary;
 
 -- ─── SERVICE USERS ───────────────────────────────────────────
 DO $$ BEGIN CREATE USER orchestrator_user WITH PASSWORD 'orchestrator_pass';
-  EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN CREATE USER billing_user WITH PASSWORD 'billing_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN CREATE USER memory_user WITH PASSWORD 'memory_pass';
   EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -20,7 +17,6 @@ DO $$ BEGIN CREATE USER dictionary_user WITH PASSWORD 'dictionary_pass';
 
 GRANT ALL ON SCHEMA speaking_app TO orchestrator_user;
 GRANT USAGE ON SCHEMA speaking_app TO memory_user;
-GRANT ALL ON SCHEMA billing      TO billing_user;
 GRANT ALL ON SCHEMA memory       TO memory_user;
 GRANT ALL ON SCHEMA dictionary   TO dictionary_user;
 
@@ -93,114 +89,6 @@ CREATE INDEX IF NOT EXISTS idx_turns_session_id  ON speaking_app.turns(session_i
 CREATE INDEX IF NOT EXISTS idx_turns_user_id     ON speaking_app.turns(user_id);
 CREATE INDEX IF NOT EXISTS idx_turns_data        ON speaking_app.turns USING GIN(data);
 
--- ─── BILLING SCHEMA ──────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS billing.plans (
-  id            UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  name          VARCHAR   NOT NULL,
-  interval      VARCHAR   NOT NULL,
-  price_vnd     INT       DEFAULT 0,
-  token_limit   INT       DEFAULT 50000,
-  session_limit INT       DEFAULT 10,
-  is_active     BOOLEAN   DEFAULT true,
-  created_at    TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS billing.subscriptions (
-  id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id              UUID      NOT NULL,
-  plan_id              UUID      NOT NULL REFERENCES billing.plans(id),
-  status               VARCHAR   NOT NULL DEFAULT 'active',
-  current_period_start TIMESTAMP NOT NULL DEFAULT NOW(),
-  current_period_end   TIMESTAMP NOT NULL,
-  auto_renew           BOOLEAN   DEFAULT true,
-  cancelled_at         TIMESTAMP,
-  created_at           TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS billing.payment_orders (
-  id               UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id          UUID      NOT NULL,
-  plan_id          UUID      REFERENCES billing.plans(id),
-  order_type       VARCHAR   NOT NULL DEFAULT 'subscription',
-  addon_package_id UUID,
-  status           VARCHAR   NOT NULL DEFAULT 'pending',
-  amount_vnd       INT       NOT NULL,
-  content_code     VARCHAR   UNIQUE NOT NULL,
-  transaction_id   VARCHAR   UNIQUE,
-  qr_url           VARCHAR,
-  expires_at       TIMESTAMP NOT NULL,
-  paid_at          TIMESTAMP,
-  created_at       TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS billing.usage (
-  id             UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id        UUID      NOT NULL,
-  tokens_used    INT       DEFAULT 0,
-  sessions_used  INT       DEFAULT 0,
-  period_start   TIMESTAMP NOT NULL DEFAULT DATE_TRUNC('month', NOW()),
-  period_end     TIMESTAMP NOT NULL DEFAULT DATE_TRUNC('month', NOW()) + INTERVAL '1 month',
-  updated_at     TIMESTAMP DEFAULT NOW(),
-  UNIQUE(user_id, period_start)
-);
-
-CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id   ON billing.subscriptions(user_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_status    ON billing.subscriptions(status);
-CREATE INDEX IF NOT EXISTS idx_payment_orders_user_id  ON billing.payment_orders(user_id);
-CREATE INDEX IF NOT EXISTS idx_payment_content_code    ON billing.payment_orders(content_code);
-CREATE INDEX IF NOT EXISTS idx_usage_user_period       ON billing.usage(user_id, period_start);
-
-CREATE TABLE IF NOT EXISTS billing.billing_events (
-  id                   UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
-  sepay_transaction_id BIGINT    UNIQUE,
-  user_id              UUID,
-  event_type           VARCHAR   NOT NULL,
-  reference_code       VARCHAR,
-  payload              JSONB,
-  created_at           TIMESTAMPTZ DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_billing_events_sepay_txn
-  ON billing.billing_events(sepay_transaction_id)
-  WHERE sepay_transaction_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS billing.addon_packages (
-  id           UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
-  name         VARCHAR NOT NULL,
-  token_amount BIGINT  NOT NULL,
-  price_vnd    INT     NOT NULL,
-  is_active    BOOLEAN DEFAULT TRUE,
-  created_at   TIMESTAMP DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS billing.user_addons (
-  id               UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id          UUID    NOT NULL,
-  addon_package_id UUID    REFERENCES billing.addon_packages(id),
-  tokens_purchased BIGINT  NOT NULL,
-  tokens_remaining BIGINT  NOT NULL,
-  payment_order_id UUID,
-  expires_at       TIMESTAMP,
-  created_at       TIMESTAMP DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_user_addons_user_active
-  ON billing.user_addons(user_id) WHERE tokens_remaining > 0;
-
--- Seed plans
-INSERT INTO billing.plans (name, interval, price_vnd, token_limit, session_limit)
-VALUES
-  ('free',        'forever', 0,       50000, 10),
-  ('pro_monthly', 'month',   199000,  5000000, -1),
-  ('pro_yearly',  'year',    1990000, 5000000, -1)
-ON CONFLICT DO NOTHING;
-
--- Seed add-on packages
-INSERT INTO billing.addon_packages (name, token_amount, price_vnd)
-VALUES
-  ('Starter Pack',  500000,  49000),
-  ('Value Pack',   2000000, 149000),
-  ('Power Pack',   5000000, 299000)
-ON CONFLICT DO NOTHING;
-
 -- ─── MIGRATIONS for existing databases ───────────────────────
 -- Safe to run multiple times (ADD COLUMN IF NOT EXISTS is idempotent)
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id       VARCHAR UNIQUE;
@@ -211,10 +99,6 @@ ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS end_reason VARCHAR;
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS breakdown JSONB;
-
-ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS order_type       VARCHAR NOT NULL DEFAULT 'subscription';
-ALTER TABLE billing.payment_orders ADD COLUMN IF NOT EXISTS addon_package_id UUID;
-ALTER TABLE billing.payment_orders ALTER COLUMN plan_id DROP NOT NULL;
 
 -- ─── MEMORY SCHEMA ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS memory.memory_facts (
@@ -300,12 +184,10 @@ ALTER TABLE speaking_app.turns    OWNER TO orchestrator_user;
 
 -- Grant table-level permissions
 GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;
-GRANT ALL ON ALL TABLES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL TABLES IN SCHEMA memory       TO memory_user;
 GRANT ALL ON ALL TABLES IN SCHEMA dictionary   TO dictionary_user;
 GRANT SELECT (id) ON speaking_app.sessions TO memory_user;
 GRANT UPDATE (breakdown) ON speaking_app.sessions TO memory_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA speaking_app TO orchestrator_user;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA billing      TO billing_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA memory       TO memory_user;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA dictionary   TO dictionary_user;

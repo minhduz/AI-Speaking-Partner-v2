@@ -71,7 +71,6 @@ async def persist_node(state: dict) -> dict:
         await _append_short_term(user_id, session_id, "", greeting_text)
 
     asyncio.create_task(_append_short_term(user_id, session_id, transcript, full_response))
-    asyncio.create_task(_increment_billing(user_id, tokens_used))
     if turn_index == 1:
         writer = get_stream_writer()
         title = await _generate_title(session_id, transcript)
@@ -95,18 +94,6 @@ async def _append_short_term(user_id: str, session_id: str, user_msg: str, ai_ms
                 print(f"[persist] short-term append OK  user={user_id}  session={session_id[:8]}")
     except Exception as e:
         print(f"[persist] short-term append failed: {e}")
-
-
-async def _increment_billing(user_id: str, tokens_used: int):
-    try:
-        async with aiohttp.ClientSession() as s:
-            await s.post(
-                f"{settings.billing_service_url}/internal/usage/increment",
-                json={"user_id": user_id, "tokens_used": tokens_used},
-            )
-    except Exception as e:
-        print(f"[persist] billing increment failed: {e}")
-
 
 async def _generate_title(session_id: str, first_transcript: str) -> str | None:
     try:

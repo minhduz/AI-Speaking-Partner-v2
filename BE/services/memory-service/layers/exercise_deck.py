@@ -48,12 +48,36 @@ class ExerciseDeckService:
 
     @staticmethod
     async def create_deck(session_id: str, deck_data: dict) -> dict:
-        """Create or replace deck. deck_data should be the full deck object from generateDeck."""
+        """
+        Create or replace deck. deck_data should be the full deck object from
+        the orchestrator (legacy generateDeck or LessonService.startLesson).
+
+        Curriculum-first guard: if an existing deck for this session is tied
+        to a lesson_attempt_id, refuse to overwrite it unless the incoming
+        deck names the same lesson_attempt_id. This stops the legacy greeting
+        fire-and-forget path (and any other writer) from silently clobbering
+        a lesson deck mid-session.
+        """
+        incoming_attempt = deck_data.get("lesson_attempt_id")
+        existing = await ExerciseDeckService.get_deck(session_id)
+        if existing:
+            existing_attempt = existing.get("lesson_attempt_id")
+            if existing_attempt and existing_attempt != incoming_attempt:
+                log.warning(
+                    "[exercise_deck] refusing overwrite — session=%s already bound to lesson_attempt=%s, incoming=%s",
+                    session_id, existing_attempt, incoming_attempt,
+                )
+                return existing
         now = datetime.now(timezone.utc).isoformat()
         deck = {
             "id": deck_data.get("id") or f"deck-{session_id}",
             "session_id": session_id,
             "session_type": deck_data.get("session_type", "adaptive_training"),
+            # Lesson-aware fields (None for legacy/free-form decks).
+            "lesson_id": deck_data.get("lesson_id"),
+            "lesson_attempt_id": deck_data.get("lesson_attempt_id"),
+            "lesson_title": deck_data.get("lesson_title"),
+            "pass_score": deck_data.get("pass_score"),
             "mission": deck_data.get("mission", ""),
             "mission_source": deck_data.get("mission_source", "fallback"),
             "reason": deck_data.get("reason", ""),
