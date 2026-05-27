@@ -140,10 +140,14 @@ function LessonNode({
   item,
   isCurrent,
   onOpen,
+  xOffset,
+  yOffset,
 }: {
   item: LessonPathItem;
   isCurrent: boolean;
   onOpen: (id: string) => void;
+  xOffset: number;
+  yOffset: number;
 }) {
   const [hovered, setHovered] = useState(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -176,7 +180,13 @@ function LessonNode({
 
   return (
     <div
-      className="relative flex items-center justify-center"
+      className="absolute flex items-center justify-center"
+      style={{
+        left: xOffset,
+        top: yOffset,
+        transform: 'translate(-50%, -50%)',
+        zIndex: hovered ? 30 : 10,
+      }}
       onMouseEnter={openTooltip}
       onMouseLeave={closeTooltip}
     >
@@ -1029,21 +1039,14 @@ export default function HomePage() {
                               (path?.continue_lesson == null && lesson.lesson_id === path?.recommended_lesson?.lesson_id);
 
                             return (
-                              <div
+                              <LessonNode
                                 key={lesson.lesson_id}
-                                className="absolute"
-                                style={{
-                                  left: xOffset,
-                                  top: yOffset,
-                                  transform: 'translate(-50%, -50%)',
-                                }}
-                              >
-                                <LessonNode
-                                  item={lesson}
-                                  isCurrent={isCurrent}
-                                  onOpen={handleOpenLesson}
-                                />
-                              </div>
+                                item={lesson}
+                                isCurrent={isCurrent}
+                                onOpen={handleOpenLesson}
+                                xOffset={xOffset}
+                                yOffset={yOffset}
+                              />
                             );
                           })}
                         </div>

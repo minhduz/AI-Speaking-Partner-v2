@@ -277,6 +277,18 @@ export class SessionController {
     });
   }
 
+  // POST /session/:id/translate — translate a short text to Vietnamese
+  @Post(':id/translate')
+  @HttpCode(200)
+  translateText(
+    @Param('id') sessionId: string,
+    @Body('text') text: string,
+    @Req() req,
+  ) {
+    void sessionId;
+    return this.sessionService.translateToVietnamese(req.user.id, text ?? '');
+  }
+
   // POST /session/:id/deck — create or replace exercise deck for a session
   @Post(':id/deck')
   createDeck(@Param('id') sessionId: string, @Body() body: { mission_source?: string; cards?: any[] }) {
