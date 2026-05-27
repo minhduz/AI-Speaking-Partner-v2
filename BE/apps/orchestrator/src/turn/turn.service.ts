@@ -371,6 +371,11 @@ export class TurnService {
   }
 
   private async generateTitle(sessionId: string, firstTranscript: string) {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId },
+      select: ['id', 'lessonAttemptId'],
+    });
+    if (session?.lessonAttemptId) return;
     const llmUrl = this.cfg.get('LLM_GATEWAY_URL');
     const res = await firstValueFrom(
       this.http.post(`${llmUrl}/complete`, {

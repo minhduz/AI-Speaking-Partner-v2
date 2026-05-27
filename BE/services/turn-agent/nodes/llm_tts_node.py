@@ -5,6 +5,11 @@ import re
 import aiohttp
 from langgraph.config import get_stream_writer
 from db import settings
+from nodes.eval_logic import (
+    compute_card_update,
+    select_recovery_candidate,
+    deterministic_fallback_eval,
+)
 
 log = logging.getLogger("llm_tts")
 
@@ -313,76 +318,25 @@ async def llm_tts_node(state: dict) -> dict:
         # ── Phase 5 — Deck evaluation handling ────────────────────────────
         # When a deck is active, the LLM appends `EVAL:{...json...}` at the very end
         # of its response. produce() already split that block off from TTS so the
-        # user never hears it. Now: parse it, push an `eval` SSE event for instant
-        # FE button updates, and PUT the merged card_update to memory-service so the
-        # poll-based reconciliation (and Phase 6 consolidation) sees the result too.
-        if eval_started and state.get("deck_active") and state.get("session_id"):
-            parsed_eval = _parse_eval_block(eval_buffer)
-            if parsed_eval is not None:
-                card_index = int(state.get("card_index", 0))
-                prior_attempts = int(state.get("card_attempts", 0))
-                passed = bool(parsed_eval.get("passed"))
-
-                # Phase 7 — `confusion` retries don't count as attempts. The
-                # user asked for clarification, not failed the task. Without
-                # this, "what does that mean?" would burn 1 of 3 attempts and
-                # auto-advance prematurely.
-                detected = parsed_eval.get("detectedIssues") or []
-                detected_lower = [str(d).lower() for d in detected]
-                is_confusion_retry = (
-                    not passed and "confusion" in detected_lower
-                )
-                attempts = prior_attempts if is_confusion_retry else prior_attempts + 1
-
-                if passed:
-                    result = "passed"
-                elif attempts >= 3:
-                    result = "partial"
+        # user never hears it. Apply it (push an `eval` SSE event + PUT card_update
+        # to memory-service). If the LLM omitted/truncated/mangled the EVAL block,
+        # RECOVER one so the card is still evaluated — otherwise the (final) card
+        # stays attempts=0/result=null and the FE can never show Finish.
+        applied_eval = False
+        if state.get("deck_active") and state.get("session_id"):
+            if eval_started:
+                parsed_eval = _parse_eval_block(eval_buffer)
+                if parsed_eval is not None:
+                    applied_eval = await apply_card_eval(
+                        state, parsed_eval, sess, writer, source="llm"
+                    )
                 else:
-                    result = "not_passed"
-
-                card_update = {
-                    "status": "completed" if passed else "in_progress",
-                    "attempts": attempts,
-                    "result": result,
-                    "feedback": parsed_eval.get("feedback", ""),
-                    "next_action": parsed_eval.get("nextAction", "next_card"),
-                }
-
-                writer({
-                    "type": "eval",
-                    "data": parsed_eval,
-                    "card_index": card_index,
-                })
-
-                log.info(
-                    "[llm_tts] eval parsed  session=%s  card=%d  passed=%s  nextAction=%s  attempts=%d",
-                    state.get("session_id"), card_index, passed,
-                    parsed_eval.get("nextAction"), attempts,
-                )
-
-                try:
-                    async with sess.put(
-                        f"{settings.memory_service_url}/exercise-deck/{state['session_id']}/card",
-                        json=card_update,
-                    ) as r:
-                        if r.status != 200:
-                            log.warning(
-                                "[llm_tts] card update HTTP %s  session=%s",
-                                r.status, state.get("session_id"),
-                            )
-                        else:
-                            log.info(
-                                "[llm_tts] card updated via memory-service  session=%s  idx=%d",
-                                state.get("session_id"), card_index,
-                            )
-                except Exception as e:
-                    log.warning("[llm_tts] memory-service card update failed: %s", e)
-            else:
-                log.warning(
-                    "[llm_tts] EVAL block present but failed to parse  session=%s  raw=%r",
-                    state.get("session_id"), eval_buffer[:200],
-                )
+                    log.warning(
+                        "[llm_tts] EVAL block present but failed to parse  session=%s  raw=%r",
+                        state.get("session_id"), eval_buffer[:200],
+                    )
+            if not applied_eval:
+                await _recover_missing_eval(state, sess, writer, spoken_portion)
 
     input_tokens  = len(state["transcript"]) // 4
     # Count only the spoken portion against the user's quota — the EVAL block is
@@ -487,3 +441,121 @@ def _parse_deck_new_topic(raw: str) -> str | None:
         return None
     topic = (parsed.get("topic") or "").strip()
     return topic or None
+
+
+async def apply_card_eval(state: dict, parsed_eval: dict, sess, writer, *, source: str = "llm") -> bool:
+    """Turn a parsed EVAL into a card_update, emit the `eval` SSE event, and PUT
+    it to memory-service. Shared by the normal parsed-EVAL path and recovery.
+    Returns True only if memory-service accepted the update."""
+    card_index = int(state.get("card_index", 0) or 0)
+    card_total = int(state.get("card_total", 0) or 0)
+    card_type = (state.get("card_type") or "").strip()
+    prior_attempts = int(state.get("card_attempts", 0) or 0)
+
+    cu = compute_card_update(card_index, card_total, card_type, prior_attempts, parsed_eval)
+    passed = cu["status"] == "completed"
+
+    # SSE event for instant FE button updates — carry the normalized nextAction.
+    event_data = {
+        "passed": bool(parsed_eval.get("passed")),
+        "feedback": cu["feedback"],
+        "retryRecommended": bool(parsed_eval.get("retryRecommended", not passed)),
+        "nextAction": cu["next_action"],
+        "detectedIssues": parsed_eval.get("detectedIssues") or [],
+    }
+    writer({"type": "eval", "data": event_data, "card_index": card_index})
+    log.info(
+        "[llm_tts] eval applied (%s)  session=%s  card=%d  result=%s  nextAction=%s  attempts=%d",
+        source, state.get("session_id"), card_index, cu["result"], cu["next_action"], cu["attempts"],
+    )
+
+    try:
+        async with sess.put(
+            f"{settings.memory_service_url}/exercise-deck/{state['session_id']}/card",
+            json=cu,
+        ) as r:
+            if r.status != 200:
+                log.warning("[llm_tts] card update HTTP %s  session=%s", r.status, state.get("session_id"))
+                return False
+    except Exception as e:
+        log.warning("[llm_tts] memory-service card update failed: %s", e)
+        return False
+    return True
+
+
+async def _repair_eval(state: dict, candidate: str, assistant_feedback: str, sess) -> dict | None:
+    """Ask llm-gateway /complete for a strict JSON-only re-evaluation of
+    `candidate`. Returns a parsed-eval dict, or None on any failure."""
+    card_index = int(state.get("card_index", 0) or 0)
+    card_total = int(state.get("card_total", 0) or 0)
+    card_type = (state.get("card_type") or "").strip()
+    card_title = (state.get("card_title") or "").strip()
+    card_task = (state.get("card_task") or "").strip()
+    attempts = int(state.get("card_attempts", 0) or 0)
+
+    system = (
+        "You are an exercise evaluator. Output ONLY one JSON object — no prose, no "
+        "markdown fences. Schema: "
+        '{"passed": boolean, "feedback": string, "retryRecommended": boolean, '
+        '"nextAction": "retry"|"next_card"|"finish_session", "detectedIssues": string[]}. '
+        "Be forgiving: if the answer addresses the task with understandable meaning, passed=true."
+    )
+    user = (
+        f"Card {card_index + 1}/{card_total} (type={card_type}).\n"
+        f"Title: {card_title}\nTask: {card_task}\nAttempts so far: {attempts}\n"
+        f"Assistant feedback already given: {(assistant_feedback or '')[:500]}\n"
+        f"Learner answer to evaluate:\n{candidate[:1500]}\n"
+        "Return ONLY the JSON object."
+    )
+    try:
+        async with sess.post(
+            f"{settings.llm_gateway_url}/complete",
+            json={"system": system, "messages": [{"role": "user", "content": user}]},
+        ) as r:
+            if r.status != 200:
+                log.warning("[llm_tts] repair /complete HTTP %s  session=%s", r.status, state.get("session_id"))
+                return None
+            data = await r.json()
+    except Exception as e:
+        log.warning("[llm_tts] repair /complete failed: %s", e)
+        return None
+    return _parse_eval_block((data or {}).get("response_text") or "")
+
+
+async def _recover_missing_eval(state: dict, sess, writer, assistant_feedback: str) -> bool:
+    """Recover an evaluation when no valid EVAL was applied this turn. Picks a
+    candidate answer (current attempt, or the prior substantial answer for a
+    'what next?'-style stuck session), repairs it via LLM (deterministic
+    fallback if that fails), and applies it. No-op for UI/confusion/meta-only."""
+    if not (state.get("deck_active") and state.get("session_id")):
+        return False
+    candidate = select_recovery_candidate(
+        state.get("transcript"),
+        state.get("card_attempts", 0),
+        state.get("recent_messages", []),
+        (state.get("card_type") or "").strip(),
+    )
+    if not candidate:
+        return False
+
+    log.warning(
+        "[llm_tts] EVAL missing/invalid — recovering  session=%s  card=%d  candidate_words=%d",
+        state.get("session_id"), int(state.get("card_index", 0) or 0), len(candidate.split()),
+    )
+    parsed = await _repair_eval(state, candidate, assistant_feedback, sess)
+    if parsed is None:
+        prior = int(state.get("card_attempts", 0) or 0)
+        parsed = deterministic_fallback_eval(
+            (state.get("card_type") or "").strip(), candidate, prior + 1
+        )
+        if parsed is None:
+            log.error(
+                "[llm_tts] EVAL recovery FAILED (no repair, no fallback)  session=%s  card=%d",
+                state.get("session_id"), int(state.get("card_index", 0) or 0),
+            )
+            return False
+        log.error(
+            "[llm_tts] EVAL recovery via deterministic fallback  session=%s  card=%d",
+            state.get("session_id"), int(state.get("card_index", 0) or 0),
+        )
+    return await apply_card_eval(state, parsed, sess, writer, source="recovery")

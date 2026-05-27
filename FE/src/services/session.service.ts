@@ -1,5 +1,6 @@
 import { getAccessToken, tryRefresh } from '@/lib/http-client';
 import type { GreetingEvent, SessionSummary, TurnHistoryPage, TurnEvent } from '@/types/session.types';
+import type { AiReview, TeacherReviewView } from '@/services/lesson.service';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
@@ -131,6 +132,7 @@ export interface ExerciseDeck {
   lesson_id?: string | null;
   lesson_attempt_id?: string | null;
   lesson_title?: string | null;
+  level?: string | null;
   pass_score?: number | null;
 }
 
@@ -184,6 +186,19 @@ export interface SessionEvaluation {
   skill_radar?: SessionEvaluationSkill[];
   recurring_pattern?: SessionEvaluationPattern | null;
   next_drill?: SessionEvaluationDrill | null;
+  lesson_result?: {
+    attempt_id: string;
+    lesson_title: string | null;
+    status: string;
+    score: number | null;
+    final_score: number | null;
+    pass_score: number | null;
+    teacher_review_status: string | null;
+    reviewed_at: string | null;
+    /** Both scoring views — drive the AI / Teacher tabs in the breakdown panel. */
+    ai_review?: AiReview;
+    teacher_review?: TeacherReviewView;
+  } | null;
   stats: {
     user_turns: number;
     cards_completed: number;
@@ -467,6 +482,26 @@ export const sessionService = {
     return data;
   },
 
+  // Out-of-band upload of one user turn's captured audio (multipart). Never
+  // awaited on the realtime path. Browser sets the multipart Content-Type.
+  uploadTurnAudio: async (
+    sessionId: string,
+    blob: Blob,
+    opts: { turnIndex?: number; transcript?: string; durationMs?: number; clientTurnId?: string },
+  ): Promise<void> => {
+    const fd = new FormData();
+    fd.append('file', blob, 'turn.webm');
+    if (opts.turnIndex != null) fd.append('turn_index', String(opts.turnIndex));
+    if (opts.transcript) fd.append('transcript', opts.transcript);
+    if (opts.durationMs != null) fd.append('duration_ms', String(opts.durationMs));
+    if (opts.clientTurnId) fd.append('client_turn_id', opts.clientTurnId);
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/turn-audio`, {
+      method: 'POST',
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`turn-audio upload failed: ${res.status}`);
+  },
+
   getDeck: async (sessionId: string): Promise<ExerciseDeck | null> => {
     const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck`);
     if (!res.ok) return null;
@@ -488,12 +523,22 @@ export const sessionService = {
     return data as SessionEvaluation;
   },
 
-  advanceDeckCard: async (sessionId: string): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+  // Returns the updated deck (orchestrator echoes memory-service state) so the
+  // caller can reconcile from the PUT response instead of a racy follow-up GET.
+  advanceDeckCard: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
   },
 
-  skipDeckCard: async (sessionId: string): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+  skipDeckCard: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
   },
 
   acceptDeckChallenge: async (sessionId: string): Promise<void> => {

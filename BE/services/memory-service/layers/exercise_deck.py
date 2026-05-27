@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from db import redis_client
+from layers.deck_logic import advance_deck_state, is_terminal_card  # noqa: F401
 
 log = logging.getLogger("exercise_deck")
 
@@ -115,28 +116,19 @@ class ExerciseDeckService:
 
     @staticmethod
     async def move_to_next_card(session_id: str) -> dict | None:
-        """Advance current_card_index by 1. Auto-completes deck when last card is passed."""
+        """Advance to the next card. Idempotent + safe — the transition lives in
+        layers.deck_logic.advance_deck_state (pure, unit-tested)."""
         deck = await ExerciseDeckService.get_deck(session_id)
         if not deck:
             return None
-        if deck.get("status") == "not_started":
-            deck["status"] = "in_progress"
-        idx = deck.get("current_card_index", 0) + 1
-        deck["current_card_index"] = idx
-        if idx >= len(deck.get("cards", [])):
-            cards = deck.get("cards", [])
-            any_completed = any(c.get("status") == "completed" for c in cards)
-            if any_completed:
-                deck["status"] = "completed"
-                deck["end_reason"] = "completed_deck"
-                log.info("[exercise_deck] deck completed  session=%s", session_id)
-            else:
-                # All cards were skipped — user didn't attempt any exercise.
-                # Mark as ended_early so the AI says "no problem" rather than
-                # a completion message that implies the user did the exercises.
-                deck["status"] = "ended_early"
-                deck["end_reason"] = "user_skipped_all"
-                log.info("[exercise_deck] deck ended_early (all skipped)  session=%s", session_id)
+        before = (deck.get("current_card_index"), deck.get("status"))
+        deck = advance_deck_state(deck)
+        after = (deck.get("current_card_index"), deck.get("status"))
+        if after != before:
+            log.info(
+                "[exercise_deck] /next session=%s  idx %s→%s  status=%s",
+                session_id, before[0], after[0], deck.get("status"),
+            )
         return await ExerciseDeckService.save_deck(session_id, deck)
 
     @staticmethod

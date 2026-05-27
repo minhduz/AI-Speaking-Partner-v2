@@ -3,7 +3,9 @@
     "allow": [
       "Bash(docker exec *)",
       "WebFetch(domain:soniox.com)",
-      "Bash(xargs grep -l \"turn.*event\\\\|stream\\\\|SSE\\\\|fetch.*turn\")"
+      "Bash(xargs grep -l \"turn.*event\\\\|stream\\\\|SSE\\\\|fetch.*turn\")",
+      "Bash(npx eslint *)",
+      "Bash(npx next *)"
     ]
   }
 }

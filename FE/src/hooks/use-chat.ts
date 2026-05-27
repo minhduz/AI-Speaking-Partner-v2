@@ -136,6 +136,8 @@ export interface UseChatReturn {
   sessionStarted: boolean;
   currentDeck: ExerciseDeck | null;
   lighterMode: boolean;
+  /** True while a Next/Skip advance is in flight — disable deck controls. */
+  isAdvancingDeck: boolean;
   advanceDeckCard: () => Promise<void>;
   skipDeckCard: () => Promise<void>;
   acceptDeckChallenge: () => Promise<void>;
@@ -360,6 +362,11 @@ export function useChat(
   const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
   const [lighterMode, setLighterMode] = useState(false);
   const [sessionStarted, setSessionStarted] = useState(false);
+  // Guards deck advancement (Next/Skip) so rapid/double taps or a duplicate
+  // render can't fire /deck/next more than once before the UI updates — the
+  // root cause of decks completing while only 2/4 cards were done.
+  const [isAdvancingDeck, setIsAdvancingDeck] = useState(false);
+  const deckAdvanceInFlightRef = useRef(false);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -369,6 +376,12 @@ export function useChat(
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  // Side-channel user-audio capture: the SAME MediaRecorder chunks that stream
+  // to STT are also collected here, assembled into a Blob on stop, and uploaded
+  // out-of-band. This NEVER blocks or alters the realtime STT/LLM path.
+  const audioChunksRef = useRef<Blob[]>([]);
+  const pendingTurnAudioRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
+  const turnAudioSeqRef = useRef(0);
   const initializedRef = useRef(false);
   // Tracks whether THIS component instance is still mounted. The greeting stream
   // is owned at module level and outlives a route-change unmount, so its
@@ -953,6 +966,8 @@ export function useChat(
   const checkVolumeIntervalRef = useRef<number | null>(null);
 
   const startRecording = useCallback(async () => {
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
     // Re-use the AudioContext pre-created by startMic in the gesture handler.
@@ -1023,11 +1038,17 @@ export function useChat(
 
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
+    audioChunksRef.current = [];
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-        e.data.arrayBuffer().then((buf) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(buf);
-        });
+      if (e.data.size > 0) {
+        // Side-channel capture (does not affect STT — the WS send below is
+        // byte-for-byte unchanged).
+        audioChunksRef.current.push(e.data);
+        if (ws.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then((buf) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(buf);
+          });
+        }
       }
     };
     recorder.start(50);
@@ -1044,6 +1065,16 @@ export function useChat(
       const ws = sttWsRef.current;
       sttDoneResolverRef.current = resolve;
       recorder.onstop = () => {
+        // Side-channel: assemble captured chunks into a Blob for out-of-band
+        // upload. Pure local work — STT end-signal below is unchanged.
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        if (chunks.length > 0 && hasSpokenRef.current) {
+          const mimeType = recorder.mimeType || 'audio/webm';
+          pendingTurnAudioRef.current = { blob: new Blob(chunks, { type: mimeType }), mimeType };
+        } else {
+          pendingTurnAudioRef.current = null;
+        }
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ end: true }));
         } else {
@@ -1061,6 +1092,9 @@ export function useChat(
   // ── Turn flow ───────────────────────────────────────────────────────────────
   const processTurn = useCallback(async (transcript: string) => {
     const trimmedTranscript = transcript.trim();
+    if (!trimmedTranscript) {
+      pendingTurnAudioRef.current = null;
+    }
     let sessionId = sessionIdRef.current;
     const requestedMode = nextSessionMode;
     let effectiveSessionMode = activeSessionMode;
@@ -1070,7 +1104,11 @@ export function useChat(
     // said out loud) is preserved as turn 0 in short-term memory.
     const isFirstTurnOfSession = !sessionId;
     if (!sessionId) {
-      if (!trimmedTranscript) return;
+      if (!trimmedTranscript) {
+        pendingTurnAudioRef.current = null;
+        audioChunksRef.current = [];
+        return;
+      }
 
       console.log(
         `[mode-debug] START → requestedMode=${requestedMode} nextSessionMode=${nextSessionMode} ` +
@@ -1087,6 +1125,7 @@ export function useChat(
               console.log(`[mode-debug] START RESPONSE → BE mode=${mode} is_first_session=${is_first_session} (requested=${requestedMode})`);
               const resolvedMode = mode ?? requestedMode;
               sessionIdRef.current = session_id;
+              turnAudioSeqRef.current = 0;
               setCurrentSessionId(session_id);
               isFirstSessionRef.current = Boolean(is_first_session);
               effectiveSessionMode = resolvedMode;
@@ -1105,6 +1144,8 @@ export function useChat(
           window.setTimeout(() => { void pollDeck(); }, 1800);
         }
       } catch {
+        pendingTurnAudioRef.current = null;
+        audioChunksRef.current = [];
         setMessages((prev) => prev.filter((m) => !m.pending));
         setErrorMessage('Failed to start session');
         setStatus('error');
@@ -1140,6 +1181,23 @@ export function useChat(
       // Future "New Chat" within the same auth lifetime will re-stream a fresh
       // greeting via runGreeting().
       delete _greetingTextCache[requestedMode];
+    }
+
+    // Side-channel: upload this turn's captured audio. Fire-and-forget — we do
+    // NOT await it before streaming the AI turn, so realtime speed is untouched.
+    const pendingAudio = pendingTurnAudioRef.current;
+    pendingTurnAudioRef.current = null;
+    if (pendingAudio && pendingAudio.blob.size > 0 && sessionId) {
+      const turnIndex = turnAudioSeqRef.current++;
+      const clientTurnId =
+        typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
+      void sessionService
+        .uploadTurnAudio(sessionId, pendingAudio.blob, {
+          turnIndex,
+          transcript: trimmedTranscript || undefined,
+          clientTurnId,
+        })
+        .catch((e) => console.warn('[turn-audio] upload failed (non-blocking):', e));
     }
 
     try {
@@ -1266,6 +1324,9 @@ export function useChat(
     setEvaluationLoading(false);
     setEndedLessonAttemptId(null);
     endedSessionIdRef.current = null;
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
     setIsEnding(false);
     setClosingText(null);
     // Clear the just-ended session's mode now that the recap is dismissed —
@@ -1324,6 +1385,9 @@ export function useChat(
     sttDoneResolverRef.current = null;
     pendingStopRef.current = false;
     isStoppingRef.current = false;
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
 
     sessionStartPromiseRef.current = null;
     setSessionStarted(false);
@@ -1462,61 +1526,80 @@ export function useChat(
   // without adding endSession to processTurn's dependency array.
   useEffect(() => { endSessionRef.current = endSession; }, [endSession]);
 
-  const advanceDeckCard = useCallback(async () => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      await sessionService.advanceDeckCard(sessionId);
-      const deck = await sessionService.getDeck(sessionId);
-      setCurrentDeck(deck);
-      if (deck) {
+  // A deck is only LEGITIMATELY finished when its status says so AND every card
+  // is terminal (completed/skipped, or the evaluator emitted next_card/
+  // finish_session). This blocks ending the session on a stale/malformed
+  // "completed" deck that still has not_started cards (which would finalize the
+  // lesson and score the unstarted cards as 0).
+  const isDeckActuallyComplete = useCallback((deck: ExerciseDeck | null): boolean => {
+    if (!deck) return false;
+    if (deck.status !== 'completed' && deck.status !== 'ended_early') return false;
+    const cards = deck.cards ?? [];
+    if (cards.length === 0) return true;
+    return cards.every(
+      (c) =>
+        c?.status === 'completed' ||
+        c?.status === 'skipped' ||
+        c?.next_action === 'next_card' ||
+        c?.next_action === 'finish_session',
+    );
+  }, []);
+
+  // Shared handler for Next (advance) and Skip — both mutate the same deck and
+  // must be serialized behind one in-flight guard.
+  const runDeckAction = useCallback(
+    async (action: 'advance' | 'skip') => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      // Idempotency guard: ignore concurrent/rapid taps until this one settles.
+      if (deckAdvanceInFlightRef.current) return;
+      deckAdvanceInFlightRef.current = true;
+      setIsAdvancingDeck(true);
+      try {
+        const deck =
+          action === 'skip'
+            ? await sessionService.skipDeckCard(sessionId)
+            : await sessionService.advanceDeckCard(sessionId);
+        if (!deck) return;
+        // Reconcile, but never let this clobber a further-advanced deck.
+        setCurrentDeck((prev) =>
+          prev && deck.current_card_index < prev.current_card_index ? prev : deck,
+        );
+
         if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
           // More cards remain — AI introduces the next one.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Curriculum-first: a lesson deck reaching completed means the user
-          // pressed Finish on the final card. End the session immediately so
-          // LessonAttempt is finalized (status/score/next_action) instead of
-          // sitting in_progress until the user manually taps End.
+          // Only finalize/transition when the deck is genuinely complete. A
+          // partial deck reported as completed is treated as a no-op (the BE
+          // guard should prevent it, but we fail safe here too).
+          if (!isDeckActuallyComplete(deck)) {
+            console.warn('[deckAction] ignoring premature completion', {
+              status: deck.status,
+              idx: deck.current_card_index,
+            });
+            return;
+          }
+          // Curriculum-first: a finished lesson deck ends the session so the
+          // LessonAttempt is finalized; legacy decks transition to free chat.
           if (deck.lesson_attempt_id) {
             void endSessionRef.current('user_clicked');
             return;
           }
-          // Non-lesson decks (legacy paths): AI transitions back to free chat.
           void processTurn('');
         }
+      } catch (err) {
+        console.error(`[deckAction:${action}]`, err);
+      } finally {
+        deckAdvanceInFlightRef.current = false;
+        setIsAdvancingDeck(false);
       }
-    } catch (err) {
-      console.error('[advanceDeckCard]', err);
-    }
-  }, [processTurn]);
+    },
+    [processTurn, isDeckActuallyComplete],
+  );
 
-  const skipDeckCard = useCallback(async () => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      await sessionService.skipDeckCard(sessionId);
-      const deck = await sessionService.getDeck(sessionId);
-      setCurrentDeck(deck);
-      if (deck) {
-        if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
-          // Mid-deck skip: AI introduces the next card's task.
-          void processTurn('');
-        } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Skipping the LAST card of a lesson also finalizes — otherwise the
-          // user has to press End manually after skipping the final boss.
-          if (deck.lesson_attempt_id) {
-            void endSessionRef.current('user_clicked');
-            return;
-          }
-          // Last card skipped: AI asks what was difficult or if user wants another topic.
-          void processTurn('');
-        }
-      }
-    } catch (err) {
-      console.error('[skipDeckCard]', err);
-    }
-  }, [processTurn]);
+  const advanceDeckCard = useCallback(() => runDeckAction('advance'), [runDeckAction]);
+  const skipDeckCard = useCallback(() => runDeckAction('skip'), [runDeckAction]);
 
   const acceptDeckChallenge = useCallback(async () => {
     const sessionId = sessionIdRef.current;
@@ -1632,6 +1715,8 @@ export function useChat(
       .then((transcript) => {
         isStoppingRef.current = false;
         if (!hasSpokenRef.current) {
+          pendingTurnAudioRef.current = null;
+          audioChunksRef.current = [];
           setMessages((prev) => prev.filter((m) => !m.pending));
           setErrorMessage("You didn't say anything. Please try again.");
           if (!sessionIdRef.current) setSessionStarted(false);
@@ -1726,6 +1811,9 @@ export function useChat(
 
     sessionStartPromiseRef.current = null;
     setSessionStarted(false);
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
       sessionService.end(prevSessionId, 'user_clicked').catch(console.error);
@@ -1789,6 +1877,7 @@ export function useChat(
     sessionStarted,
     currentDeck,
     lighterMode,
+    isAdvancingDeck,
     advanceDeckCard,
     skipDeckCard,
     acceptDeckChallenge,

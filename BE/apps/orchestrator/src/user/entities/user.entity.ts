@@ -1,4 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { UserRole } from '../user-role.enum';
 
 @Entity({ schema: 'speaking_app', name: 'users' })
 export class User {
@@ -6,6 +7,7 @@ export class User {
   @Column({ unique: true }) email: string;
   @Column({ name: 'password_hash', select: false }) passwordHash: string;
   @Column() name: string;
+  @Column({ type: 'varchar', default: UserRole.STUDENT }) role: string;
   @Column({ name: 'google_id', nullable: true, unique: true }) googleId: string;
   @Column({ name: 'target_language', default: 'english' }) targetLanguage: string;
   @Column({ default: 'beginner' }) level: string;

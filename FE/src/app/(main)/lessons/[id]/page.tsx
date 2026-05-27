@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { ArrowLeft, Play, Lock, CheckCircle2, RotateCcw, Star, Sparkles } from 'lucide-react';
+import { ArrowLeft, Play, Lock, CheckCircle2, RotateCcw, Star, Sparkles, ListChecks } from 'lucide-react';
 import { Sidebar } from '@/components/chat/sidebar/sidebar';
 import { PageHeader } from '@/components/shared/page-header';
 import { useAuthContext } from '@/contexts/auth-context';
@@ -12,6 +12,7 @@ const STATE_LABEL: Record<LessonDetail['progress']['state'], { text: string; ton
   locked:      { text: 'Locked',       tone: '#6f7b64', bg: '#f3f3f3' },
   unlocked:    { text: 'Ready',        tone: '#1e5000', bg: '#e8f9d3' },
   in_progress: { text: 'In progress',  tone: '#5b3f00', bg: '#fff3c4' },
+  under_review:{ text: 'Reviewing',    tone: '#1e3a7a', bg: '#dceaff' },
   completed:   { text: 'Completed',    tone: '#1e5000', bg: '#bdee8c' },
   needs_retry: { text: 'Needs retry',  tone: '#7a1e1e', bg: '#fde2e2' },
 };
@@ -134,6 +135,14 @@ export default function LessonDetailPage() {
                       style={{ background: '#e2e2e2', color: '#6f7b64' }}
                     >
                       <Lock size={18} /> Complete the previous lesson to unlock
+                    </button>
+                  ) : detail.progress.state === 'under_review' ? (
+                    <button
+                      disabled
+                      className="inline-flex items-center gap-2 px-5 py-3 rounded-2xl font-extrabold opacity-80 cursor-not-allowed"
+                      style={{ background: '#dceaff', color: '#1e3a7a', boxShadow: '0 4px 0 #9bbcff' }}
+                    >
+                      <ListChecks size={18} /> Waiting for teacher review
                     </button>
                   ) : (
                     <button

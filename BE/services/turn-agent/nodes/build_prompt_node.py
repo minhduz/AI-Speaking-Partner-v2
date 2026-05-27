@@ -535,8 +535,10 @@ def _build_card_context_block(state: dict) -> str:
             "add ONE warm transition sentence like: \"Want to give one more a shot? "
             "Tap Next when you're ready!\" Do NOT describe the next card.\n"
             if card_index + 1 < card_total else
-            "3. After the user answers well, give short positive feedback. "
-            "Do NOT say 'want to try one more' or 'tap Next' — this is the last card.\n"
+            "3. After the user answers well, give SHORT positive feedback (1-2 sentences) "
+            "and invite them to finish, e.g. \"Tap Finish when you're ready!\" "
+            "Do NOT say 'tap Next' or 'want to try one more' — this is the last card. "
+            "Keep it brief so the EVAL block below is never truncated.\n"
         ) +
         "4. If the user has not answered yet, invite them to answer the card task directly.\n"
         "5. If the user drifts, acknowledge briefly and redirect to the card.\n"
@@ -550,12 +552,17 @@ def _build_card_context_block(state: dict) -> str:
             "\nDo NOT output an EVAL block this turn — the user has not attempted the task yet.\n"
             if not transcript else
             "\nAFTER RESPONDING, append EXACTLY this JSON on a new line — no prose, no markdown fences:\n"
-            'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"next_card","detectedIssues":[]}\n'
-            'If the user failed: EVAL:{"passed":false,"feedback":"one coaching sentence","retryRecommended":true,"nextAction":"retry","detectedIssues":["confusion"]}\n'
-            'RULES: "passed" must be true or false. "nextAction" must be exactly "retry", "next_card", or "finish_session".\n'
-            'CRITICAL: the block MUST start with exactly EVAL:{ — do NOT write EVALUATION: or any other format.\n'
             + (
-                "This is the LAST card. If passed=true, set nextAction=\"finish_session\".\n"
+                # Last card → the success example MUST use finish_session.
+                'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"finish_session","detectedIssues":[]}\n'
+                if card_index + 1 >= card_total else
+                'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"next_card","detectedIssues":[]}\n'
+            )
+            + 'If the user failed: EVAL:{"passed":false,"feedback":"one coaching sentence","retryRecommended":true,"nextAction":"retry","detectedIssues":["confusion"]}\n'
+            'RULES: "passed" must be true or false. "nextAction" must be exactly "retry", "next_card", or "finish_session".\n'
+            'CRITICAL: the block MUST start with exactly EVAL:{ — do NOT write EVALUATION: or any other format. ALWAYS include the EVAL block when the user attempted the task.\n'
+            + (
+                "This is the LAST card. If passed=true OR this is the 3rd attempt, set nextAction=\"finish_session\".\n"
                 if card_index + 1 >= card_total else
                 "This is NOT the last card. If passed=true, set nextAction=\"next_card\".\n"
             )

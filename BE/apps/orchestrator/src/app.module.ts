@@ -11,6 +11,8 @@ import { HistoryModule } from "./history/history.module";
 import { ProgressModule } from "./progress/progress.module";
 import { DictionaryModule } from "./dictionary/dictionary.module";
 import { LessonModule } from "./lesson/lesson.module";
+import { AdminModule } from "./admin/admin.module";
+import { TurnAudioModule } from "./turn/turn-audio.module";
 
 @Module({
   imports: [
@@ -43,6 +45,8 @@ import { LessonModule } from "./lesson/lesson.module";
     ProgressModule,
     DictionaryModule,
     LessonModule,
+    AdminModule,
+    TurnAudioModule,
   ],
 })
 export class AppModule {}
