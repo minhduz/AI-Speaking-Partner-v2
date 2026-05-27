@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { LoginForm } from '@/components/auth/login-form/login-form';
 import { useAuth } from '@/hooks/use-auth';
+import { homePathForRole } from '@/lib/roles';
 
 export function LoginFormContainer() {
   const { isLoading, error, handleLogin, handleGoogleAuth } = useAuth();
@@ -19,8 +20,7 @@ export function LoginFormContainer() {
       console.log('[LoginContainer] new user → push /register?from=google');
       router.push('/register?from=google');
     } else {
-      console.log('[LoginContainer] existing user → push /home');
-      router.push('/home');
+      router.push(homePathForRole(result.role));
     }
   };
 

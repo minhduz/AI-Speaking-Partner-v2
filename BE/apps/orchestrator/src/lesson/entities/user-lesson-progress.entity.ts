@@ -10,6 +10,7 @@ export type LessonProgressState =
   | 'locked'
   | 'unlocked'
   | 'in_progress'
+  | 'under_review'
   | 'completed'
   | 'needs_retry';
 

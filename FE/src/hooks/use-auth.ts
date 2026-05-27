@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { authService } from '@/services/auth.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import { stopAllAudio } from './use-chat';
+import { roleFromToken, homePathForRole } from '@/lib/roles';
 import type { LoginRequest, RegisterRequest } from '@/types/auth.types';
 
 export function useAuth() {
@@ -19,7 +20,7 @@ export function useAuth() {
     try {
       const { access_token } = await authService.login(credentials);
       login(access_token);
-      router.push('/home');
+      router.push(homePathForRole(roleFromToken(access_token)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -50,6 +51,7 @@ export function useAuth() {
     setError(null);
     try {
       const { access_token, isNewUser } = await authService.googleAuth(credential);
+      const role = roleFromToken(access_token);
       console.log('[handleGoogleAuth] isNewUser:', isNewUser, '| hasOnRedirect:', !!onRedirect);
       login(access_token);
 
@@ -57,16 +59,15 @@ export function useAuth() {
         console.log('[handleGoogleAuth] calling onRedirect');
         onRedirect();
       } else if (!isNewUser) {
-        console.log('[handleGoogleAuth] existing user → push /home');
-        router.push('/home');
+        router.push(homePathForRole(role));
       } else {
         console.log('[handleGoogleAuth] new user, no onRedirect → letting caller handle');
       }
 
-      return { isNewUser };
+      return { isNewUser, role };
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Google authentication failed');
-      return { isNewUser: false };
+      return { isNewUser: false, role: 'student' as const };
     } finally {
       setIsLoading(false);
     }

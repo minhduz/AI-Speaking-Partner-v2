@@ -14,7 +14,13 @@ import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
 import { sessionService, type DeckCard, type ExerciseDeck, type SessionEvaluation } from '@/services/session.service';
-import { lessonService, type LessonAttemptResult } from '@/services/lesson.service';
+import {
+  lessonService,
+  type LessonAttemptResult,
+  type AiReview,
+  type TeacherReviewView,
+  type TeacherReviewFeedback,
+} from '@/services/lesson.service';
 import { LessonToolbox, LessonToolboxTrigger } from '@/components/chat/lesson-toolbox/lesson-toolbox';
 import type { LessonToolboxContext } from '@/components/chat/lesson-toolbox/lesson-toolbox';
 
@@ -91,6 +97,7 @@ export default function ChatPage() {
     sessionStarted,
     currentDeck,
     lighterMode,
+    isAdvancingDeck,
     advanceDeckCard,
     skipDeckCard,
     acceptDeckChallenge,
@@ -276,7 +283,7 @@ export default function ChatPage() {
   const toolboxCtx: LessonToolboxContext = {
     sessionId: currentSessionId ?? undefined,
     topic: currentDeck?.lesson_title ?? currentDeck?.mission_source ?? undefined,
-    level: (currentDeck as any)?.level ?? undefined,
+    level: currentDeck?.level ?? undefined,
     currentTask: activeDeckCard?.task
       ?? (currentDeck?.status === 'in_progress' ? currentDeck.cards[currentDeck.current_card_index]?.task : undefined)
       ?? undefined,
@@ -449,7 +456,7 @@ export default function ChatPage() {
                   key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
                   deck={currentDeck!}
                   isLighter={lighterMode}
-                  isProcessing={status === 'processing' || isSpeaking}
+                  isProcessing={status === 'processing' || status === 'greeting' || isSpeaking}
                   onAccept={() => void acceptDeckChallenge()}
                   onReject={() => void rejectDeckChallenge()}
                   onFreeTalk={() => void chooseDeckFreeTalk()}
@@ -457,6 +464,7 @@ export default function ChatPage() {
                   onEnd={() => void chooseDeckEnd()}
                   onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                   onSkip={() => void skipDeckCard()}
+                  isAdvancing={isAdvancingDeck}
                 />
               )}
             </div>
@@ -656,7 +664,7 @@ export default function ChatPage() {
                     key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}-inline`}
                     deck={currentDeck!}
                     isLighter={lighterMode}
-                    isProcessing={status === 'processing' || isSpeaking}
+                    isProcessing={status === 'processing' || status === 'greeting' || isSpeaking}
                     onAccept={() => void acceptDeckChallenge()}
                     onReject={() => void rejectDeckChallenge()}
                     onFreeTalk={() => void chooseDeckFreeTalk()}
@@ -664,6 +672,7 @@ export default function ChatPage() {
                     onEnd={() => void chooseDeckEnd()}
                     onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                     onSkip={() => void skipDeckCard()}
+                    isAdvancing={isAdvancingDeck}
                   />
                 </div>
               )}
@@ -1131,7 +1140,18 @@ function CompletionRing({ done, total }: { done: number; total: number }) {
 // Reusable breakdown body — used full-screen after a session (EvaluationBoard)
 // and embedded in the History split view. `compact` collapses the dual-column
 // layouts and shrinks typography so the same component fits a ~420px aside.
-function EvaluationContent({ evaluation, compact = false }: { evaluation: SessionEvaluation; compact?: boolean }) {
+function EvaluationContent({
+  evaluation,
+  compact = false,
+  reviewRequested,
+  onReviewRequested,
+}: {
+  evaluation: SessionEvaluation;
+  compact?: boolean;
+  /** Shared with a sibling request button so both reflect the same pending state. */
+  reviewRequested?: boolean;
+  onReviewRequested?: () => void;
+}) {
   const s = evaluation.stats;
   const highlights = evaluation.highlights ?? [];
   const growthAreas = evaluation.growth_areas ?? [];
@@ -1141,6 +1161,20 @@ function EvaluationContent({ evaluation, compact = false }: { evaluation: Sessio
   const skillRadar = evaluation.skill_radar ?? [];
   const recurringPattern = evaluation.recurring_pattern;
   const nextDrill = evaluation.next_drill;
+  const lessonResult = evaluation.lesson_result ?? null;
+  const lessonScore = lessonResult?.final_score ?? lessonResult?.score ?? null;
+  const scoreLabel =
+    lessonResult?.teacher_review_status === 'revised' ? 'Teacher score' :
+    lessonResult?.teacher_review_status === 'approved' ? 'Teacher score' :
+    'Score';
+  const heroStats = [
+    ...(lessonScore != null
+      ? [{ label: scoreLabel, value: String(lessonScore) }]
+      : []),
+    { label: 'Turns', value: String(s.user_turns) },
+    { label: 'Exercises', value: s.cards_total ? `${s.cards_completed}/${s.cards_total}` : '-' },
+    { label: 'Minutes', value: s.duration_minutes != null ? String(s.duration_minutes) : '-' },
+  ];
   const resultColor = (r: string | null) =>
     r === 'passed' ? '#2b6c00' : r === 'partial' ? '#683a00' : r === 'not_passed' ? '#9b1c1c' : '#6f7b64';
   const resultLabel = (r: string | null) =>
@@ -1162,12 +1196,14 @@ function EvaluationContent({ evaluation, compact = false }: { evaluation: Sessio
       <section className={`rounded-[28px] bg-white ${compact ? 'p-4' : 'p-5 sm:p-6'}`} style={{ border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' }}>
         <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#2b6c00' }}>Session breakdown</p>
         <p className={`mt-3 font-black leading-tight ${compact ? 'text-lg' : 'text-2xl sm:text-3xl'}`} style={{ color: '#1a1c1c' }}>{evaluation.summary}</p>
-        <div className={`mt-5 grid grid-cols-3 ${compact ? 'gap-2' : 'gap-2 sm:gap-3'}`}>
-          {[
-            { label: 'Turns', value: String(s.user_turns) },
-            { label: 'Exercises', value: s.cards_total ? `${s.cards_completed}/${s.cards_total}` : '-' },
-            { label: 'Minutes', value: s.duration_minutes != null ? String(s.duration_minutes) : '-' },
-          ].map((stat) => (
+        {lessonResult?.lesson_title && (
+          <p className="mt-2 text-xs font-bold" style={{ color: '#6f7b64' }}>
+            {lessonResult.lesson_title}
+            {lessonResult.teacher_review_status === 'revised' ? ' · teacher revised' : ''}
+          </p>
+        )}
+        <div className={`mt-5 grid ${heroStats.length === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'} ${compact ? 'gap-2' : 'gap-2 sm:gap-3'}`}>
+          {heroStats.map((stat) => (
             <div key={stat.label} className={`rounded-2xl text-center ${compact ? 'px-1 py-2' : 'px-2 py-3'}`} style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
               <p className={`font-black ${compact ? 'text-lg' : 'text-2xl'}`} style={{ color: '#1a1c1c' }}>{stat.value}</p>
               <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>{stat.label}</p>
@@ -1175,6 +1211,18 @@ function EvaluationContent({ evaluation, compact = false }: { evaluation: Sessio
           ))}
         </div>
       </section>
+
+      {/* ── Score breakdown: AI vs Teacher tabs ── */}
+      {lessonResult && (lessonResult.ai_review || lessonResult.teacher_review) && (
+        <LessonScoreBreakdown
+          aiReview={lessonResult.ai_review}
+          teacherReview={lessonResult.teacher_review}
+          attemptId={lessonResult.attempt_id ?? null}
+          compact={compact}
+          externalRequested={reviewRequested}
+          onRequested={onReviewRequested}
+        />
+      )}
 
       {/* ── Skill radar (SVG chart + per-skill evidence list) ── */}
       {skillRadar.length > 0 && (
@@ -1344,6 +1392,362 @@ function EvaluationContent({ evaluation, compact = false }: { evaluation: Sessio
   );
 }
 
+// ── Score breakdown: AI vs Teacher ──────────────────────────────────────────
+// Two tabs over the same graph layout: the AI's fast feedback, and the optional
+// human review. The teacher tab NEVER reuses AI data — it shows a clear empty /
+// waiting / completed state instead.
+const SKILL_ORDER = ['task_completion', 'grammar', 'vocabulary', 'pronunciation', 'fluency'] as const;
+const SKILL_LABELS: Record<string, string> = {
+  task_completion: 'Task completion',
+  grammar: 'Grammar',
+  vocabulary: 'Vocabulary',
+  pronunciation: 'Pronunciation',
+  fluency: 'Fluency',
+};
+
+function ScoreBars({ breakdown }: { breakdown: Record<string, number> | null }) {
+  return (
+    <div className="grid gap-2.5">
+      {SKILL_ORDER.map((key) => {
+        const raw = breakdown ? breakdown[key] : undefined;
+        const has = typeof raw === 'number';
+        const value = has ? Math.max(0, Math.min(100, raw as number)) : 0;
+        return (
+          <div key={key}>
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-bold" style={{ color: '#1a1c1c' }}>{SKILL_LABELS[key]}</p>
+              <p className="text-xs font-extrabold tabular-nums" style={{ color: has ? '#1a1c1c' : '#afafaf' }}>
+                {has ? value : 'Not provided'}
+              </p>
+            </div>
+            <div className="mt-1 h-2 w-full overflow-hidden rounded-full" style={{ background: '#eef0ec' }}>
+              <div
+                className="h-full rounded-full"
+                style={{ width: `${value}%`, background: value >= 70 ? '#58cc02' : value >= 50 ? '#e8a200' : '#ff6b6b' }}
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function reviewDateFmt(value?: string | null) {
+  if (!value) return null;
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(value));
+}
+
+const TEACHER_REVIEW_WARNING =
+  "Request teacher review?\n\nYour AI result will be put on hold while a teacher reviews this lesson. The teacher's score will become the final result and may change whether you pass or need to retry. While the review is pending, the next lesson will stay locked.";
+
+function confirmTeacherReviewRequest() {
+  if (typeof window === 'undefined') return true;
+  return window.confirm(TEACHER_REVIEW_WARNING);
+}
+
+// Learner rates the completed teacher review (1..5 + optional comment). Upsert:
+// shows the submitted state once sent, with an Edit affordance to update it.
+function TeacherFeedbackSection({
+  reviewId,
+  feedback,
+}: {
+  reviewId: string;
+  feedback: TeacherReviewFeedback | null;
+}) {
+  const [saved, setSaved] = useState<TeacherReviewFeedback | null>(feedback);
+  const [editing, setEditing] = useState(false);
+  const [rating, setRating] = useState<number>(feedback?.rating ?? 0);
+  const [comment, setComment] = useState<string>(feedback?.comment ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const showForm = !saved || editing;
+
+  const submit = async () => {
+    if (rating < 1 || rating > 5 || busy) {
+      if (rating < 1) setError('Choose a rating from 1 to 5 stars.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await lessonService.submitReviewFeedback(reviewId, {
+        rating,
+        comment: comment.trim() || undefined,
+      });
+      // Optimistic: reflect the submitted state immediately.
+      setSaved({
+        rating: res.rating,
+        comment: res.comment,
+        created_at: res.created_at,
+        updated_at: res.updated_at,
+      });
+      setEditing(false);
+    } catch {
+      setError('Could not send your feedback. Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl px-3 py-3" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
+      <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>
+        Rate this teacher review
+      </p>
+
+      {showForm ? (
+        <div className="mt-2 grid gap-2">
+          <div className="flex items-center gap-1">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => setRating(n)}
+                aria-label={`${n} stars`}
+                className="text-2xl leading-none"
+                style={{ color: n <= rating ? '#e8a200' : '#d6d6d6' }}
+              >
+                ★
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            rows={2}
+            placeholder="Optional feedback for the teacher"
+            className="w-full rounded-xl px-3 py-2 text-sm"
+            style={{ border: '2px solid #e2e2e2' }}
+          />
+          {error && <p className="text-xs font-semibold" style={{ color: '#9b1c1c' }}>{error}</p>}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={submit}
+              disabled={busy}
+              className="vp-btn-primary h-10 px-4 text-sm disabled:opacity-60"
+              style={{ borderRadius: '12px' }}
+            >
+              {busy ? 'Sending...' : saved ? 'Update feedback' : 'Send feedback'}
+            </button>
+            {saved && (
+              <button
+                type="button"
+                onClick={() => { setEditing(false); setRating(saved.rating); setComment(saved.comment ?? ''); }}
+                className="h-10 px-4 text-sm font-semibold"
+                style={{ color: '#6f7b64' }}
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 grid gap-1">
+          <p className="text-sm font-bold" style={{ color: '#1e5000' }}>Your feedback was sent.</p>
+          <p className="text-lg leading-none" style={{ color: '#e8a200' }}>
+            {'★'.repeat(saved!.rating)}<span style={{ color: '#d6d6d6' }}>{'★'.repeat(5 - saved!.rating)}</span>
+          </p>
+          {saved!.comment && <p className="text-sm font-semibold" style={{ color: '#3c3c3c' }}>“{saved!.comment}”</p>}
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            className="mt-1 justify-self-start text-xs font-bold"
+            style={{ color: '#2b6c00' }}
+          >
+            Edit
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LessonScoreBreakdown({
+  aiReview,
+  teacherReview,
+  attemptId,
+  compact = false,
+  externalRequested,
+  onRequested,
+}: {
+  aiReview?: AiReview;
+  teacherReview?: TeacherReviewView;
+  attemptId?: string | null;
+  compact?: boolean;
+  /** Set by a sibling request button so this tab reflects the same pending state. */
+  externalRequested?: boolean;
+  onRequested?: () => void;
+}) {
+  const [tab, setTab] = useState<'ai' | 'teacher'>('ai');
+  // After a "request review" (from here OR a sibling button) we optimistically
+  // flip to a waiting state without a full reload. Derived (not synced via
+  // effect) so the real prop data takes over once it's no longer "not_requested".
+  const [internalPending, setInternalPending] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+  const optimisticPending = internalPending || !!externalRequested;
+
+  const teacher: TeacherReviewView | undefined =
+    optimisticPending && (!teacherReview || teacherReview.status === 'not_requested')
+      ? { ...(teacherReview ?? ({} as TeacherReviewView)), requested: true, status: 'pending' }
+      : teacherReview;
+
+  const status = teacher?.status ?? 'not_requested';
+  const teacherDone = status === 'completed';
+
+  const requestReview = async () => {
+    if (!attemptId || requesting) return;
+    if (!confirmTeacherReviewRequest()) return;
+    setRequesting(true);
+    try {
+      await lessonService.requestTeacherReview(attemptId);
+      // Idempotent on the backend (created OR already_open) → show waiting.
+      setInternalPending(true);
+      onRequested?.();
+    } catch {
+      /* leave the empty state so the user can retry */
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  const cardStyle = { border: '2px solid #e2e2e2', boxShadow: '0 4px 0 #e2e2e2' };
+  const tabBtn = (active: boolean) =>
+    `flex-1 rounded-xl px-3 py-2 text-xs font-extrabold uppercase tracking-wide transition ${
+      active ? 'text-white' : 'text-[#6f7b64]'
+    }`;
+
+  return (
+    <section className={`rounded-[28px] bg-white ${compact ? 'p-4' : 'p-5 sm:p-6'}`} style={cardStyle}>
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-extrabold uppercase tracking-widest" style={{ color: '#2b6c00' }}>Score breakdown</p>
+        {teacherDone && (
+          <span className="rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide" style={{ background: '#e8f9d3', color: '#1e5000' }}>
+            Teacher reviewed
+          </span>
+        )}
+      </div>
+
+      {/* Segmented control */}
+      <div className="mt-3 flex gap-1 rounded-2xl p-1" style={{ background: '#f1f3ee' }}>
+        <button type="button" onClick={() => setTab('ai')} className={tabBtn(tab === 'ai')} style={tab === 'ai' ? { background: '#58cc02' } : undefined}>
+          AI score
+        </button>
+        <button type="button" onClick={() => setTab('teacher')} className={tabBtn(tab === 'teacher')} style={tab === 'teacher' ? { background: '#58cc02' } : undefined}>
+          Teacher score
+        </button>
+      </div>
+
+      {/* AI tab */}
+      {tab === 'ai' && (
+        <div className="mt-4 grid gap-3">
+          <div className="flex items-baseline gap-2">
+            <p className="text-3xl font-black tabular-nums" style={{ color: '#1a1c1c' }}>{aiReview?.score ?? '–'}</p>
+            <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>AI score</p>
+          </div>
+          {aiReview?.breakdown
+            ? <ScoreBars breakdown={aiReview.breakdown} />
+            : <p className="text-sm font-semibold" style={{ color: '#6f7b64' }}>AI breakdown isn’t available for this attempt yet.</p>}
+        </div>
+      )}
+
+      {/* Teacher tab */}
+      {tab === 'teacher' && (
+        <div className="mt-4 grid gap-3">
+          {status === 'not_requested' && (
+            <div className="grid gap-3 rounded-2xl px-4 py-4 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
+              <p className="text-sm font-bold" style={{ color: '#1a1c1c' }}>You have not requested a teacher review yet.</p>
+              <p className="text-xs font-semibold" style={{ color: '#6f7b64' }}>Request a teacher review to get detailed human feedback.</p>
+              {attemptId && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={requestReview}
+                    disabled={requesting}
+                    className="vp-btn-primary h-11 px-5 text-sm disabled:opacity-60"
+                    style={{ borderRadius: '14px' }}
+                  >
+                    {requesting ? 'Sending...' : 'Request teacher review'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {(status === 'pending' || status === 'assigned' || status === 'escalated') && (
+            <div className="grid gap-2 rounded-2xl px-4 py-4" style={{ background: '#e6efff', border: '2px solid #b7d0ff' }}>
+              <p className="text-sm font-black" style={{ color: '#1e3a7a' }}>Waiting for teacher feedback</p>
+              <p className="text-xs font-semibold" style={{ color: '#1e3a7a' }}>
+                The AI result is on hold. The teacher score will decide the final result, and the next lesson stays locked until review is complete.
+              </p>
+              <p className="text-xs font-bold uppercase tracking-wide" style={{ color: '#1e3a7a' }}>
+                {status === 'assigned' ? 'Assigned to a teacher' : status === 'escalated' ? 'Prioritized for review' : 'Waiting for assignment'}
+              </p>
+              {teacher?.assigned_teacher && (
+                <p className="text-xs font-semibold" style={{ color: '#1e3a7a' }}>
+                  Teacher: {teacher.assigned_teacher.name} ({teacher.assigned_teacher.email})
+                </p>
+              )}
+              {teacher?.review_reason && (
+                <p className="text-xs font-semibold" style={{ color: '#6f7b64' }}>Reason: {teacher.review_reason}</p>
+              )}
+            </div>
+          )}
+
+          {status === 'rejected' && (
+            <div className="grid gap-2 rounded-2xl px-4 py-4" style={{ background: '#fde2e2', border: '2px solid #ffc1c1' }}>
+              <p className="text-sm font-black" style={{ color: '#7a1e1e' }}>The teacher asked you to redo this lesson</p>
+              {teacher?.note && <p className="text-xs font-semibold" style={{ color: '#7a1e1e' }}>{teacher.note}</p>}
+              {teacher?.reviewed_by && (
+                <p className="text-xs font-semibold" style={{ color: '#6f7b64' }}>
+                  By {teacher.reviewed_by.name} ({teacher.reviewed_by.email})
+                </p>
+              )}
+            </div>
+          )}
+
+          {status === 'cancelled' && (
+            <p className="rounded-2xl px-4 py-4 text-sm font-semibold" style={{ background: '#f3f3f3', color: '#6f7b64' }}>
+              This teacher review request was cancelled.
+            </p>
+          )}
+
+          {teacherDone && (
+            <>
+              <div className="flex items-baseline gap-2">
+                <p className="text-3xl font-black tabular-nums" style={{ color: '#1a1c1c' }}>{teacher?.score ?? teacher?.final_score ?? '–'}</p>
+                <p className="text-xs font-bold" style={{ color: '#6f7b64' }}>Teacher score</p>
+              </div>
+              <ScoreBars breakdown={teacher?.breakdown ?? null} />
+              {teacher?.note && (
+                <div className="rounded-2xl px-3 py-2.5" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
+                  <p className="text-[10px] font-extrabold uppercase tracking-wide" style={{ color: '#6f7b64' }}>Reviewer note</p>
+                  <p className="mt-1 text-sm font-semibold leading-snug" style={{ color: '#3c3c3c' }}>{teacher.note}</p>
+                </div>
+              )}
+              {teacher?.reviewed_by && (
+                <p className="text-xs font-semibold" style={{ color: '#6f7b64' }}>
+                  Reviewed by {teacher.reviewed_by.name} ({teacher.reviewed_by.email})
+                  {reviewDateFmt(teacher.reviewed_at ?? teacher.completed_at) ? ` · ${reviewDateFmt(teacher.reviewed_at ?? teacher.completed_at)}` : ''}
+                </p>
+              )}
+              {teacher?.review_id && (
+                <TeacherFeedbackSection
+                  key={teacher.review_id}
+                  reviewId={teacher.review_id}
+                  feedback={teacher.feedback ?? null}
+                />
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function EvaluationBoard({
   evaluation,
   lessonAttemptId,
@@ -1357,23 +1761,31 @@ function EvaluationBoard({
   // (none happened), no growth_areas. Just acknowledge the chat and a couple of
   // soft signals (duration, turn count, a quote or two).
   const isFreeTalk = evaluation.mode === 'free_talk';
+  // Shared so the result card and Teacher tab reflect the same state immediately.
+  const initialReviewRequested = Boolean(
+    evaluation.lesson_result?.teacher_review?.requested &&
+      evaluation.lesson_result.teacher_review.status !== 'not_requested',
+  );
+  const [reviewRequested, setReviewRequested] = useState(initialReviewRequested);
+  const effectiveReviewRequested = reviewRequested || initialReviewRequested;
+  const markRequested = () => setReviewRequested(true);
   return (
     <main className="flex flex-1 flex-col bg-[#f9f9f9]" style={{ fontFamily: 'Lexend, sans-serif' }}>
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
         <div className="mx-auto w-full max-w-5xl flex flex-col gap-5">
-          {lessonAttemptId && <LessonResultCard attemptId={lessonAttemptId} />}
+          {lessonAttemptId && <LessonResultCard attemptId={lessonAttemptId} reviewRequested={effectiveReviewRequested} />}
           {isFreeTalk
             ? <FreeTalkRecap evaluation={evaluation} />
-            : <EvaluationContent evaluation={evaluation} />}
+            : <EvaluationContent evaluation={evaluation} reviewRequested={effectiveReviewRequested} onReviewRequested={markRequested} />}
         </div>
       </div>
 
       <div className="shrink-0 border-t px-4 py-4 sm:px-6" style={{ background: '#ffffff', borderColor: '#e2e2e2' }}>
-        <div className="mx-auto flex w-full max-w-5xl justify-end">
+        <div className="mx-auto flex w-full max-w-5xl items-center justify-end gap-3">
           <button
             type="button"
             onClick={onExit}
-            className="vp-btn-primary h-12 w-full text-sm sm:w-[180px]"
+            className="vp-btn-primary h-12 text-sm w-full sm:w-[180px]"
             style={{ borderRadius: '16px' }}
           >
             Done
@@ -1388,7 +1800,7 @@ function EvaluationBoard({
 // Curriculum-first: shown above the breakdown for sessions that backed a
 // lesson attempt. Pulls /lessons/attempts/:id, then renders status/score/next-
 // action/teacher-review-status with a CTA to the next lesson or retry.
-function LessonResultCard({ attemptId }: { attemptId: string }) {
+function LessonResultCard({ attemptId, reviewRequested = false }: { attemptId: string; reviewRequested?: boolean }) {
   const router = useRouter();
   const [result, setResult] = useState<LessonAttemptResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1430,19 +1842,24 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
   }
   if (!result) return null;
 
-  const status = result.attempt.status;
+  const status =
+    reviewRequested && result.attempt.status !== 'under_review'
+      ? 'under_review'
+      : result.attempt.status;
   const tone =
-    status === 'passed'      ? { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' } :
-    status === 'needs_retry' ? { bg: '#fff3c4', border: '#ffe28a', fg: '#5b3f00' } :
-    status === 'failed'      ? { bg: '#fde2e2', border: '#ffc1c1', fg: '#7a1e1e' } :
-    status === 'abandoned'   ? { bg: '#f3f3f3', border: '#e2e2e2', fg: '#6f7b64' } :
-                               { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' };
+    status === 'passed'       ? { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' } :
+    status === 'needs_retry'  ? { bg: '#fff3c4', border: '#ffe28a', fg: '#5b3f00' } :
+    status === 'failed'       ? { bg: '#fde2e2', border: '#ffc1c1', fg: '#7a1e1e' } :
+    status === 'abandoned'    ? { bg: '#f3f3f3', border: '#e2e2e2', fg: '#6f7b64' } :
+    status === 'under_review' ? { bg: '#e6efff', border: '#b7d0ff', fg: '#1e3a7a' } :
+                                { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' };
   const statusText: Record<typeof status, string> = {
-    passed:      'Passed',
-    needs_retry: 'Needs retry',
-    failed:      'Failed',
-    abandoned:   'Paused',
-    in_progress: 'In progress',
+    passed:       'Passed',
+    needs_retry:  'Needs retry',
+    failed:       'Failed',
+    abandoned:    'Paused',
+    in_progress:  'In progress',
+    under_review: 'Under teacher review',
   };
 
   const nextActionLabel: Record<LessonAttemptResult['attempt']['next_action'], string> = {
@@ -1452,8 +1869,10 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
     continue_later: 'Continue later',
     none:           'Back to lessons',
   };
+  const effectiveNextAction = status === 'under_review' ? 'none' : result.attempt.next_action;
+  const scoreDisplay = status === 'under_review' ? '–' : (result.attempt.score ?? 0);
   const handleNext = () => {
-    const na = result.attempt.next_action;
+    const na = effectiveNextAction;
     if (na === 'next_lesson' && result.lesson?.next_lesson_id) {
       router.push(`/lessons/${result.lesson.next_lesson_id}`);
     } else if (na === 'retry_lesson' && result.lesson) {
@@ -1463,7 +1882,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
     }
   };
 
-  const reviewStatus = result.attempt.teacher_review_status;
+  const reviewStatus = reviewRequested ? 'pending' : result.attempt.teacher_review_status;
   const reviewLabel =
     reviewStatus === 'pending'     ? 'Teacher review pending' :
     reviewStatus === 'approved'    ? 'Teacher review: approved' :
@@ -1486,7 +1905,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
       </h3>
       <div className="grid grid-cols-3 gap-2 sm:gap-3">
         <div className="rounded-2xl p-3 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
-          <p className="text-2xl font-black tabular-nums" style={{ color: tone.fg }}>{result.attempt.score ?? 0}</p>
+          <p className="text-2xl font-black tabular-nums" style={{ color: tone.fg }}>{scoreDisplay}</p>
           <p className="text-[11px] font-bold uppercase tracking-wider" style={{ color: '#6f7b64' }}>Score</p>
         </div>
         <div className="rounded-2xl p-3 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
@@ -1511,7 +1930,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
         className="self-end mt-1 inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl font-extrabold transition active:translate-y-0.5"
         style={{ background: '#58cc02', color: '#1e5000', boxShadow: '0 4px 0 #46a302' }}
       >
-        {nextActionLabel[result.attempt.next_action]}
+        {nextActionLabel[effectiveNextAction]}
       </button>
     </section>
   );
@@ -1824,6 +2243,7 @@ function DeckCardView({
   onEnd,
   onNext,
   onSkip,
+  isAdvancing,
 }: {
   deck: ExerciseDeck;
   isLighter: boolean;
@@ -1835,6 +2255,7 @@ function DeckCardView({
   onEnd: () => void;
   onNext: () => void;
   onSkip: () => void;
+  isAdvancing: boolean;
 }) {
   const [showRejectOptions, setShowRejectOptions] = useState(false);
 
@@ -1932,7 +2353,8 @@ function DeckCardView({
           <button
             type="button"
             onClick={onAccept}
-            className="vp-btn-primary h-11 px-4 text-xs"
+            disabled={isProcessing || isAdvancing}
+            className="vp-btn-primary h-11 px-4 text-xs disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
             style={{ borderRadius: '14px' }}
           >
             {primaryAcceptLabel}
@@ -1967,6 +2389,7 @@ function DeckCardView({
           isLighter={isLighter}
           isOnboarding={isOnboarding}
           isProcessing={isProcessing}
+          isAdvancing={isAdvancing}
           onNext={onNext}
           onSkip={onSkip}
         />
@@ -1980,6 +2403,7 @@ function DeckCardActions({
   isLighter,
   isOnboarding,
   isProcessing,
+  isAdvancing,
   onNext,
   onSkip,
 }: {
@@ -1987,6 +2411,7 @@ function DeckCardActions({
   isLighter: boolean;
   isOnboarding: boolean;
   isProcessing: boolean;
+  isAdvancing: boolean;
   onNext: () => void;
   onSkip: () => void;
 }) {
@@ -2012,7 +2437,7 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onSkip}
-          disabled={isProcessing}
+          disabled={isProcessing || isAdvancing}
           className="h-9 px-4 rounded-full text-sm font-medium text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:pointer-events-none"
         >
           Skip
@@ -2030,7 +2455,7 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          disabled={isProcessing}
+          disabled={isProcessing || isAdvancing}
           className="vp-btn-primary text-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
           style={{ padding: '8px 20px', borderRadius: '12px' }}
         >
@@ -2052,7 +2477,7 @@ function DeckCardActions({
         <button
           type="button"
           onClick={onNext}
-          disabled={isProcessing}
+          disabled={isProcessing || isAdvancing}
           className="vp-btn-primary text-sm disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none"
           style={{ padding: '8px 20px', borderRadius: '12px', background: '#58cc02', boxShadow: '0 4px 0 #1f5100' }}
         >

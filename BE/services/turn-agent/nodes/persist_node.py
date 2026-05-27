@@ -73,9 +73,23 @@ async def persist_node(state: dict) -> dict:
     asyncio.create_task(_append_short_term(user_id, session_id, transcript, full_response))
     if turn_index == 1:
         writer = get_stream_writer()
-        title = await _generate_title(session_id, transcript)
-        if title:
-            writer({"type": "title", "text": title})
+        lesson_title = (state.get("lesson_title") or "").strip()
+        if state.get("is_lesson_session"):
+            # Lesson sessions are already titled by the curriculum. Do not send
+            # the first exercise transcript to the generic title generator; it
+            # can overwrite the lesson title with prompt-ish text like
+            # "Title Generation Request".
+            if lesson_title:
+                await database.pool.execute(
+                    "UPDATE speaking_app.sessions SET title = $1 WHERE id = $2",
+                    lesson_title,
+                    session_id,
+                )
+                writer({"type": "title", "text": lesson_title})
+        else:
+            title = await _generate_title(session_id, transcript)
+            if title:
+                writer({"type": "title", "text": title})
 
     return {}
 

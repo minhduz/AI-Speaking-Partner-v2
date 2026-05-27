@@ -3,9 +3,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { authService } from '@/services/auth.service';
 import { setAccessToken } from '@/lib/http-client';
+import { roleFromToken } from '@/lib/roles';
+import type { UserRole } from '@/types/auth.types';
 
 interface AuthState {
   accessToken: string | null;
+  role: UserRole;
   isLoading: boolean;
   isAuthenticated: boolean;
 }
@@ -20,6 +23,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
     accessToken: null,
+    role: 'student',
     isLoading: true,
     isAuthenticated: false,
   });
@@ -29,24 +33,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .refresh()
       .then(({ access_token }) => {
         setAccessToken(access_token);
-        setState({ accessToken: access_token, isLoading: false, isAuthenticated: true });
+        setState({
+          accessToken: access_token,
+          role: roleFromToken(access_token),
+          isLoading: false,
+          isAuthenticated: true,
+        });
       })
       .catch(() => {
         // Clear the stale/invalid cookie so the middleware stops redirecting away from /login
         authService.logout().catch(() => {});
-        setState({ accessToken: null, isLoading: false, isAuthenticated: false });
+        setState({ accessToken: null, role: 'student', isLoading: false, isAuthenticated: false });
       });
   }, []);
 
   const login = (token: string) => {
     setAccessToken(token);
-    setState({ accessToken: token, isLoading: false, isAuthenticated: true });
+    setState({
+      accessToken: token,
+      role: roleFromToken(token),
+      isLoading: false,
+      isAuthenticated: true,
+    });
   };
 
   const logout = async () => {
     await authService.logout();
     setAccessToken(null);
-    setState({ accessToken: null, isLoading: false, isAuthenticated: false });
+    setState({ accessToken: null, role: 'student', isLoading: false, isAuthenticated: false });
   };
 
   return <AuthContext.Provider value={{ ...state, login, logout }}>{children}</AuthContext.Provider>;

@@ -1336,7 +1336,7 @@ export class SessionService {
     try {
       const session = await this.repo.findOne({
         where: { id: sessionId, userId },
-        select: ['id', 'breakdown', 'mode', 'startedAt', 'endedAt'],
+        select: ['id', 'breakdown', 'mode', 'startedAt', 'endedAt', 'lessonAttemptId'],
       });
       if (!session) return { status: 'pending', session_id: sessionId };
       // Free Talk sessions never get a full breakdown — surface a lightweight
@@ -1382,7 +1382,28 @@ export class SessionService {
       if (!session.breakdown) {
         return { status: 'pending', session_id: sessionId };
       }
-      return { ...session.breakdown, mode: session.mode };
+      const lessonResult = session.lessonAttemptId
+        ? await this.lessonService.getAttempt(userId, session.lessonAttemptId).catch(() => null)
+        : null;
+      return {
+        ...session.breakdown,
+        mode: session.mode,
+        lesson_result: lessonResult
+          ? {
+              attempt_id: lessonResult.attempt.id,
+              lesson_title: lessonResult.lesson?.title ?? null,
+              status: lessonResult.attempt.status,
+              score: lessonResult.attempt.score,
+              final_score: lessonResult.attempt.final_score,
+              pass_score: lessonResult.lesson?.pass_score ?? null,
+              teacher_review_status: lessonResult.attempt.teacher_review_status,
+              reviewed_at: lessonResult.teacher_review?.reviewed_at ?? null,
+              // Both scoring views so the breakdown panel can offer AI/Teacher tabs.
+              ai_review: lessonResult.ai_review,
+              teacher_review: lessonResult.teacher_review,
+            }
+          : null,
+      };
     } catch (err: any) {
       console.error(`[Session] getEvaluation failed session=${sessionId}:`, err?.message);
       return { status: 'pending', session_id: sessionId };
@@ -1457,9 +1478,22 @@ export class SessionService {
       order: { startedAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
-      select: ['id', 'title', 'status', 'startedAt', 'mode'],
+      select: ['id', 'title', 'status', 'startedAt', 'mode', 'lessonAttemptId'],
     });
-    return { items, total, page, limit, hasMore: (page - 1) * limit + items.length < total };
+    const lessonTitleByAttempt = await this.lessonService.getLessonTitlesForAttempts(
+      userId,
+      items.map((s) => s.lessonAttemptId).filter((id): id is string => Boolean(id)),
+    );
+    return {
+      items: items.map((s) => ({
+        ...s,
+        title: s.lessonAttemptId ? (lessonTitleByAttempt.get(s.lessonAttemptId) ?? s.title) : s.title,
+      })),
+      total,
+      page,
+      limit,
+      hasMore: (page - 1) * limit + items.length < total,
+    };
   }
 
   private async isFreeTalkSession(sessionId: string): Promise<boolean> {

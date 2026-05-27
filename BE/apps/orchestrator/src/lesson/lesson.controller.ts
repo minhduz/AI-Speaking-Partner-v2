@@ -11,7 +11,9 @@ import {
 } from '@nestjs/common';
 import { IsIn, IsInt, IsOptional, IsString, Min, Max } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { TeacherReviewGuard } from './guards/teacher-review.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../user/user-role.enum';
 import { LessonService } from './lesson.service';
 
 class UpdateReviewDto {
@@ -28,6 +30,11 @@ class UpdateReviewDto {
   @IsOptional()
   @IsString()
   comment?: string;
+}
+
+class ReviewFeedbackDto {
+  @IsInt() @Min(1) @Max(5) rating: number;
+  @IsOptional() @IsString() comment?: string;
 }
 
 @Controller('lessons')
@@ -48,6 +55,26 @@ export class LessonController {
     return this.lessons.getAttempt(req.user.id, attemptId);
   }
 
+  // POST /lessons/attempts/:attemptId/request-review — learner sends their own
+  // completed attempt to teacher review (idempotent; never resets progress).
+  @Post('attempts/:attemptId/request-review')
+  @HttpCode(200)
+  requestReview(@Req() req, @Param('attemptId') attemptId: string) {
+    return this.lessons.requestTeacherReview(req.user.id, attemptId);
+  }
+
+  // POST /lessons/reviews/:id/feedback — learner rates a COMPLETED teacher
+  // review (1..5 + optional comment). Upsert; ownership enforced in the service.
+  // Declared before `/:id` so "reviews" isn't parsed as a lesson UUID.
+  @Post('reviews/:id/feedback')
+  @HttpCode(200)
+  reviewFeedback(@Req() req, @Param('id') id: string, @Body() dto: ReviewFeedbackDto) {
+    return this.lessons.submitReviewFeedback(req.user.id, id, {
+      rating: dto.rating,
+      comment: dto.comment,
+    });
+  }
+
   // GET /lessons/:id — lesson detail, cards, current progress, in-progress attempt id.
   @Get(':id')
   detail(@Req() req, @Param('id') id: string) {
@@ -64,13 +91,12 @@ export class LessonController {
   }
 }
 
-// Reviewer surface — requires a JWT (must be logged in) AND a static reviewer
-// token via x-teacher-review-token header. Guard runs after JwtAuthGuard so a
-// missing/invalid token always returns 403 (never reveals 401-vs-403 to learners
-// without auth). Token comes from TEACHER_REVIEW_TOKEN env; if unset, the guard
-// fails closed and every request gets 403.
+// Reviewer surface — requires a logged-in user whose role is TEACHER or ADMIN.
+// JwtAuthGuard populates request.user (incl. role); RolesGuard enforces @Roles.
+// Learners (role=student) get 403.
 @Controller('teacher-review')
-@UseGuards(JwtAuthGuard, TeacherReviewGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.TEACHER, UserRole.ADMIN)
 export class TeacherReviewController {
   constructor(private lessons: LessonService) {}
 

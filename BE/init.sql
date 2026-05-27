@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS speaking_app.users (
   voice_id             VARCHAR   NOT NULL DEFAULT 'Adrian',
   speech_rate          FLOAT     NOT NULL DEFAULT 1.0,
   conversation_style   VARCHAR   NOT NULL DEFAULT 'friendly',
+  role                 VARCHAR   NOT NULL DEFAULT 'student',
   created_at           TIMESTAMP DEFAULT NOW(),
   updated_at           TIMESTAMP DEFAULT NOW()
 );
@@ -89,11 +90,35 @@ CREATE INDEX IF NOT EXISTS idx_turns_session_id  ON speaking_app.turns(session_i
 CREATE INDEX IF NOT EXISTS idx_turns_user_id     ON speaking_app.turns(user_id);
 CREATE INDEX IF NOT EXISTS idx_turns_data        ON speaking_app.turns USING GIN(data);
 
+-- Per-turn user speech audio (private R2 storage; DB holds only metadata).
+-- lesson_attempt_id is a plain UUID here (lesson_attempts is created later by a
+-- TypeORM migration, not init.sql); migration 1716000000007 adds the FK once
+-- lesson_attempts exists.
+CREATE TABLE IF NOT EXISTS speaking_app.turn_audio (
+  id                 UUID      PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id         UUID      NOT NULL REFERENCES speaking_app.sessions(id) ON DELETE CASCADE,
+  user_id            UUID      NOT NULL REFERENCES speaking_app.users(id)    ON DELETE CASCADE,
+  turn_id            UUID      REFERENCES speaking_app.turns(id) ON DELETE SET NULL,
+  turn_index         INT,
+  lesson_attempt_id  UUID,
+  bucket             VARCHAR   NOT NULL,
+  object_key         TEXT      NOT NULL UNIQUE,
+  content_type       VARCHAR   NOT NULL,
+  byte_size          INT       NOT NULL,
+  duration_ms        INT,
+  transcript         TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_turn_audio_session  ON speaking_app.turn_audio(session_id);
+CREATE INDEX IF NOT EXISTS idx_turn_audio_attempt  ON speaking_app.turn_audio(lesson_attempt_id);
+CREATE INDEX IF NOT EXISTS idx_turn_audio_user     ON speaking_app.turn_audio(user_id);
+
 -- ─── MIGRATIONS for existing databases ───────────────────────
 -- Safe to run multiple times (ADD COLUMN IF NOT EXISTS is idempotent)
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS google_id       VARCHAR UNIQUE;
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS native_language  VARCHAR NOT NULL DEFAULT 'vietnamese';
 ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS learning_goal    VARCHAR;
+ALTER TABLE speaking_app.users ADD COLUMN IF NOT EXISTS role             VARCHAR NOT NULL DEFAULT 'student';
 ALTER TABLE speaking_app.users ALTER COLUMN password_hash SET DEFAULT '';
 
 ALTER TABLE speaking_app.sessions ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;
@@ -178,9 +203,10 @@ CREATE INDEX IF NOT EXISTS idx_dictionary_history_next_review ON dictionary.user
 CREATE INDEX IF NOT EXISTS idx_dictionary_history_archived ON dictionary.user_history(user_id, is_archived);
 
 -- Transfer ownership so orchestrator_user can run ALTER TABLE migrations
-ALTER TABLE speaking_app.users    OWNER TO orchestrator_user;
-ALTER TABLE speaking_app.sessions OWNER TO orchestrator_user;
-ALTER TABLE speaking_app.turns    OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.users      OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.sessions   OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.turns      OWNER TO orchestrator_user;
+ALTER TABLE speaking_app.turn_audio OWNER TO orchestrator_user;
 
 -- Grant table-level permissions
 GRANT ALL ON ALL TABLES IN SCHEMA speaking_app TO orchestrator_user;

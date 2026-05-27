@@ -750,6 +750,22 @@ export class LessonSeeder implements OnModuleInit {
   private async seed() {
     const orderIndices = DEMO_A1_LESSONS.map((l) => l.order_index);
 
+    // task_type per lesson: review lessons are checkpoints; the LAST review of
+    // each level is the level_final (always human-reviewed); everything else is
+    // practice. Computed by (level → max order_index among review lessons).
+    const lastReviewOrderByLevel = new Map<string, number>();
+    for (const l of DEMO_A1_LESSONS) {
+      if (!l.is_review) continue;
+      const cur = lastReviewOrderByLevel.get(l.level);
+      if (cur === undefined || l.order_index > cur) {
+        lastReviewOrderByLevel.set(l.level, l.order_index);
+      }
+    }
+    const taskTypeFor = (l: SeedLesson): string => {
+      if (!l.is_review) return 'practice';
+      return lastReviewOrderByLevel.get(l.level) === l.order_index ? 'level_final' : 'checkpoint';
+    };
+
     // 1. Upsert each lesson row by (level, topic, order_index).
     const persisted: Lesson[] = [];
     for (const seed of DEMO_A1_LESSONS) {
@@ -767,6 +783,7 @@ export class LessonSeeder implements OnModuleInit {
           miniPlanText: seed.mini_plan_text,
           passScore: seed.pass_score,
           isReview: seed.is_review,
+          taskType: taskTypeFor(seed),
           isPublished: true,
           nextLessonId: null,
         });
@@ -777,6 +794,7 @@ export class LessonSeeder implements OnModuleInit {
         lesson.miniPlanText = seed.mini_plan_text;
         lesson.passScore = seed.pass_score;
         lesson.isReview = seed.is_review;
+        lesson.taskType = taskTypeFor(seed);
         lesson.isPublished = true;
       }
       await this.lessons.save(lesson);

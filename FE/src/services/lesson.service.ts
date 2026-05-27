@@ -1,6 +1,6 @@
 import { httpClient } from '@/lib/http-client';
 
-export type LessonState = 'locked' | 'unlocked' | 'in_progress' | 'completed' | 'needs_retry';
+export type LessonState = 'locked' | 'unlocked' | 'in_progress' | 'under_review' | 'completed' | 'needs_retry';
 
 export interface LessonPathItem {
   lesson_id: string;
@@ -80,10 +80,26 @@ export interface StartLessonResponse {
 
 export type LessonAttemptStatus =
   | 'in_progress'
+  | 'under_review'
   | 'passed'
   | 'needs_retry'
   | 'failed'
   | 'abandoned';
+
+export type ScoringStatus =
+  | 'submitted'
+  | 'ai_scored'
+  | 'needs_review'
+  | 'human_scored'
+  | 'finalized'
+  | 'disputed';
+
+export type NodeStatus =
+  | 'submitted'
+  | 'under_review'
+  | 'passed'
+  | 'needs_practice'
+  | 'retry_required';
 
 export type LessonNextAction =
   | 'next_lesson'
@@ -99,6 +115,58 @@ export type TeacherReviewStatusOnAttempt =
   | 'revised'
   | 'rejected';
 
+export type SkillBreakdown = Record<string, number>;
+
+/** The AI's fast-feedback scoring view for an attempt. */
+export interface AiReview {
+  score: number | null;
+  breakdown: SkillBreakdown | null;
+  feedback: Record<string, unknown> | null;
+  scoring_status: ScoringStatus;
+  finalized_at: string | null;
+}
+
+export type TeacherReviewState =
+  | 'not_requested'
+  | 'pending'
+  | 'assigned'
+  | 'completed'
+  | 'rejected'
+  | 'cancelled'
+  | 'escalated';
+
+/** The optional human-review scoring view. `breakdown`/`score` are populated
+ *  ONLY when a teacher has completed the review — never from the AI. */
+export interface TeacherReviewView {
+  id: string | null;
+  review_id: string | null;
+  requested: boolean;
+  status: TeacherReviewState;
+  task_status: string | null;
+  decision: 'pending' | 'approved' | 'revised' | 'rejected' | null;
+  assigned_teacher: { id: string; name: string; email: string } | null;
+  reviewed_by: { id: string; name: string; email: string } | null;
+  score: number | null;
+  final_score: number | null;
+  breakdown: SkillBreakdown | null;
+  note: string | null;
+  comment: string | null;
+  review_reason: string | null;
+  requested_at: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  reviewed_at: string | null;
+  /** The viewing student's own rating on this completed review, if any. */
+  feedback: TeacherReviewFeedback | null;
+}
+
+export interface TeacherReviewFeedback {
+  rating: number;
+  comment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface LessonAttemptResult {
   attempt: {
     id: string;
@@ -111,6 +179,17 @@ export interface LessonAttemptResult {
     ai_feedback: Record<string, unknown> | null;
     started_at: string;
     completed_at: string | null;
+    // Hybrid Scoring lifecycle
+    scoring_status: ScoringStatus;
+    review_required: boolean;
+    review_reason: string | null;
+    ai_score: number | null;
+    final_score: number | null;
+    final_score_breakdown: Record<string, number> | null;
+    finalized_at: string | null;
+    node_status: NodeStatus;
+    /** Why a finalized attempt didn't pass/unlock (null when passed). */
+    retry_reason: string | null;
   };
   lesson: {
     id: string;
@@ -132,13 +211,8 @@ export interface LessonAttemptResult {
     feedback: string | null;
   }>;
   stats: { cards_completed: number; cards_total: number };
-  teacher_review: {
-    id: string;
-    status: 'pending' | 'approved' | 'revised' | 'rejected';
-    final_score: number | null;
-    comment: string | null;
-    reviewed_at: string | null;
-  } | null;
+  ai_review: AiReview;
+  teacher_review: TeacherReviewView;
 }
 
 export const lessonService = {
@@ -148,4 +222,25 @@ export const lessonService = {
     httpClient.post<StartLessonResponse>(`/lessons/${id}/start`, {}),
   getAttempt: (attemptId: string) =>
     httpClient.get<LessonAttemptResult>(`/lessons/attempts/${attemptId}`),
+  requestTeacherReview: (attemptId: string) =>
+    httpClient.post<{
+      review_id: string;
+      status: 'created' | 'already_open';
+      task_status: string;
+      attempt_status: LessonAttemptStatus;
+      scoring_status: ScoringStatus;
+      node_status: NodeStatus;
+    }>(
+      `/lessons/attempts/${attemptId}/request-review`,
+      {},
+    ),
+  // Learner rates a completed teacher review (1..5 + optional comment). Upsert.
+  submitReviewFeedback: (reviewId: string, payload: { rating: number; comment?: string }) =>
+    httpClient.post<{
+      review_id: string;
+      rating: number;
+      comment: string | null;
+      created_at: string;
+      updated_at: string;
+    }>(`/lessons/reviews/${reviewId}/feedback`, payload),
 };
