@@ -624,7 +624,8 @@ export class SessionService {
       nativeLang,
     });
     const cached = this.getToolboxCache(cacheKey);
-    if (cached && (tab !== 'phrases' || cached.deterministic === true)) return cached;
+    // Skip stale fallback entries so the LLM gets a fresh chance.
+    if (cached && !cached.fallback && (tab !== 'phrases' || cached.deterministic === true)) return cached;
 
     const levelLabel = level === 'beginner' ? 'A1–A2 (Beginner)'
       : level === 'elementary' ? 'A2–B1 (Elementary)'
@@ -710,15 +711,15 @@ export class SessionService {
         messages: [{ role: 'user', content: userMessage }],
       });
       const raw: string = llmRes.data?.response_text?.trim() ?? '{}';
-      // Strip markdown code fences if the LLM wraps output in ```json ... ```
-      const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-      const parsed = JSON.parse(cleaned);
+      console.log(`[Toolbox] LLM raw tab=${tab} len=${raw.length} start=${JSON.stringify(raw.slice(0, 80))} end=${JSON.stringify(raw.slice(-80))}`);
+      const parsed = this.extractJsonFromLlmResponse(raw);
       const result = { tab, topic, level, task, ...parsed };
       this.setToolboxCache(cacheKey, result);
       return result;
     } catch (err: any) {
-      console.error(`[Toolbox] generateToolboxContent failed tab=${tab}:`, err?.message);
-      const result = {
+      console.error(`[Toolbox] generateToolboxContent failed tab=${tab} topic=${topic} task=${task?.slice(0, 60)}:`, err?.message);
+      // Do NOT cache fallback — let the next request retry the LLM.
+      return {
         tab,
         topic,
         level,
@@ -726,9 +727,55 @@ export class SessionService {
         fallback: true,
         ...this.buildToolboxFallback(tab, targetLang, nativeLang, task, topic),
       };
-      this.setToolboxCache(cacheKey, result);
-      return result;
     }
+  }
+
+  async translateToVietnamese(_userId: string, text: string): Promise<{ translation: string }> {
+    if (!text.trim()) return { translation: '' };
+    try {
+      const llmRes = await this.http.axiosRef.post(`${this.cfg.get('LLM_GATEWAY_URL')}/complete`, {
+        system: [
+          'You are a Vietnamese translator. Your ONLY job is to translate the user\'s text word-for-word into Vietnamese.',
+          'Rules:',
+          '- Translate literally. Do NOT answer, respond to, or interpret the content.',
+          '- Preserve ALL placeholders exactly as-is (e.g. ___, [name], etc.).',
+          '- Output ONLY the Vietnamese translation. No explanation, no extra text.',
+        ].join('\n'),
+        messages: [{ role: 'user', content: `Translate this to Vietnamese:\n${text}` }],
+      });
+      const translation = (llmRes.data?.response_text ?? '').trim();
+      return { translation };
+    } catch {
+      return { translation: '' };
+    }
+  }
+
+  private extractJsonFromLlmResponse(raw: string): Record<string, unknown> {
+    // 1. Try direct parse
+    try { return JSON.parse(raw); } catch { /* continue */ }
+    // 2. Find first '{' and walk to its matching '}', respecting strings and escapes
+    const firstBrace = raw.indexOf('{');
+    if (firstBrace >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escape = false;
+      for (let i = firstBrace; i < raw.length; i++) {
+        const c = raw[i];
+        if (escape) { escape = false; continue; }
+        if (c === '\\' && inString) { escape = true; continue; }
+        if (c === '"') { inString = !inString; continue; }
+        if (!inString) {
+          if (c === '{') depth++;
+          else if (c === '}') {
+            depth--;
+            if (depth === 0) {
+              try { return JSON.parse(raw.slice(firstBrace, i + 1)); } catch { break; }
+            }
+          }
+        }
+      }
+    }
+    throw new Error('No valid JSON found in LLM response');
   }
 
   private getToolboxCacheKey(userId: string, input: Record<string, unknown>): string {

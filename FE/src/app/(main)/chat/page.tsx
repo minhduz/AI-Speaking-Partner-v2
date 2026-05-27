@@ -23,6 +23,7 @@ import {
 } from '@/services/lesson.service';
 import { LessonToolbox, LessonToolboxTrigger } from '@/components/chat/lesson-toolbox/lesson-toolbox';
 import type { LessonToolboxContext } from '@/components/chat/lesson-toolbox/lesson-toolbox';
+import { httpClient } from '@/lib/http-client';
 
 const POPUP_W = 320;
 const POPUP_H = 440;
@@ -146,6 +147,14 @@ export default function ChatPage() {
 
   const wordDictionary = useDictionary();
   const [dictAnchor, setDictAnchor] = useState<{ top: number; left: number } | null>(null);
+
+  const handleToolboxAddFlashcard = useCallback(async (word: string, meaning: string, example: string, pronunciation?: string) => {
+    void meaning; void pronunciation;
+    const result = await httpClient.get<{ cacheId?: string }>(`/api/dictionary?word=${encodeURIComponent(word)}&context=${encodeURIComponent(example)}&targetLang=vi`);
+    if (result?.cacheId) {
+      await wordDictionary.addFlashcard(result.cacheId);
+    }
+  }, [wordDictionary]);
 
   useEffect(() => {
     if (reviewMode) return;
@@ -287,6 +296,7 @@ export default function ChatPage() {
     currentTask: activeDeckCard?.task
       ?? (currentDeck?.status === 'in_progress' ? currentDeck.cards[currentDeck.current_card_index]?.task : undefined)
       ?? undefined,
+    cardIndex: currentDeck?.current_card_index ?? 0,
   };
   // After an eval, the card shows Next/Finish (next_action 'next_card' | 'finish_session').
   // 'retry' is excluded — there the user must speak again, so the mic stays open.
@@ -423,14 +433,14 @@ export default function ChatPage() {
   // Also shown during the first onboarding session (with the onboarding panel).
   if (isFocusedLiveSession) {
     return (
-      <main className="flex flex-1 flex-col overflow-hidden bg-white">
-        {/* AI presence indicator — replaces the normal header.
+      <main className="relative flex flex-1 flex-col overflow-hidden bg-white">
+        {/* AI presence indicator — floating header.
             Symmetric side columns so the orb sits exactly on the horizontal center. */}
         <div
-          className="shrink-0 grid grid-cols-[118px_1fr_118px] items-start px-4 pb-2"
+          className="absolute top-0 left-0 right-0 z-50 grid grid-cols-[118px_1fr_118px] items-start px-4 pb-2 pointer-events-none"
           style={{ paddingTop: 'max(24px, env(safe-area-inset-top, 24px))' }}
         >
-          <div className="flex items-start pt-1">
+          <div className="flex items-start pt-1 pointer-events-auto">
             {isLiveLessonSession && (
               <LessonToolboxTrigger
                 onClick={() => setToolboxOpen((v) => !v)}
@@ -438,8 +448,10 @@ export default function ChatPage() {
               />
             )}
           </div>
-          <AiPresence isRecording={isRecording} status={status} />
-          <div className="flex justify-end">
+          <div className="pointer-events-auto justify-self-center">
+            <AiPresence isRecording={isRecording} status={status} />
+          </div>
+          <div className="flex justify-end pointer-events-auto">
             <EndSessionButton onClick={() => setConfirmEnd(true)} />
           </div>
         </div>
@@ -447,8 +459,8 @@ export default function ChatPage() {
         {/* Exercise dock — compact floating card so it never takes over the chat.
             Centered horizontally so wider phones don't leave a lopsided gap on the right. */}
         {(lessonDeckLoading || deckVisible) && (
-          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-24 z-30 w-[min(360px,calc(100vw-48px))] md:left-8 md:translate-x-0 lg:left-10">
-            <div className="pointer-events-auto">
+          <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-[104px] z-40 w-[min(360px,calc(100vw-48px))] md:left-8 md:translate-x-0 lg:left-10">
+            <div className="pointer-events-auto max-h-[calc(100dvh-250px)] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-[28px]" style={{ paddingBottom: '4px' }}>
               {lessonDeckLoading ? (
                 <LessonDeckLoading />
               ) : (
@@ -465,6 +477,7 @@ export default function ChatPage() {
                   onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                   onSkip={() => void skipDeckCard()}
                   isAdvancing={isAdvancingDeck}
+                  sessionId={currentSessionId ?? undefined}
                 />
               )}
             </div>
@@ -474,12 +487,11 @@ export default function ChatPage() {
         {/* Insight rail — floats on the right so the chat stays centered on screen
             (mirrors the deck card, which floats on the left). Hidden on mobile. */}
         {onboardingPanelVisible && (
-          <div className="pointer-events-none fixed top-24 right-8 z-30 hidden w-[260px] md:block lg:right-10 lg:w-[280px]">
-            <div className="pointer-events-auto">
+          <div className="pointer-events-none absolute top-[104px] right-8 z-40 hidden w-[260px] md:block lg:right-10 lg:w-[280px]">
+            <div className="pointer-events-auto max-h-[calc(100dvh-250px)] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-[28px]" style={{ paddingBottom: '4px' }}>
               <OnboardingPanel
                 isVisible={isOnboardingSession}
                 state={onboardingState}
-                className="max-h-[calc(100vh-9rem)] overflow-y-auto"
               />
             </div>
           </div>
@@ -491,6 +503,11 @@ export default function ChatPage() {
             <div
               ref={scrollContainerRef}
               className="h-full min-h-0 overflow-y-auto py-4 flex flex-col items-center gap-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              style={{
+                paddingTop: '120px',
+                maskImage: 'linear-gradient(to bottom, transparent 0px, transparent 40px, black 120px)',
+                WebkitMaskImage: 'linear-gradient(to bottom, transparent 0px, transparent 40px, black 120px)',
+              }}
             >
               <div className="w-full max-w-md flex flex-col gap-3">
             {messages.length === 0 && greetingSentences.length > 0 && (
@@ -568,6 +585,7 @@ export default function ChatPage() {
                   onClose={() => setToolboxOpen(false)}
                   ctx={toolboxCtx}
                   mode="panel"
+                  onAddFlashcard={handleToolboxAddFlashcard}
                 />
               </div>
             )}
@@ -577,6 +595,7 @@ export default function ChatPage() {
                 onClose={() => setToolboxOpen(false)}
                 ctx={toolboxCtx}
                 mode="sheet"
+                onAddFlashcard={handleToolboxAddFlashcard}
               />
             </div>
           </>
@@ -673,6 +692,7 @@ export default function ChatPage() {
                     onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                     onSkip={() => void skipDeckCard()}
                     isAdvancing={isAdvancingDeck}
+                    sessionId={currentSessionId ?? undefined}
                   />
                 </div>
               )}
@@ -2244,6 +2264,7 @@ function DeckCardView({
   onNext,
   onSkip,
   isAdvancing,
+  sessionId,
 }: {
   deck: ExerciseDeck;
   isLighter: boolean;
@@ -2256,8 +2277,12 @@ function DeckCardView({
   onNext: () => void;
   onSkip: () => void;
   isAdvancing: boolean;
+  sessionId?: string;
 }) {
   const [showRejectOptions, setShowRejectOptions] = useState(false);
+  const [taskTranslation, setTaskTranslation] = useState<string | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const translatedForRef = useRef<string>('');
 
   // Auto-advance policy:
   //  • Lighter (quick) mode: no manual controls — advance once any result lands.
@@ -2267,6 +2292,24 @@ function DeckCardView({
   //    "Tap Next when you're ready", so auto-advancing here would skip the
   //    user's turn to choose (the session 2+ bug we hit before).
   const card = deck.cards[deck.current_card_index];
+
+  const handleTranslate = useCallback(async () => {
+    if (!sessionId || !card?.task || translating) return;
+    if (translatedForRef.current === card.task) return;
+    setTranslating(true);
+    setTaskTranslation(null);
+    try {
+      const res = await httpClient.post<{ translation: string }>(`/session/${sessionId}/translate`, { text: card.task });
+      if (res?.translation) {
+        setTaskTranslation(res.translation);
+        translatedForRef.current = card.task;
+      }
+    } catch {
+      // silent
+    } finally {
+      setTranslating(false);
+    }
+  }, [sessionId, card, translating]);
   const isOnboarding = deck.session_type === 'onboarding_diagnostic';
   useEffect(() => {
     if (!card?.result) return;
@@ -2320,7 +2363,30 @@ function DeckCardView({
 
       <div className="flex flex-col gap-2">
         <h2 className="text-lg font-black leading-snug" style={{ color: '#1a1c1c' }}>{card.title}</h2>
-        <p className="text-sm font-semibold leading-relaxed" style={{ color: '#6f7b64' }}>{card.task}</p>
+        <div className="flex flex-col gap-1">
+          <p className="text-sm font-semibold leading-relaxed" style={{ color: '#6f7b64' }}>{card.task}</p>
+          {taskTranslation && (
+            <p className="text-xs font-semibold leading-relaxed rounded-xl px-2 py-1.5" style={{ color: '#6f7b64', background: '#f9f9f9', border: '1.5px solid #e2e2e2' }}>
+              🇻🇳 {taskTranslation}
+            </p>
+          )}
+          {sessionId && (
+            <button
+              type="button"
+              onClick={() => void handleTranslate()}
+              disabled={translating}
+              className="self-start text-[10px] font-extrabold px-2 py-0.5 rounded-full transition-all"
+              style={{
+                background: translating ? '#f0f0f0' : '#fff3e0',
+                color: translating ? '#becbb1' : '#ff9c27',
+                border: '1.5px solid',
+                borderColor: translating ? '#e2e2e2' : '#ffd580',
+              }}
+            >
+              {translating ? 'Đang dịch…' : taskTranslation ? 'Dịch lại' : 'Dịch sang tiếng Việt'}
+            </button>
+          )}
+        </div>
         {isLesson && deck.status === 'not_started' && (
           <p className="text-xs font-bold leading-snug rounded-2xl px-3 py-2" style={{ background: '#e8f9d3', color: '#1e5000', border: '2px solid #d7ffb8' }}>
             Start this exercise first. After I read the task, answer with the mic.

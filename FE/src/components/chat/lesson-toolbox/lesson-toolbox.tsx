@@ -17,6 +17,8 @@ export interface LessonToolboxContext {
   level?: string;
   /** The active card task text */
   currentTask?: string;
+  /** Index of the active card — forces cache-miss on card advance */
+  cardIndex?: number;
 }
 
 interface VocabItem {
@@ -57,6 +59,7 @@ function getToolboxCacheKey(tab: ToolboxTabKey, ctx: LessonToolboxContext): stri
     topic: ctx.topic ?? '',
     level: ctx.level ?? 'beginner',
     task: ctx.currentTask ?? '',
+    cardIndex: ctx.cardIndex ?? 0,
   });
 }
 
@@ -82,23 +85,30 @@ async function fetchToolboxTab(
     task: ctx.currentTask ?? '',
   });
   const data = await httpClient.get<ToolboxResponse>(`/session/${sessionId}/toolbox?${params.toString()}`);
-  toolboxResponseCache.set(cacheKey, data);
+  // Only cache successful LLM results — fallback data must not be cached so
+  // the next open retries the LLM instead of showing stale generic words.
+  if (!data?.fallback) {
+    toolboxResponseCache.set(cacheKey, data);
+  }
   return data;
 }
 
 // ─── Tab components ───────────────────────────────────────────────────────────
 
-function VocabTab({ ctx }: { ctx: LessonToolboxContext }) {
+function VocabTab({ ctx, onAddFlashcard }: { ctx: LessonToolboxContext; onAddFlashcard?: (word: string, meaning: string, example: string, pronunciation?: string) => Promise<void> }) {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<VocabItem[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [error, setError] = useState(false);
+  const [addingIdx, setAddingIdx] = useState<number | null>(null);
+  const [addedIdxs, setAddedIdxs] = useState<Set<number>>(new Set());
   const prevKey = useRef('');
 
   useEffect(() => {
-    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}|${ctx.cardIndex ?? 0}`;
     if (key === prevKey.current) return;
     prevKey.current = key;
+    setAddedIdxs(new Set());
 
     if (!ctx.sessionId) {
       setLoading(false);
@@ -128,7 +138,7 @@ function VocabTab({ ctx }: { ctx: LessonToolboxContext }) {
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
-  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
 
   if (loading) {
     return (
@@ -149,6 +159,20 @@ function VocabTab({ ctx }: { ctx: LessonToolboxContext }) {
       </div>
     );
   }
+
+  const handleAddFlashcard = async (e: React.MouseEvent, i: number, item: VocabItem) => {
+    e.stopPropagation();
+    if (!onAddFlashcard || addingIdx !== null || addedIdxs.has(i)) return;
+    setAddingIdx(i);
+    try {
+      await onAddFlashcard(item.word, item.meaning, item.example, item.pronunciation);
+      setAddedIdxs((prev) => new Set([...prev, i]));
+    } catch {
+      // silent — UI stays unchanged so user can retry
+    } finally {
+      setAddingIdx(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-2 py-2">
@@ -172,11 +196,30 @@ function VocabTab({ ctx }: { ctx: LessonToolboxContext }) {
                 <span className="text-[11px] font-medium" style={{ color: '#9e9e9e' }}>{item.pronunciation}</span>
               )}
             </div>
-            {expanded === i ? (
-              <ChevronDown size={14} style={{ color: '#58cc02', flexShrink: 0 }} />
-            ) : (
-              <ChevronRight size={14} style={{ color: '#becbb1', flexShrink: 0 }} />
-            )}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {onAddFlashcard && (
+                <span
+                  role="button"
+                  aria-label={addedIdxs.has(i) ? 'Added to flashcards' : 'Add to flashcards'}
+                  onClick={(e) => void handleAddFlashcard(e, i, item)}
+                  className="inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-black transition-all"
+                  style={{
+                    background: addedIdxs.has(i) ? '#e8f9d3' : '#f0f0f0',
+                    color: addedIdxs.has(i) ? '#58cc02' : '#6f7b64',
+                    border: `1.5px solid ${addedIdxs.has(i) ? '#bdee8c' : '#e2e2e2'}`,
+                    opacity: addingIdx === i ? 0.5 : 1,
+                    cursor: addedIdxs.has(i) ? 'default' : 'pointer',
+                  }}
+                >
+                  {addedIdxs.has(i) ? '✓' : addingIdx === i ? '…' : '+'}
+                </span>
+              )}
+              {expanded === i ? (
+                <ChevronDown size={14} style={{ color: '#58cc02' }} />
+              ) : (
+                <ChevronRight size={14} style={{ color: '#becbb1' }} />
+              )}
+            </div>
           </div>
           <p className="text-xs font-semibold mt-0.5" style={{ color: '#6f7b64' }}>{item.meaning}</p>
           {expanded === i && (
@@ -200,7 +243,7 @@ function PhrasesTab({ ctx }: { ctx: LessonToolboxContext }) {
   const prevKey = useRef('');
 
   useEffect(() => {
-    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}|${ctx.cardIndex ?? 0}`;
     if (key === prevKey.current) return;
     prevKey.current = key;
 
@@ -230,7 +273,7 @@ function PhrasesTab({ ctx }: { ctx: LessonToolboxContext }) {
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
-  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
 
   if (loading) {
     return (
@@ -291,7 +334,7 @@ function SampleTab({ ctx }: { ctx: LessonToolboxContext }) {
   const prevKey = useRef('');
 
   useEffect(() => {
-    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}`;
+    const key = `${ctx.sessionId}|${ctx.topic}|${ctx.level}|${ctx.currentTask}|${ctx.cardIndex ?? 0}`;
     if (key === prevKey.current) return;
     prevKey.current = key;
 
@@ -325,7 +368,7 @@ function SampleTab({ ctx }: { ctx: LessonToolboxContext }) {
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
-  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask]);
+  }, [ctx.sessionId, ctx.topic, ctx.level, ctx.currentTask, ctx.cardIndex]);
 
   if (loading) {
     return (
@@ -419,9 +462,11 @@ interface LessonToolboxProps {
   ctx: LessonToolboxContext;
   /** Floating position mode: 'panel' (desktop right rail) | 'sheet' (mobile bottom sheet) */
   mode?: 'panel' | 'sheet';
+  /** Called when user taps '+' on a vocab word to add it to flashcards */
+  onAddFlashcard?: (word: string, meaning: string, example: string, pronunciation?: string) => Promise<void>;
 }
 
-export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet' }: LessonToolboxProps) {
+export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet', onAddFlashcard }: LessonToolboxProps) {
   const [tab, setTab] = useState<ToolboxTab>('vocab');
 
   const handleTabChange = useCallback((t: ToolboxTab) => {
@@ -514,7 +559,7 @@ export function LessonToolbox({ isOpen, onClose, ctx, mode = 'sheet' }: LessonTo
 
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto">
-        {tab === 'vocab'   && <VocabTab ctx={ctx} />}
+        {tab === 'vocab'   && <VocabTab ctx={ctx} onAddFlashcard={onAddFlashcard} />}
         {tab === 'phrases' && <PhrasesTab ctx={ctx} />}
         {tab === 'sample'  && <SampleTab ctx={ctx} />}
       </div>
