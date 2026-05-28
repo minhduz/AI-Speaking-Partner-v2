@@ -7,11 +7,9 @@ import {
   Home,
   Mic,
   LayoutGrid,
-  CreditCard,
   Settings2,
   UserCircle,
   LogOut,
-  Zap,
 } from 'lucide-react';
 import { sessionService } from '@/services/session.service';
 import type { SidebarProps } from './sidebar.types';
@@ -71,7 +69,6 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
   const isHome       = pathname?.startsWith('/home') ?? false;
   const isChat       = pathname === '/chat' || (pathname?.startsWith('/chat') ?? false);
   const isFlashcards = pathname?.startsWith('/flashcards') ?? false;
-  const isBilling    = pathname?.startsWith('/billing') ?? false;
   const isSettings   = pathname?.startsWith('/settings') ?? false;
   const isProfile    = pathname?.startsWith('/profile') ?? false;
 
@@ -100,9 +97,6 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           <NavLink label="Learn" icon={<Mic size={18} strokeWidth={2.5} />} iconBg="#dff5c5" iconColor="#2b6c00" active={isChat} onClick={onNewChat} />
           <Link href="/flashcards" className="block">
             <NavLink label="Flashcards" icon={<LayoutGrid size={18} strokeWidth={2.5} />} iconBg="#fff4cc" iconColor="#8c6e00" active={isFlashcards} />
-          </Link>
-          <Link href="/billing" className="block">
-            <NavLink label="Billing" icon={<CreditCard size={18} strokeWidth={2.5} />} iconBg="#dceeff" iconColor="#004666" active={isBilling} />
           </Link>
           <Link href="/settings" className="block">
             <NavLink label="Settings" icon={<Settings2 size={18} strokeWidth={2.5} />} iconBg="#ffe9cc" iconColor="#683a00" active={isSettings} />
@@ -141,10 +135,9 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
           </div>
         </nav>
 
-        {/* Bottom: Premium + Sign Out */}
+        {/* Bottom: Sign Out */}
         <div className="px-4 mt-4 shrink-0">
-          <Link href="/billing"><PremiumButton /></Link>
-          <div className="mt-4 pt-4" style={{ borderTop: '2px solid #f1f1f1' }}>
+          <div className="pt-4" style={{ borderTop: '2px solid #f1f1f1' }}>
             <button
               onClick={onLogout}
               className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200 hover:bg-[#ffecec] active:translate-y-1"
@@ -162,7 +155,7 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
       {/* ═══════════════════════════════════════════════════════════
           MOBILE BOTTOM NAV — floating pill, design-system style
           Shown on mobile only (lg:hidden)
-          5 tabs: Home, Learn, Cards, Premium, Profile.
+          4 tabs: Home, Learn, Cards, Profile.
           Settings lives inside the Profile page on mobile.
           Sign-out also lives in Profile, not here.
           ═══════════════════════════════════════════════════════════ */}
@@ -209,17 +202,6 @@ export function Sidebar({ onNewChat, onLogout, onSessionClick, currentSessionId,
               iconBg="#fff4cc"
               iconColor="#8c6e00"
               active={isFlashcards}
-            />
-          </Link>
-
-          {/* Billing */}
-          <Link href="/billing">
-            <MobileTab
-              label="Premium"
-              icon={<Zap size={20} strokeWidth={2.5} />}
-              iconBg="#dceeff"
-              iconColor="#004666"
-              active={isBilling}
             />
           </Link>
 
@@ -337,38 +319,6 @@ function NavLink({
       </span>
       <span style={{ fontWeight: 700, letterSpacing: '-0.01em' }}>{label}</span>
     </Tag>
-  );
-}
-
-function PremiumButton() {
-  const [pressed, setPressed] = useState(false);
-  const [hovered, setHovered] = useState(false);
-
-  return (
-    <button
-      onMouseEnter={() => setHovered(true)}
-      onMouseDown={() => { setHovered(false); setPressed(true); }}
-      onMouseUp={() => setPressed(false)}
-      onMouseLeave={() => { setHovered(false); setPressed(false); }}
-      onTouchStart={() => setPressed(true)}
-      onTouchEnd={() => setPressed(false)}
-      className="w-full flex items-center justify-center gap-2 text-sm font-extrabold select-none"
-      style={{
-        fontFamily: 'Lexend, sans-serif',
-        background: hovered ? '#4fc5ff' : '#2fb8ff',
-        color: '#004666',
-        borderRadius: '14px',
-        padding: '12px 16px',
-        boxShadow: pressed ? '0 1px 0 #006590' : hovered ? '0 6px 0 #006590' : '0 4px 0 #006590',
-        transform: pressed ? 'translateY(3px)' : hovered ? 'translateY(-2px)' : 'translateY(0)',
-        transition: 'transform 100ms ease, box-shadow 100ms ease, background 120ms ease',
-        border: 'none',
-        cursor: 'pointer',
-      }}
-    >
-      <Zap size={16} fill="#004666" strokeWidth={0} />
-      Go Premium
-    </button>
   );
 }
 

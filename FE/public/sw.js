@@ -10,7 +10,6 @@ const SHELL_ASSETS = [
   '/flashcards',
   '/profile',
   '/settings',
-  '/billing',
   '/manifest.json',
   '/favicon.ico',
   '/favicon.svg',

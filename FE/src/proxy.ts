@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { roleFromToken, homePathForRole } from '@/lib/roles';
 
 const PUBLIC_PATHS = ['/login', '/register'];
 
 export function proxy(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
-  const hasSession = req.cookies.has('refresh_token');
+  const refreshToken = req.cookies.get('refresh_token')?.value ?? null;
+  const hasSession = !!refreshToken;
 
   const isPublic = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
   const isGoogleOnboarding = pathname.startsWith('/register') && searchParams.get('from') === 'google';
@@ -13,8 +15,10 @@ export function proxy(req: NextRequest) {
     return NextResponse.redirect(new URL('/login', req.url));
   }
 
+  // Already signed in but on a public auth page → send to the role's home so a
+  // teacher/admin never lands on the student dashboard.
   if (hasSession && isPublic && !isGoogleOnboarding) {
-    return NextResponse.redirect(new URL('/home', req.url));
+    return NextResponse.redirect(new URL(homePathForRole(roleFromToken(refreshToken)), req.url));
   }
 
   return NextResponse.next();

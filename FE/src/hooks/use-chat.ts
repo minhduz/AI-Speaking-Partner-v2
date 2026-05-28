@@ -2,16 +2,13 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  BillingLimitError,
   sessionService,
-  type BillingLimitCode,
   type OnboardingState,
   type EndReason,
   type ExerciseDeck,
   type SessionEvaluation,
   type SessionMode,
 } from '@/services/session.service';
-import { billingService } from '@/services/billing.service';
 import { userService } from '@/services/user.service';
 import { useAuthContext } from '@/contexts/auth-context';
 import type { ChatMessage, TurnHistoryItem } from '@/types/session.types';
@@ -100,7 +97,6 @@ export interface UseChatReturn {
   isRecording: boolean;
   analyser: AnalyserNode | null;
   errorMessage: string | null;
-  billingLimitCode: BillingLimitCode | null;
   currentSessionId: string | null;
   sessionTitle: string | null;
   sessionTitleUpdate: { sessionId: string; title: string } | null;
@@ -130,6 +126,8 @@ export interface UseChatReturn {
   evaluation: SessionEvaluation | null;
   /** True while polling for the evaluation report. */
   evaluationLoading: boolean;
+  /** Curriculum-first: lesson attempt id of the just-ended session, if any. */
+  endedLessonAttemptId: string | null;
   /** Fetch + show the evaluation board (polls while consolidation finishes). */
   viewEvaluation: () => Promise<void>;
   /** Leave the ended-session flow and reset to a fresh chat. */
@@ -138,6 +136,8 @@ export interface UseChatReturn {
   sessionStarted: boolean;
   currentDeck: ExerciseDeck | null;
   lighterMode: boolean;
+  /** True while a Next/Skip advance is in flight — disable deck controls. */
+  isAdvancingDeck: boolean;
   advanceDeckCard: () => Promise<void>;
   skipDeckCard: () => Promise<void>;
   acceptDeckChallenge: () => Promise<void>;
@@ -269,7 +269,11 @@ type SegmentQueueItem = {
   audioReady: Promise<{ startTime: number; durationMs: number } | null>;
 };
 
-export function useChat(initialSessionId?: string): UseChatReturn {
+export function useChat(
+  initialSessionId?: string,
+  liveSessionId?: string,
+  modeOverride?: SessionMode,
+): UseChatReturn {
   const { isAuthenticated, isLoading: authLoading } = useAuthContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>('idle');
@@ -280,7 +284,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [greetingSentences, setGreetingSentences] = useState<string[]>([]);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [billingLimitCode, setBillingLimitCode] = useState<BillingLimitCode | null>(null);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionTitle, setSessionTitle] = useState<string | null>(null);
   const [sessionTitleUpdate, setSessionTitleUpdate] = useState<{ sessionId: string; title: string } | null>(null);
@@ -304,15 +307,28 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // The mode actually in effect for the live session (echoed back from BE,
   // since onboarding can force guided_learning even if user picked free_talk).
   const [activeSessionMode, setActiveSessionMode] = useState<SessionMode | null>(null);
+  const activeSessionModeRef = useRef<SessionMode | null>(null);
+
+  useEffect(() => {
+    activeSessionModeRef.current = activeSessionMode;
+  }, [activeSessionMode]);
 
   // Hydrate the next-session mode from localStorage once on mount.
+  // modeOverride (from ?mode=free_talk in URL) wins over saved storage so a
+  // user clicking "Start Free Talk" never silently inherits a stale guided
+  // selection from a previous session.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    if (modeOverride === 'free_talk' || modeOverride === 'guided_learning') {
+      window.queueMicrotask(() => setNextSessionModeState(modeOverride));
+      window.localStorage.setItem('speakup_next_session_mode', modeOverride);
+      return;
+    }
     const saved = window.localStorage.getItem('speakup_next_session_mode');
     if (saved === 'free_talk' || saved === 'guided_learning') {
-      setNextSessionModeState(saved);
+      window.queueMicrotask(() => setNextSessionModeState(saved));
     }
-  }, []);
+  }, [modeOverride]);
 
   // Public setter — also persists. Refuses to change mode while a session is
   // already live (sessionId is set) so we don't desync FE state vs BE.
@@ -338,10 +354,19 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const [endChoices, setEndChoices] = useState(false);
   const [evaluation, setEvaluation] = useState<SessionEvaluation | null>(null);
   const [evaluationLoading, setEvaluationLoading] = useState(false);
+  // Curriculum-first: when the just-ended session was bound to a lesson
+  // attempt, BE returns the attempt id from /session/end and the FE pulls the
+  // lesson result via /lessons/attempts/:id to render the lesson outcome card.
+  const [endedLessonAttemptId, setEndedLessonAttemptId] = useState<string | null>(null);
   const endedSessionIdRef = useRef<string | null>(null);
   const [currentDeck, setCurrentDeck] = useState<ExerciseDeck | null>(null);
   const [lighterMode, setLighterMode] = useState(false);
   const [sessionStarted, setSessionStarted] = useState(false);
+  // Guards deck advancement (Next/Skip) so rapid/double taps or a duplicate
+  // render can't fire /deck/next more than once before the UI updates — the
+  // root cause of decks completing while only 2/4 cards were done.
+  const [isAdvancingDeck, setIsAdvancingDeck] = useState(false);
+  const deckAdvanceInFlightRef = useRef(false);
 
   const statusRef = useRef<ChatStatus>('idle');
   const sessionIdRef = useRef<string | null>(null);
@@ -351,6 +376,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  // Side-channel user-audio capture: the SAME MediaRecorder chunks that stream
+  // to STT are also collected here, assembled into a Blob on stop, and uploaded
+  // out-of-band. This NEVER blocks or alters the realtime STT/LLM path.
+  const audioChunksRef = useRef<Blob[]>([]);
+  const pendingTurnAudioRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
+  const turnAudioSeqRef = useRef(0);
   const initializedRef = useRef(false);
   // Tracks whether THIS component instance is still mounted. The greeting stream
   // is owned at module level and outlives a route-change unmount, so its
@@ -402,25 +433,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     }
   }, [turnsToMessages]);
 
-  const setBillingLimitError = useCallback((err: BillingLimitError) => {
-    setBillingLimitCode(err.code);
-    if (err.code === 'SESSION_LIMIT_REACHED') {
-      setErrorMessage(
-        `You've used your ${err.limit ?? 10} free sessions today. Upgrade to Pro for unlimited speaking practice.`,
-      );
-      return;
-    }
-    setErrorMessage(
-      `This session has reached the ${err.limit?.toLocaleString() ?? '30,000'} token limit. Start a new session or upgrade to Pro for longer practice.`,
-    );
-  }, []);
-
   const checkSessionQuota = useCallback(async () => {
     try {
-      const [quota, usage] = await Promise.all([
-        sessionService.getQuota().catch(() => null),
-        billingService.getUsage().catch(() => null),
-      ]);
+      const quota = await sessionService.getQuota().catch(() => null);
 
       const history = typeof quota?.is_first_session === 'boolean'
         ? null
@@ -435,24 +450,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           window.localStorage.setItem('speakup_next_session_mode', 'guided_learning');
         }
       }
-
-      // The orchestrator quota is the single source of truth for the *daily*
-      // gate: quota.sessions_used counts sessions started today. Do NOT gate on
-      // billing's usage.sessions_used — that's a *monthly* cumulative count, so
-      // comparing it to the daily limit would keep the user blocked for the rest
-      // of the month once they hit 10 in a day.
-      const quotaLimitReached =
-        !!quota &&
-        !quota.is_unlimited &&
-        !quota.can_start;
-
-      if (!quotaLimitReached) return quota;
-
-      setBillingLimitError(new BillingLimitError(
-        'SESSION_LIMIT_REACHED',
-        quota?.daily_session_limit ?? usage?.daily_session_limit ?? 10,
-        quota?.sessions_used ?? 0,
-      ));
       return quota;
     } catch (err) {
       console.error('[session quota]', err);
@@ -463,7 +460,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       }
       return null;
     }
-  }, [setBillingLimitError]);
+  }, []);
 
   const enterReview = useCallback(async (sessionId: string) => {
     setReviewMode(true);
@@ -723,12 +720,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setStatus('idle');
     setMessages([]);
     setErrorMessage(null);
-    setBillingLimitCode(null);
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
     setIsOnboardingSession(false);
     setOnboardingState(null);
+    activeSessionModeRef.current = null;
     setActiveSessionMode(null);
     const quota = await checkSessionQuota();
     const greetingMode = quota?.is_first_session === false ? nextSessionMode : 'guided_learning';
@@ -761,10 +758,56 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     if (initialSessionId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       void enterReview(initialSessionId);
+    } else if (liveSessionId) {
+      // Curriculum-first: a lesson was just started — the session + deck are
+      // already minted server-side. Bootstrap as a LIVE session: skip review,
+      // skip /session/start (BE created it), kick off the session-tied
+      // greeting + an immediate deck poll so the lesson card appears.
+      // eslint-disable-next-line react-hooks/immutability
+      sessionIdRef.current = liveSessionId;
+      setCurrentSessionId(liveSessionId);
+      setSessionStarted(true);
+      activeSessionModeRef.current = 'guided_learning';
+      setActiveSessionMode('guided_learning');
+      setStatus('greeting');
+      void sessionService.getDeck(liveSessionId)
+        .then((deck) => {
+          if (!mountedRef.current) return;
+          if (sessionIdRef.current !== liveSessionId) return;
+          setCurrentDeck(deck);
+        })
+        .catch(() => {});
+      void (async () => {
+        try {
+          // Reset audio scheduling so the first segment plays cleanly.
+          nextPlayTimeRef.current = 0;
+          lastScheduleRef.current = Promise.resolve();
+          const stream = await sessionService.streamGreeting(liveSessionId);
+          for await (const event of stream) {
+            if (event.type === 'segment') {
+              enqueueSegment(event.audio_b64, event.text, true);
+              void processSegmentQueue();
+            } else if (event.type === 'done') {
+              await waitForSegmentIdle();
+              if (mountedRef.current) setStatus('ready');
+              return;
+            } else if (event.type === 'error') {
+              if (mountedRef.current) setStatus('ready');
+              return;
+            }
+          }
+          await waitForSegmentIdle();
+          if (mountedRef.current) setStatus('ready');
+        } catch (err) {
+          console.error('[live-lesson greeting]', err);
+          if (mountedRef.current) setStatus('ready');
+        }
+      })();
+      // The standing currentSessionId-driven effect picks up the deck poll.
     } else {
       void initSession();
     }
-  }, [authLoading, isAuthenticated, initSession, initialSessionId, enterReview]);
+  }, [authLoading, isAuthenticated, initSession, initialSessionId, liveSessionId, enterReview, enqueueSegment, processSegmentQueue, waitForSegmentIdle]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) return;
@@ -820,18 +863,25 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     };
   }, []);
 
+  // Tab close / full-page navigation: fire-and-forget a beacon so the BE can
+  // mark the session abandoned. DO NOT call this in the effect cleanup —
+  // React 19 Strict Mode (and HMR) trigger cleanups on a mount that is NOT
+  // really unmounting, and SPA route changes inside the app do the same. Both
+  // would silently abandon an actively-running lesson session within ms of
+  // creation (the live-lesson bootstrap sets sessionIdRef synchronously, so
+  // cleanup sees a live sid and fires the beacon). Sessions left active by
+  // in-app navigation are cleaned up by the orchestrator's orphan sweep on
+  // the next /session/start, and by the lesson "reuse in-progress attempt"
+  // logic in LessonService.startLesson.
   useEffect(() => {
     const endOnLeave = () => {
       const sid = sessionIdRef.current;
       if (!sid) return;
-      sessionIdRef.current = null;
-      setCurrentSessionId(null);
       sessionService.endBeacon(sid); // sends reason: 'tab_close'
     };
     window.addEventListener('beforeunload', endOnLeave);
     return () => {
       window.removeEventListener('beforeunload', endOnLeave);
-      endOnLeave();
     };
   }, []);
 
@@ -871,9 +921,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   const pollDeck = useCallback(async () => {
     const sid = sessionIdRef.current;
     if (!sid) return;
+    if ((activeSessionModeRef.current as SessionMode | null) === 'free_talk') {
+      setCurrentDeck(null);
+      return;
+    }
     try {
       const deck = await sessionService.getDeck(sid);
       if (sessionIdRef.current !== sid) return;
+      if ((activeSessionModeRef.current as SessionMode | null) === 'free_talk') {
+        setCurrentDeck(null);
+        return;
+      }
       // Never let a stale poll revert to a lower card index — this can happen
       // when the interval fires while advanceDeckCard's PUT is still in flight,
       // causing the auto-advance useEffect to re-trigger for an already-passed card.
@@ -892,18 +950,24 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // for responsiveness; this just catches anything missed.
   useEffect(() => {
     if (!currentSessionId) return;
+    if (activeSessionMode === 'free_talk') {
+      setCurrentDeck(null);
+      return;
+    }
     void pollDeck();
     const interval = window.setInterval(pollDeck, 3000);
     return () => {
       window.clearInterval(interval);
       setCurrentDeck(null);
     };
-  }, [currentSessionId, pollDeck]);
+  }, [activeSessionMode, currentSessionId, pollDeck]);
 
   const hasSpokenRef = useRef(false);
   const checkVolumeIntervalRef = useRef<number | null>(null);
 
   const startRecording = useCallback(async () => {
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     streamRef.current = stream;
     // Re-use the AudioContext pre-created by startMic in the gesture handler.
@@ -974,11 +1038,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
     const recorder = new MediaRecorder(stream);
     recorderRef.current = recorder;
+    audioChunksRef.current = [];
     recorder.ondataavailable = (e) => {
-      if (e.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-        e.data.arrayBuffer().then((buf) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(buf);
-        });
+      if (e.data.size > 0) {
+        // Side-channel capture (does not affect STT — the WS send below is
+        // byte-for-byte unchanged).
+        audioChunksRef.current.push(e.data);
+        if (ws.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then((buf) => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(buf);
+          });
+        }
       }
     };
     recorder.start(50);
@@ -995,6 +1065,16 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       const ws = sttWsRef.current;
       sttDoneResolverRef.current = resolve;
       recorder.onstop = () => {
+        // Side-channel: assemble captured chunks into a Blob for out-of-band
+        // upload. Pure local work — STT end-signal below is unchanged.
+        const chunks = audioChunksRef.current;
+        audioChunksRef.current = [];
+        if (chunks.length > 0 && hasSpokenRef.current) {
+          const mimeType = recorder.mimeType || 'audio/webm';
+          pendingTurnAudioRef.current = { blob: new Blob(chunks, { type: mimeType }), mimeType };
+        } else {
+          pendingTurnAudioRef.current = null;
+        }
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ end: true }));
         } else {
@@ -1012,6 +1092,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // ── Turn flow ───────────────────────────────────────────────────────────────
   const processTurn = useCallback(async (transcript: string) => {
     const trimmedTranscript = transcript.trim();
+    if (!trimmedTranscript) {
+      pendingTurnAudioRef.current = null;
+    }
     let sessionId = sessionIdRef.current;
     const requestedMode = nextSessionMode;
     let effectiveSessionMode = activeSessionMode;
@@ -1021,7 +1104,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // said out loud) is preserved as turn 0 in short-term memory.
     const isFirstTurnOfSession = !sessionId;
     if (!sessionId) {
-      if (!trimmedTranscript) return;
+      if (!trimmedTranscript) {
+        pendingTurnAudioRef.current = null;
+        audioChunksRef.current = [];
+        return;
+      }
 
       console.log(
         `[mode-debug] START → requestedMode=${requestedMode} nextSessionMode=${nextSessionMode} ` +
@@ -1038,9 +1125,11 @@ export function useChat(initialSessionId?: string): UseChatReturn {
               console.log(`[mode-debug] START RESPONSE → BE mode=${mode} is_first_session=${is_first_session} (requested=${requestedMode})`);
               const resolvedMode = mode ?? requestedMode;
               sessionIdRef.current = session_id;
+              turnAudioSeqRef.current = 0;
               setCurrentSessionId(session_id);
               isFirstSessionRef.current = Boolean(is_first_session);
               effectiveSessionMode = resolvedMode;
+              activeSessionModeRef.current = resolvedMode;
               setActiveSessionMode(resolvedMode);
             })
             .finally(() => { sessionStartPromiseRef.current = null; });
@@ -1054,14 +1143,14 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           window.setTimeout(() => { void pollDeck(); }, 600);
           window.setTimeout(() => { void pollDeck(); }, 1800);
         }
-      } catch (err) {
+      } catch {
+<<<<<<< HEAD
+        pendingTurnAudioRef.current = null;
+        audioChunksRef.current = [];
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         setMessages((prev) => prev.filter((m) => !m.pending));
-        if (err instanceof BillingLimitError) {
-          setBillingLimitError(err);
-        } else {
-          setBillingLimitCode(null);
-          setErrorMessage('Failed to start session');
-        }
+        setErrorMessage('Failed to start session');
         setStatus('error');
         return;
       }
@@ -1069,7 +1158,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
     setStatus('processing');
     setErrorMessage(null);
-    setBillingLimitCode(null);
     nextPlayTimeRef.current = 0;
     lastScheduleRef.current = Promise.resolve();
 
@@ -1096,6 +1184,23 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       // Future "New Chat" within the same auth lifetime will re-stream a fresh
       // greeting via runGreeting().
       delete _greetingTextCache[requestedMode];
+    }
+
+    // Side-channel: upload this turn's captured audio. Fire-and-forget — we do
+    // NOT await it before streaming the AI turn, so realtime speed is untouched.
+    const pendingAudio = pendingTurnAudioRef.current;
+    pendingTurnAudioRef.current = null;
+    if (pendingAudio && pendingAudio.blob.size > 0 && sessionId) {
+      const turnIndex = turnAudioSeqRef.current++;
+      const clientTurnId =
+        typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : undefined;
+      void sessionService
+        .uploadTurnAudio(sessionId, pendingAudio.blob, {
+          turnIndex,
+          transcript: trimmedTranscript || undefined,
+          clientTurnId,
+        })
+        .catch((e) => console.warn('[turn-audio] upload failed (non-blocking):', e));
     }
 
     try {
@@ -1182,9 +1287,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           }
           return;
         } else if (event.type === 'error') {
-          if (event.message === 'SESSION_TOKEN_LIMIT_REACHED') {
-            throw new BillingLimitError('SESSION_TOKEN_LIMIT_REACHED', event.limit, event.used);
-          }
           throw new Error(event.message);
         }
       }
@@ -1201,15 +1303,10 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       setStatus('ready');
     } catch (err) {
       setMessages((prev) => prev.filter((m) => !m.pending));
-      if (err instanceof BillingLimitError) {
-        setBillingLimitError(err);
-      } else {
-        setBillingLimitCode(null);
-        setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
-      }
+      setErrorMessage(err instanceof Error ? err.message : 'Turn failed');
       setStatus('error');
     }
-  }, [activeSessionMode, enqueueSegment, nextSessionMode, modeSelectionLocked, processSegmentQueue, setBillingLimitError, waitForSegmentIdle, pollDeck]);
+  }, [activeSessionMode, enqueueSegment, nextSessionMode, modeSelectionLocked, processSegmentQueue, waitForSegmentIdle, pollDeck]);
 
   const exitReview = useCallback(() => {
     setReviewMode(false);
@@ -1228,12 +1325,17 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     setEndChoices(false);
     setEvaluation(null);
     setEvaluationLoading(false);
+    setEndedLessonAttemptId(null);
     endedSessionIdRef.current = null;
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
     setIsEnding(false);
     setClosingText(null);
     // Clear the just-ended session's mode now that the recap is dismissed —
     // initSession will reset state but this is the canonical place to drop
     // any cross-flow leftovers.
+    activeSessionModeRef.current = null;
     setActiveSessionMode(null);
     setMessages([]);
     setStatus('ready');
@@ -1286,6 +1388,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     sttDoneResolverRef.current = null;
     pendingStopRef.current = false;
     isStoppingRef.current = false;
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
 
     sessionStartPromiseRef.current = null;
     setSessionStarted(false);
@@ -1299,7 +1404,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Talk recap vs a Guided breakdown). It is cleared in exitSession() once
     // the user dismisses the recap.
     setErrorMessage(null);
-    setBillingLimitCode(null);
 
     // CLOSING_MODE: only when user deliberately ends (button or voice intent)
     // For idle/tab_close we skip the closing message since user isn't there.
@@ -1358,7 +1462,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // Hard-end: mark session in DB + trigger consolidation. Consolidation also
     // builds the user-facing evaluation report (fetched later via viewEvaluation).
     if (prevSessionId) {
-      await sessionService.end(prevSessionId, reason).catch(console.error);
+      const result = await sessionService.end(prevSessionId, reason).catch((err) => {
+        console.error(err);
+        return null;
+      });
+      if (result?.lesson_attempt_id) {
+        setEndedLessonAttemptId(result.lesson_attempt_id);
+      }
     }
 
     // Deliberate close → keep the overlay up and offer the evaluation board
@@ -1419,27 +1529,93 @@ export function useChat(initialSessionId?: string): UseChatReturn {
   // without adding endSession to processTurn's dependency array.
   useEffect(() => { endSessionRef.current = endSession; }, [endSession]);
 
-  const advanceDeckCard = useCallback(async () => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      await sessionService.advanceDeckCard(sessionId);
-      const deck = await sessionService.getDeck(sessionId);
-      setCurrentDeck(deck);
-      if (deck) {
+  // A deck is only LEGITIMATELY finished when its status says so AND every card
+  // is terminal (completed/skipped, or the evaluator emitted next_card/
+  // finish_session). This blocks ending the session on a stale/malformed
+  // "completed" deck that still has not_started cards (which would finalize the
+  // lesson and score the unstarted cards as 0).
+  const isDeckActuallyComplete = useCallback((deck: ExerciseDeck | null): boolean => {
+    if (!deck) return false;
+    if (deck.status !== 'completed' && deck.status !== 'ended_early') return false;
+    const cards = deck.cards ?? [];
+    if (cards.length === 0) return true;
+    return cards.every(
+      (c) =>
+        c?.status === 'completed' ||
+        c?.status === 'skipped' ||
+        c?.next_action === 'next_card' ||
+        c?.next_action === 'finish_session',
+    );
+  }, []);
+
+  // Shared handler for Next (advance) and Skip — both mutate the same deck and
+  // must be serialized behind one in-flight guard.
+  const runDeckAction = useCallback(
+    async (action: 'advance' | 'skip') => {
+      const sessionId = sessionIdRef.current;
+      if (!sessionId) return;
+      // Idempotency guard: ignore concurrent/rapid taps until this one settles.
+      if (deckAdvanceInFlightRef.current) return;
+      deckAdvanceInFlightRef.current = true;
+      setIsAdvancingDeck(true);
+      try {
+        const deck =
+          action === 'skip'
+            ? await sessionService.skipDeckCard(sessionId)
+            : await sessionService.advanceDeckCard(sessionId);
+        if (!deck) return;
+        // Reconcile, but never let this clobber a further-advanced deck.
+        setCurrentDeck((prev) =>
+          prev && deck.current_card_index < prev.current_card_index ? prev : deck,
+        );
+
         if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
           // More cards remain — AI introduces the next one.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Last card done — AI transitions back to free conversation.
+<<<<<<< HEAD
+          // Only finalize/transition when the deck is genuinely complete. A
+          // partial deck reported as completed is treated as a no-op (the BE
+          // guard should prevent it, but we fail safe here too).
+          if (!isDeckActuallyComplete(deck)) {
+            console.warn('[deckAction] ignoring premature completion', {
+              status: deck.status,
+              idx: deck.current_card_index,
+            });
+            return;
+          }
+          // Curriculum-first: a finished lesson deck ends the session so the
+          // LessonAttempt is finalized; legacy decks transition to free chat.
+=======
+          // Curriculum-first: a lesson deck reaching completed means the user
+          // pressed Finish on the final card. End the session immediately so
+          // LessonAttempt is finalized (status/score/next_action) instead of
+          // sitting in_progress until the user manually taps End.
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
+          if (deck.lesson_attempt_id) {
+            void endSessionRef.current('user_clicked');
+            return;
+          }
+<<<<<<< HEAD
+=======
+          // Non-lesson decks (legacy paths): AI transitions back to free chat.
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           void processTurn('');
         }
+      } catch (err) {
+        console.error(`[deckAction:${action}]`, err);
+      } finally {
+        deckAdvanceInFlightRef.current = false;
+        setIsAdvancingDeck(false);
       }
-    } catch (err) {
-      console.error('[advanceDeckCard]', err);
-    }
-  }, [processTurn]);
+    },
+    [processTurn, isDeckActuallyComplete],
+  );
 
+<<<<<<< HEAD
+  const advanceDeckCard = useCallback(() => runDeckAction('advance'), [runDeckAction]);
+  const skipDeckCard = useCallback(() => runDeckAction('skip'), [runDeckAction]);
+=======
   const skipDeckCard = useCallback(async () => {
     const sessionId = sessionIdRef.current;
     if (!sessionId) return;
@@ -1452,6 +1628,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           // Mid-deck skip: AI introduces the next card's task.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
+          // Skipping the LAST card of a lesson also finalizes — otherwise the
+          // user has to press End manually after skipping the final boss.
+          if (deck.lesson_attempt_id) {
+            void endSessionRef.current('user_clicked');
+            return;
+          }
           // Last card skipped: AI asks what was difficult or if user wants another topic.
           void processTurn('');
         }
@@ -1460,6 +1642,7 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       console.error('[skipDeckCard]', err);
     }
   }, [processTurn]);
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   const acceptDeckChallenge = useCallback(async () => {
     const sessionId = sessionIdRef.current;
@@ -1487,7 +1670,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void processTurn('');
     } catch (err) {
       console.error('[rejectDeckChallenge]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
       setStatus('error');
     }
@@ -1503,11 +1685,12 @@ export function useChat(initialSessionId?: string): UseChatReturn {
           `Deck did not switch to free talk (status=${deck?.status ?? 'none'}, reason=${deck?.end_reason ?? 'none'})`,
         );
       }
+      activeSessionModeRef.current = 'free_talk';
+      setActiveSessionMode('free_talk');
       setCurrentDeck(null);
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckFreeTalk]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not switch to free talk');
       setStatus('error');
     }
@@ -1527,7 +1710,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       void processTurn('');
     } catch (err) {
       console.error('[chooseDeckEnd]', err);
-      setBillingLimitCode(null);
       setErrorMessage(err instanceof Error ? err.message : 'Could not end the exercise deck');
       setStatus('error');
     }
@@ -1576,6 +1758,8 @@ export function useChat(initialSessionId?: string): UseChatReturn {
       .then((transcript) => {
         isStoppingRef.current = false;
         if (!hasSpokenRef.current) {
+          pendingTurnAudioRef.current = null;
+          audioChunksRef.current = [];
           setMessages((prev) => prev.filter((m) => !m.pending));
           setErrorMessage("You didn't say anything. Please try again.");
           if (!sessionIdRef.current) setSessionStarted(false);
@@ -1609,7 +1793,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
   const startMic = useCallback(() => {
     if (statusRef.current !== 'ready' && statusRef.current !== 'error') return;
-    if (billingLimitCode === 'SESSION_LIMIT_REACHED') return;
     statusRef.current = 'recording';
     isStoppingRef.current = false;
     pendingStopRef.current = false;
@@ -1642,14 +1825,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
         audioCtxRef.current = null;
         setStatus('ready');
         if (!sessionIdRef.current) setSessionStarted(false);
-        if (err instanceof BillingLimitError) {
-          setBillingLimitError(err);
-        } else {
-          setBillingLimitCode(null);
-          setErrorMessage('Failed to start recording');
-        }
+        setErrorMessage('Failed to start recording');
       });
-  }, [billingLimitCode, setBillingLimitError, startRecording, runStop]);
+  }, [startRecording, runStop]);
 
   const stopMic = useCallback(() => {
     if (statusRef.current !== 'recording') return;
@@ -1676,6 +1854,9 @@ export function useChat(initialSessionId?: string): UseChatReturn {
 
     sessionStartPromiseRef.current = null;
     setSessionStarted(false);
+    pendingTurnAudioRef.current = null;
+    audioChunksRef.current = [];
+    turnAudioSeqRef.current = 0;
     const prevSessionId = sessionIdRef.current;
     if (prevSessionId) {
       sessionService.end(prevSessionId, 'user_clicked').catch(console.error);
@@ -1692,7 +1873,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     // comes back from an old session.
     setMessages([]);
     setErrorMessage(null);
-    setBillingLimitCode(null);
     setSessionTitle(null);
     sessionIdRef.current = null;
     setCurrentSessionId(null);
@@ -1715,7 +1895,6 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     isRecording: status === 'recording',
     analyser,
     errorMessage,
-    billingLimitCode,
     currentSessionId,
     sessionTitle,
     sessionTitleUpdate,
@@ -1735,11 +1914,13 @@ export function useChat(initialSessionId?: string): UseChatReturn {
     endChoices,
     evaluation,
     evaluationLoading,
+    endedLessonAttemptId,
     viewEvaluation,
     exitSession,
     sessionStarted,
     currentDeck,
     lighterMode,
+    isAdvancingDeck,
     advanceDeckCard,
     skipDeckCard,
     acceptDeckChallenge,

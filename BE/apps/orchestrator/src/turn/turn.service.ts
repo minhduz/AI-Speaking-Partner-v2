@@ -109,18 +109,26 @@ export class TurnService {
   }
 
   /**
-   * Returns true when the given session is the user's first-ever speaking session.
+   * Returns true when the given session is the user's first real speaking session.
    * Used by turn routing to set X-Is-Onboarding so the turn-agent only runs
-   * onboarding intent extraction during the first session.
+   * onboarding intent extraction during the first session. Zero-turn refresh
+   * orphans do not count as prior speaking sessions.
    */
   async isOnboardingSession(userId: string, sessionId: string): Promise<boolean> {
     if (!sessionId) return false;
     const session = await this.sessionRepo.findOne({ where: { id: sessionId, userId } });
     if (!session) return false;
-    const earlier = await this.sessionRepo.count({
+    const earlier = await this.sessionRepo.find({
       where: { userId, startedAt: LessThan(session.startedAt) },
+      select: ['id', 'status', 'endReason'],
     });
-    return earlier === 0;
+    for (const prior of earlier) {
+      const hasTurns = (await this.turnRepo.count({ where: { sessionId: prior.id } })) > 0;
+      if (hasTurns || prior.status === 'ended' || (prior.status === 'abandoned' && prior.endReason !== 'orphan')) {
+        return false;
+      }
+    }
+    return true;
   }
 
   async getActiveMission(userId: string): Promise<string | null> {
@@ -163,8 +171,24 @@ export class TurnService {
     total_cards: number;
     current_card: any | null;
     is_continuation: boolean;
+    lesson_attempt_id: string | null;
+    lesson_id: string | null;
+    lesson_title: string | null;
+    pass_score: number | null;
   }> {
-    const empty = { active: false, status: 'none', end_reason: '', current_card_index: 0, total_cards: 0, current_card: null, is_continuation: false };
+    const empty = {
+      active: false,
+      status: 'none',
+      end_reason: '',
+      current_card_index: 0,
+      total_cards: 0,
+      current_card: null,
+      is_continuation: false,
+      lesson_attempt_id: null,
+      lesson_id: null,
+      lesson_title: null,
+      pass_score: null,
+    };
     const memoryUrl = this.cfg.get('MEMORY_SERVICE_URL');
     try {
       const { data } = await firstValueFrom<any>(
@@ -182,6 +206,10 @@ export class TurnService {
         total_cards:         cards.length,
         current_card:        cards[idx] ?? null,
         is_continuation:     Boolean(data.is_continuation),
+        lesson_attempt_id:   data.lesson_attempt_id ?? null,
+        lesson_id:           data.lesson_id ?? null,
+        lesson_title:        data.lesson_title ?? null,
+        pass_score:          typeof data.pass_score === 'number' ? data.pass_score : null,
       };
     } catch (err: any) {
       console.error(`[Turn] getDeckInfo failed session=${sessionId}:`, err?.message);
@@ -287,7 +315,6 @@ export class TurnService {
       // 7. Async side-effects
       this.updateSessionTotals(sessionId, tokens_used, pronunciation?.score ?? 0).catch(console.error);
       this.appendToShortTerm(sessionId, userId, transcript, response_text).catch(console.error);
-      this.recordUsage(userId, tokens_used).catch(console.error);
       this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
       if (turnIndex === 1) this.generateTitle(sessionId, transcript).catch(console.error);
 
@@ -315,7 +342,6 @@ export class TurnService {
     await this.turnRepo.save(turn);
     this.updateSessionTotals(sessionId, data.tokens_used, data.pronunciation?.score ?? 0).catch(console.error);
     this.appendToShortTerm(sessionId, userId, data.transcript, data.response_text).catch(console.error);
-    this.recordUsage(userId, data.tokens_used).catch(console.error);
     this.sessionService.updateLastActivity(sessionId, userId).catch(console.error);
     if (turnIndex === 1) this.generateTitle(sessionId, data.transcript).catch(console.error);
     return turn;
@@ -344,14 +370,12 @@ export class TurnService {
     }
   }
 
-  private async recordUsage(userId: string, tokens: number) {
-    const billingUrl = this.cfg.get('BILLING_SERVICE_URL');
-    await firstValueFrom(
-      this.http.post(`${billingUrl}/internal/usage/increment`, { user_id: userId, tokens_used: tokens }),
-    );
-  }
-
   private async generateTitle(sessionId: string, firstTranscript: string) {
+    const session = await this.sessionRepo.findOne({
+      where: { id: sessionId },
+      select: ['id', 'lessonAttemptId'],
+    });
+    if (session?.lessonAttemptId) return;
     const llmUrl = this.cfg.get('LLM_GATEWAY_URL');
     const res = await firstValueFrom(
       this.http.post(`${llmUrl}/complete`, {

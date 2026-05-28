@@ -2,6 +2,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from db import redis_client
+from layers.deck_logic import advance_deck_state, is_terminal_card  # noqa: F401
 
 log = logging.getLogger("exercise_deck")
 
@@ -48,12 +49,36 @@ class ExerciseDeckService:
 
     @staticmethod
     async def create_deck(session_id: str, deck_data: dict) -> dict:
-        """Create or replace deck. deck_data should be the full deck object from generateDeck."""
+        """
+        Create or replace deck. deck_data should be the full deck object from
+        the orchestrator (legacy generateDeck or LessonService.startLesson).
+
+        Curriculum-first guard: if an existing deck for this session is tied
+        to a lesson_attempt_id, refuse to overwrite it unless the incoming
+        deck names the same lesson_attempt_id. This stops the legacy greeting
+        fire-and-forget path (and any other writer) from silently clobbering
+        a lesson deck mid-session.
+        """
+        incoming_attempt = deck_data.get("lesson_attempt_id")
+        existing = await ExerciseDeckService.get_deck(session_id)
+        if existing:
+            existing_attempt = existing.get("lesson_attempt_id")
+            if existing_attempt and existing_attempt != incoming_attempt:
+                log.warning(
+                    "[exercise_deck] refusing overwrite — session=%s already bound to lesson_attempt=%s, incoming=%s",
+                    session_id, existing_attempt, incoming_attempt,
+                )
+                return existing
         now = datetime.now(timezone.utc).isoformat()
         deck = {
             "id": deck_data.get("id") or f"deck-{session_id}",
             "session_id": session_id,
             "session_type": deck_data.get("session_type", "adaptive_training"),
+            # Lesson-aware fields (None for legacy/free-form decks).
+            "lesson_id": deck_data.get("lesson_id"),
+            "lesson_attempt_id": deck_data.get("lesson_attempt_id"),
+            "lesson_title": deck_data.get("lesson_title"),
+            "pass_score": deck_data.get("pass_score"),
             "mission": deck_data.get("mission", ""),
             "mission_source": deck_data.get("mission_source", "fallback"),
             "reason": deck_data.get("reason", ""),
@@ -91,28 +116,19 @@ class ExerciseDeckService:
 
     @staticmethod
     async def move_to_next_card(session_id: str) -> dict | None:
-        """Advance current_card_index by 1. Auto-completes deck when last card is passed."""
+        """Advance to the next card. Idempotent + safe — the transition lives in
+        layers.deck_logic.advance_deck_state (pure, unit-tested)."""
         deck = await ExerciseDeckService.get_deck(session_id)
         if not deck:
             return None
-        if deck.get("status") == "not_started":
-            deck["status"] = "in_progress"
-        idx = deck.get("current_card_index", 0) + 1
-        deck["current_card_index"] = idx
-        if idx >= len(deck.get("cards", [])):
-            cards = deck.get("cards", [])
-            any_completed = any(c.get("status") == "completed" for c in cards)
-            if any_completed:
-                deck["status"] = "completed"
-                deck["end_reason"] = "completed_deck"
-                log.info("[exercise_deck] deck completed  session=%s", session_id)
-            else:
-                # All cards were skipped — user didn't attempt any exercise.
-                # Mark as ended_early so the AI says "no problem" rather than
-                # a completion message that implies the user did the exercises.
-                deck["status"] = "ended_early"
-                deck["end_reason"] = "user_skipped_all"
-                log.info("[exercise_deck] deck ended_early (all skipped)  session=%s", session_id)
+        before = (deck.get("current_card_index"), deck.get("status"))
+        deck = advance_deck_state(deck)
+        after = (deck.get("current_card_index"), deck.get("status"))
+        if after != before:
+            log.info(
+                "[exercise_deck] /next session=%s  idx %s→%s  status=%s",
+                session_id, before[0], after[0], deck.get("status"),
+            )
         return await ExerciseDeckService.save_deck(session_id, deck)
 
     @staticmethod

@@ -7,6 +7,7 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import * as bcrypt from 'bcryptjs';
 import { User } from '../user/entities/user.entity';
+import { UserRole } from '../user/user-role.enum';
 
 @Injectable()
 export class AuthService {
@@ -28,16 +29,9 @@ export class AuthService {
       email: dto.email, passwordHash, name: dto.name, timezone: dto.timezone,
       targetLanguage: dto.target_language, level: dto.level,
       nativeLanguage: dto.native_language, learningGoal: dto.learning_goal,
+      role: UserRole.STUDENT, // public signup is always a student; never trust a client-sent role
     });
     await this.userRepo.save(user);
-
-    // Initialise free subscription — fire and forget (non-blocking)
-    const billingUrl = this.cfg.get('BILLING_SERVICE_URL');
-    firstValueFrom(
-      this.http.post(`${billingUrl}/subscription/internal/subscription/init-free/${user.id}`, {}),
-    ).catch((err) =>
-      console.error('[Auth] Failed to init free subscription:', err.message),
-    );
 
     return this.tokens(user);
   }
@@ -61,7 +55,7 @@ export class AuthService {
       if (!user) throw new UnauthorizedException();
       return {
         access_token: this.jwt.sign(
-          { sub: user.id, email: user.email },
+          { sub: user.id, email: user.email, role: user.role },
           { expiresIn: this.cfg.get('JWT_EXPIRES_IN') },
         ),
       };
@@ -92,18 +86,9 @@ export class AuthService {
         name: profile.name,
         googleId: profile.googleId,
         passwordHash: '', // no password for Google users
+        role: UserRole.STUDENT, // Google sign-up is always a student
       });
       await this.userRepo.save(user);
-    }
-
-    // Init free subscription for new users
-    if (isNewUser) {
-      const billingUrl = this.cfg.get('BILLING_SERVICE_URL');
-      firstValueFrom(
-        this.http.post(`${billingUrl}/subscription/internal/subscription/init-free/${user.id}`, {}),
-      ).catch((err) =>
-        console.error('[Auth] Failed to init free subscription:', err.message),
-      );
     }
 
     return { ...this.tokens(user), isNewUser };
@@ -131,9 +116,9 @@ export class AuthService {
   }
 
   private tokens(user: User) {
-    const payload = { sub: user.id, email: user.email };
+    const payload = { sub: user.id, email: user.email, role: user.role };
     return {
-      user: { id: user.id, name: user.name, email: user.email },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
       access_token: this.jwt.sign(payload),
       refresh_token: this.jwt.sign(payload, {
         expiresIn: this.cfg.get('JWT_REFRESH_EXPIRES_IN'),

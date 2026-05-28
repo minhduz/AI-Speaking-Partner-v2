@@ -403,6 +403,7 @@ def _build_free_talk_mode_block(state: dict) -> str:
         "- Do NOT push for longer answers, create productive discomfort, or steer back to active missions.\n"
         "- Avoid stale lines like \"we were just talking about...\" unless the user explicitly asks to continue the old topic.\n"
         "- Follow-up questions are optional. Ask at most ONE, and only after you have actually responded to what they asked.\n"
+        "- If the user clearly wants to stop, end, or says goodbye, give ONE warm farewell sentence and append SESSION_END on the same line.\n"
         f"- Speak only in {target_lang} in user-visible text unless the user explicitly asks for translation or a word meaning.\n"
         "- No EVAL block. No exercise/card/deck language.\n"
     )
@@ -534,8 +535,10 @@ def _build_card_context_block(state: dict) -> str:
             "add ONE warm transition sentence like: \"Want to give one more a shot? "
             "Tap Next when you're ready!\" Do NOT describe the next card.\n"
             if card_index + 1 < card_total else
-            "3. After the user answers well, give short positive feedback. "
-            "Do NOT say 'want to try one more' or 'tap Next' — this is the last card.\n"
+            "3. After the user answers well, give SHORT positive feedback (1-2 sentences) "
+            "and invite them to finish, e.g. \"Tap Finish when you're ready!\" "
+            "Do NOT say 'tap Next' or 'want to try one more' — this is the last card. "
+            "Keep it brief so the EVAL block below is never truncated.\n"
         ) +
         "4. If the user has not answered yet, invite them to answer the card task directly.\n"
         "5. If the user drifts, acknowledge briefly and redirect to the card.\n"
@@ -549,12 +552,17 @@ def _build_card_context_block(state: dict) -> str:
             "\nDo NOT output an EVAL block this turn — the user has not attempted the task yet.\n"
             if not transcript else
             "\nAFTER RESPONDING, append EXACTLY this JSON on a new line — no prose, no markdown fences:\n"
-            'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"next_card","detectedIssues":[]}\n'
-            'If the user failed: EVAL:{"passed":false,"feedback":"one coaching sentence","retryRecommended":true,"nextAction":"retry","detectedIssues":["confusion"]}\n'
-            'RULES: "passed" must be true or false. "nextAction" must be exactly "retry", "next_card", or "finish_session".\n'
-            'CRITICAL: the block MUST start with exactly EVAL:{ — do NOT write EVALUATION: or any other format.\n'
             + (
-                "This is the LAST card. If passed=true, set nextAction=\"finish_session\".\n"
+                # Last card → the success example MUST use finish_session.
+                'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"finish_session","detectedIssues":[]}\n'
+                if card_index + 1 >= card_total else
+                'EVAL:{"passed":true,"feedback":"one coaching sentence","retryRecommended":false,"nextAction":"next_card","detectedIssues":[]}\n'
+            )
+            + 'If the user failed: EVAL:{"passed":false,"feedback":"one coaching sentence","retryRecommended":true,"nextAction":"retry","detectedIssues":["confusion"]}\n'
+            'RULES: "passed" must be true or false. "nextAction" must be exactly "retry", "next_card", or "finish_session".\n'
+            'CRITICAL: the block MUST start with exactly EVAL:{ — do NOT write EVALUATION: or any other format. ALWAYS include the EVAL block when the user attempted the task.\n'
+            + (
+                "This is the LAST card. If passed=true OR this is the 3rd attempt, set nextAction=\"finish_session\".\n"
                 if card_index + 1 >= card_total else
                 "This is NOT the last card. If passed=true, set nextAction=\"next_card\".\n"
             )
@@ -774,7 +782,34 @@ async def build_prompt_node(state: dict) -> dict:
     turn_index = int(state.get("turn_index", 1) or 1)
     is_onboarding = bool(state.get("is_onboarding", False))
     session_mode = (state.get("session_mode") or "guided_learning").strip()
-    is_free_talk_session = session_mode == "free_talk" and not is_onboarding
+    deck_status = (state.get("deck_status") or "none").strip()
+    deck_end_reason = (state.get("deck_end_reason") or "").strip()
+    has_user_transcript = bool(transcript.strip())
+    deck_free_talk_followup = (
+        has_user_transcript
+        and deck_status == "ended_early"
+        and deck_end_reason == "user_chose_free_talk"
+    )
+    post_onboarding_free_talk = (
+        is_onboarding
+        and has_user_transcript
+        and (
+            deck_status == "completed"
+            or (deck_status == "ended_early" and deck_end_reason != "user_wants_to_end")
+        )
+    )
+    is_lesson_session = bool(state.get("is_lesson_session", False))
+    effective_is_onboarding = is_onboarding and not post_onboarding_free_talk
+    if is_lesson_session:
+        # Lesson sessions are curriculum runtime, never onboarding discovery.
+        # This matters most for a brand-new user whose first real session is
+        # launched from /lessons/:id/start: the first turn must start card 1,
+        # not ask "How are you doing today?"
+        effective_is_onboarding = False
+        state["is_onboarding"] = False
+    is_free_talk_session = (
+        session_mode == "free_talk" and not effective_is_onboarding
+    ) or post_onboarding_free_talk or deck_free_talk_followup
     active_mission = (state.get("active_mission") or "").strip()
 
     # DEBUG: surface exactly what mode signal arrived. raw_session_mode=None means
@@ -782,10 +817,10 @@ async def build_prompt_node(state: dict) -> dict:
     # not sending it); ='guided_learning' means the session is genuinely guided in DB.
     log.info(
         "── build_prompt MODE-DEBUG  session=%s  raw_session_mode=%r  resolved=%s  "
-        "is_free_talk=%s  is_onboarding=%s  deck_status=%r  active_mission=%r",
+        "is_free_talk=%s  is_onboarding=%s  effective_onboarding=%s  deck_status=%r  active_mission=%r",
         session_id, state.get("session_mode"), session_mode,
-        is_free_talk_session, is_onboarding,
-        state.get("deck_status"), active_mission[:40],
+        is_free_talk_session, is_onboarding, effective_is_onboarding,
+        deck_status, active_mission[:40],
     )
 
     # Free talk = pure friend conversation. Strip every guided-learning signal up
@@ -793,12 +828,22 @@ async def build_prompt_node(state: dict) -> dict:
     # node can resurrect instructor behavior. Long-term memory facts are untouched.
     if is_free_talk_session:
         state.update(_free_talk_overrides())
+        state["is_onboarding"] = False
         active_mission = ""
+
+    # Curriculum-first: lesson sessions are NOT driven by memory. The Lesson IS
+    # the mission. Drop any memory-injected active_mission and zero out the
+    # session_insight steering so the AI never gets pushed off-curriculum
+    # during turns 1-2 (before the deck transitions to in_progress).
+    if is_lesson_session and not is_free_talk_session:
+        active_mission = ""
+        state["active_mission"] = ""
+        state["session_insight"] = {}
 
     # During the user's first speaking session ONLY, run intent extraction
     # in parallel with the main turn. asyncio.create_task() schedules it on the same
     # event loop without blocking; the coroutine guarantees failure isolation.
-    if is_onboarding and transcript.strip():
+    if effective_is_onboarding and transcript.strip():
         task = asyncio.create_task(_fire_onboarding_extraction(user_id, session_id, transcript))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
@@ -840,7 +885,9 @@ async def build_prompt_node(state: dict) -> dict:
 
         # Suppress mission block whenever the deck owns the next AI turn — otherwise
         # the "Stay on this mission" instruction overrides deck-specific instructions.
-        _suppress_mission_block = is_free_talk_session or (not is_onboarding and (
+        # Lesson sessions: ALWAYS suppress, end-to-end, regardless of deck status
+        # or turn index — the Lesson is the mission, memory must not steer.
+        _suppress_mission_block = is_free_talk_session or is_lesson_session or (not effective_is_onboarding and (
             deck_active                                                         # card in_progress
             or (deck_status == "not_started" and turn_index >= 3)              # offer pending
             or (deck_status in ("completed", "ended_early") and not transcript) # deck ending
@@ -850,7 +897,7 @@ async def build_prompt_node(state: dict) -> dict:
         if mission_block and not _suppress_mission_block:
             system_prompt += mission_block
 
-        if is_onboarding:
+        if effective_is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             phase = get_onboarding_phase(turn_index, onboarding_state)
             # Only inject the generic onboarding phase guidance before the deck starts.
@@ -920,7 +967,74 @@ async def build_prompt_node(state: dict) -> dict:
                 len(learned_block), deck_status,
             )
         else:
-            if is_free_talk_session:
+            # Curriculum-first lesson runtime takes priority over Free Talk /
+            # legacy deck routing. The Lesson is the mission — the AI must
+            # land on the card immediately, not warm up or offer it softly.
+            if is_lesson_session and not is_free_talk_session:
+                lesson_title = (state.get("lesson_title") or "").strip()
+                if deck_active:
+                    # User is mid-card — strict card mode, same as legacy.
+                    system_prompt += _build_card_context_block(state)
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  LESSON(card_in_progress) card=%s/%s",
+                        chunks_used, tokens,
+                        state.get("card_index", 0), state.get("card_total", 0),
+                    )
+                elif deck_status == "not_started":
+                    # First/intro turn of the lesson — push the card NOW.
+                    # No warm-up, no soft offer, no "let's chat a bit first".
+                    lesson_label = lesson_title if lesson_title else "today's lesson"
+                    card_title = (state.get("card_title") or "").strip()
+                    card_task = (state.get("card_task") or "").strip()
+                    system_prompt += (
+                        "\n\nLESSON SESSION — START THE LESSON NOW:\n"
+                        f'This session is the lesson "{lesson_label}".\n'
+                        "The first exercise card is ALREADY VISIBLE in the UI.\n"
+                        f"First card title: {card_title}\n"
+                        f"First card task: {card_task}\n"
+                        "Rules for this response:\n"
+                        "1. Say ONE short warm sentence acknowledging the lesson is starting "
+                        "   (e.g. \"Great — let's get started.\" or \"Alright, here we go.\").\n"
+                        "2. Then read out the task on the first card so the user knows what to do — "
+                        "   keep it natural, do not re-paraphrase the entire card.\n"
+                        "3. Total: 1-2 sentences. No follow-up question outside the card task.\n"
+                        "4. Do NOT chat about anything else. Do NOT ask discovery questions.\n"
+                        "5. Do NOT mention memory, last session, or unrelated missions — the Lesson IS the mission.\n"
+                        "6. Do NOT output an EVAL block (the user hasn't spoken yet).\n"
+                    )
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  LESSON(intro)  title=%r",
+                        chunks_used, tokens, lesson_title[:60],
+                    )
+                elif deck_status == "completed":
+                    # All lesson cards done. The FE auto-ends right after Finish,
+                    # so this branch usually only fires for a fraction of a second
+                    # before /session/end; produce a clean wrap-up either way.
+                    system_prompt += (
+                        "\n\nLESSON COMPLETED:\n"
+                        "The user has finished every card of the lesson. "
+                        "Say ONE short warm sentence acknowledging the lesson is done. "
+                        "Do NOT propose another exercise. Do NOT output an EVAL block."
+                    )
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  LESSON(completed)",
+                        chunks_used, tokens,
+                    )
+                else:
+                    # ended_early / abandoned: lesson was cut short. Mirror the
+                    # decline flow but stay focused on the lesson, not random memory.
+                    system_prompt += (
+                        "\n\nLESSON ENDED EARLY:\n"
+                        "The user stepped away from the lesson. Say ONE warm sentence "
+                        "acknowledging it's fine to pause and that they can resume the "
+                        "lesson later. Do NOT propose unrelated exercises. Do NOT output "
+                        "an EVAL block."
+                    )
+                    log.info(
+                        "── build_prompt ✓  chunks_used=%d  estimated_tokens=%d  LESSON(ended_early)",
+                        chunks_used, tokens,
+                    )
+            elif is_free_talk_session:
                 system_prompt += _build_free_talk_mode_block(state)
                 insight = state.get("session_insight")
                 if isinstance(insight, dict) and insight.get("has_insight"):
@@ -1134,7 +1248,7 @@ async def build_prompt_node(state: dict) -> dict:
         )
         deck_active = bool(state.get("deck_active", False))
         deck_status = (state.get("deck_status") or "none").strip()
-        if is_onboarding:
+        if effective_is_onboarding:
             onboarding_state = await _fetch_onboarding_state(user_id)
             fallback += build_onboarding_block(state, turn_index, onboarding_state)
             fallback += _render_learned_block(onboarding_state)

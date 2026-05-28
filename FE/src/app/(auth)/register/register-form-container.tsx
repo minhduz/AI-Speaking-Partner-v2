@@ -18,13 +18,13 @@ export function RegisterFormContainer() {
 
   const handleSubmit = useCallback(async (data: RegisterRequest) => {
     await handleRegister(data, () => {
-      pendingRedirect.current = () => router.push('/chat');
+      pendingRedirect.current = () => router.push('/home');
     });
   }, [handleRegister, router]);
 
   const handleGoogleSubmit = useCallback(async (credential: string) => {
     await handleGoogleAuth(credential, () => {
-      pendingRedirect.current = () => router.push('/chat');
+      pendingRedirect.current = () => router.push('/home');
     });
   }, [handleGoogleAuth, router]);
 
@@ -32,7 +32,7 @@ export function RegisterFormContainer() {
     targetLanguage: string; level: string; nativeLanguage: string; learningGoal: string; timezone: string;
   }) => {
     await handleUpdateProfile(data, () => {
-      pendingRedirect.current = () => router.push('/chat');
+      pendingRedirect.current = () => router.push('/home');
     });
   }, [handleUpdateProfile, router]);
 

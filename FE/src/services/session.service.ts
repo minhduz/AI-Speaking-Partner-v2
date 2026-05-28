@@ -1,5 +1,6 @@
 import { getAccessToken, tryRefresh } from '@/lib/http-client';
 import type { GreetingEvent, SessionSummary, TurnHistoryPage, TurnEvent } from '@/types/session.types';
+import type { AiReview, TeacherReviewView } from '@/services/lesson.service';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000';
 
@@ -83,22 +84,6 @@ export interface SessionQuota {
   is_first_session?: boolean;
 }
 
-export type BillingLimitCode = 'SESSION_LIMIT_REACHED' | 'SESSION_TOKEN_LIMIT_REACHED';
-
-export class BillingLimitError extends Error {
-  code: BillingLimitCode;
-  limit?: number;
-  used?: number;
-
-  constructor(code: BillingLimitCode, limit?: number, used?: number) {
-    super(code);
-    this.name = 'BillingLimitError';
-    this.code = code;
-    this.limit = limit;
-    this.used = used;
-  }
-}
-
 export interface DeckCard {
   id: string;
   type: string;
@@ -131,7 +116,7 @@ export interface DeckEvalData {
 export interface ExerciseDeck {
   id: string;
   session_id: string;
-  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training';
+  session_type: 'onboarding_diagnostic' | 'personalized_training' | 'adaptive_training' | 'lesson_runtime';
   mission: string;
   mission_source: string;
   reason: string;
@@ -143,6 +128,15 @@ export interface ExerciseDeck {
   updated_at: string;
   /** True when this deck continues an incomplete deck from a previous session. */
   is_continuation?: boolean;
+  /** Curriculum-first: present when the deck was minted from a lesson. */
+  lesson_id?: string | null;
+  lesson_attempt_id?: string | null;
+  lesson_title?: string | null;
+<<<<<<< HEAD
+  level?: string | null;
+=======
+>>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
+  pass_score?: number | null;
 }
 
 export interface SessionEvaluationCard {
@@ -195,6 +189,19 @@ export interface SessionEvaluation {
   skill_radar?: SessionEvaluationSkill[];
   recurring_pattern?: SessionEvaluationPattern | null;
   next_drill?: SessionEvaluationDrill | null;
+  lesson_result?: {
+    attempt_id: string;
+    lesson_title: string | null;
+    status: string;
+    score: number | null;
+    final_score: number | null;
+    pass_score: number | null;
+    teacher_review_status: string | null;
+    reviewed_at: string | null;
+    /** Both scoring views — drive the AI / Teacher tabs in the breakdown panel. */
+    ai_review?: AiReview;
+    teacher_review?: TeacherReviewView;
+  } | null;
   stats: {
     user_turns: number;
     cards_completed: number;
@@ -263,9 +270,6 @@ export const sessionService = {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
-      if (body?.error === 'SESSION_LIMIT_REACHED') {
-        throw new BillingLimitError('SESSION_LIMIT_REACHED', body.limit, body.used);
-      }
       throw new Error(body?.message ?? 'Failed to start session');
     }
     const data: StartSessionResponse = await res.json();
@@ -447,17 +451,21 @@ export const sessionService = {
   },
 
   /**
-   * Hard-end: marks session ended/abandoned + triggers consolidation.
+   * Hard-end: marks session ended/abandoned + triggers consolidation. Returns
+   * the lesson_attempt_id (if any) so the FE can fetch the lesson result.
    * Always call AFTER close() (or if closing fails).
    */
-  end: async (sessionId: string, reason: EndReason = 'user_clicked'): Promise<void> => {
+  end: async (sessionId: string, reason: EndReason = 'user_clicked'): Promise<{ lesson_attempt_id: string | null }> => {
     log(`POST /session/end`, { session_id: sessionId, reason });
-    await fetchWithAuth(`${API_BASE}/session/end`, {
+    const res = await fetchWithAuth(`${API_BASE}/session/end`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId, reason }),
     });
     log(`POST /session/end → ok`);
+    if (!res.ok) return { lesson_attempt_id: null };
+    const data = await res.json().catch(() => null);
+    return { lesson_attempt_id: data?.lesson_attempt_id ?? null };
   },
 
   /**
@@ -475,6 +483,26 @@ export const sessionService = {
     const data: CloseSessionResponse = await res.json();
     log(`POST /session/${sessionId}/close →`, { text: data.text?.slice(0, 80), hasAudio: !!data.audio_b64 });
     return data;
+  },
+
+  // Out-of-band upload of one user turn's captured audio (multipart). Never
+  // awaited on the realtime path. Browser sets the multipart Content-Type.
+  uploadTurnAudio: async (
+    sessionId: string,
+    blob: Blob,
+    opts: { turnIndex?: number; transcript?: string; durationMs?: number; clientTurnId?: string },
+  ): Promise<void> => {
+    const fd = new FormData();
+    fd.append('file', blob, 'turn.webm');
+    if (opts.turnIndex != null) fd.append('turn_index', String(opts.turnIndex));
+    if (opts.transcript) fd.append('transcript', opts.transcript);
+    if (opts.durationMs != null) fd.append('duration_ms', String(opts.durationMs));
+    if (opts.clientTurnId) fd.append('client_turn_id', opts.clientTurnId);
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/turn-audio`, {
+      method: 'POST',
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`turn-audio upload failed: ${res.status}`);
   },
 
   getDeck: async (sessionId: string): Promise<ExerciseDeck | null> => {
@@ -498,12 +526,22 @@ export const sessionService = {
     return data as SessionEvaluation;
   },
 
-  advanceDeckCard: async (sessionId: string): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+  // Returns the updated deck (orchestrator echoes memory-service state) so the
+  // caller can reconcile from the PUT response instead of a racy follow-up GET.
+  advanceDeckCard: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/next`, { method: 'PUT' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
   },
 
-  skipDeckCard: async (sessionId: string): Promise<void> => {
-    await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+  skipDeckCard: async (sessionId: string): Promise<ExerciseDeck | null> => {
+    const res = await fetchWithAuth(`${API_BASE}/session/${sessionId}/deck/skip`, { method: 'PUT' });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    if (!data || data.status === 'none') return null;
+    return data as ExerciseDeck;
   },
 
   acceptDeckChallenge: async (sessionId: string): Promise<void> => {

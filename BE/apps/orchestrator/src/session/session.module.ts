@@ -7,9 +7,15 @@ import { SessionService } from './session.service';
 import { Session } from './entities/session.entity';
 import { Turn } from '../turn/entities/turn.entity';
 import { UserModule } from '../user/user.module';
+import { LessonModule } from '../lesson/lesson.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Session, Turn]), HttpModule, UserModule],
+  imports: [
+    TypeOrmModule.forFeature([Session, Turn]),
+    HttpModule,
+    UserModule,
+    forwardRef(() => LessonModule),
+  ],
   controllers: [SessionController],
   providers: [SessionService],
   exports: [SessionService],

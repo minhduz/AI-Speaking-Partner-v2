@@ -1,3 +1,5 @@
+export type UserRole = 'student' | 'teacher' | 'admin';
+
 export interface LoginRequest {
   email: string;
   password: string;
@@ -23,6 +25,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  role: UserRole;
   target_language: string;
   level: 'beginner' | 'intermediate' | 'advanced';
   native_language: string;

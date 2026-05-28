@@ -65,6 +65,7 @@ export interface UserProfile extends UserSettings {
   id: string;
   email: string;
   name: string;
+  role: 'student' | 'teacher' | 'admin';
   targetLanguage: string;
   level: string;
   nativeLanguage: string;
