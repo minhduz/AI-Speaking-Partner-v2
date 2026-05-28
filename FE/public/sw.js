@@ -1,4 +1,4 @@
-const CACHE_NAME = 'speakup-v6';
+const CACHE_NAME = 'speakup-v7';
 
 // App shell — pre-cached on install
 const SHELL_ASSETS = [
@@ -69,6 +69,8 @@ self.addEventListener('fetch', (event) => {
   // 2. API & Next.js internals → always Network Only (never cache)
   if (
     url.pathname.startsWith('/api/') ||
+    url.pathname.startsWith('/admin') ||
+    url.pathname.startsWith('/lessons') ||
     url.pathname.startsWith('/_next/') ||
     url.pathname.startsWith('/__nextjs')
   ) {
