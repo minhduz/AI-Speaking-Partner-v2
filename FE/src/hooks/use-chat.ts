@@ -1144,11 +1144,8 @@ export function useChat(
           window.setTimeout(() => { void pollDeck(); }, 1800);
         }
       } catch {
-<<<<<<< HEAD
         pendingTurnAudioRef.current = null;
         audioChunksRef.current = [];
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         setMessages((prev) => prev.filter((m) => !m.pending));
         setErrorMessage('Failed to start session');
         setStatus('error');
@@ -1573,7 +1570,6 @@ export function useChat(
           // More cards remain — AI introduces the next one.
           void processTurn('');
         } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-<<<<<<< HEAD
           // Only finalize/transition when the deck is genuinely complete. A
           // partial deck reported as completed is treated as a no-op (the BE
           // guard should prevent it, but we fail safe here too).
@@ -1586,20 +1582,10 @@ export function useChat(
           }
           // Curriculum-first: a finished lesson deck ends the session so the
           // LessonAttempt is finalized; legacy decks transition to free chat.
-=======
-          // Curriculum-first: a lesson deck reaching completed means the user
-          // pressed Finish on the final card. End the session immediately so
-          // LessonAttempt is finalized (status/score/next_action) instead of
-          // sitting in_progress until the user manually taps End.
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           if (deck.lesson_attempt_id) {
             void endSessionRef.current('user_clicked');
             return;
           }
-<<<<<<< HEAD
-=======
-          // Non-lesson decks (legacy paths): AI transitions back to free chat.
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           void processTurn('');
         }
       } catch (err) {
@@ -1612,37 +1598,8 @@ export function useChat(
     [processTurn, isDeckActuallyComplete],
   );
 
-<<<<<<< HEAD
   const advanceDeckCard = useCallback(() => runDeckAction('advance'), [runDeckAction]);
   const skipDeckCard = useCallback(() => runDeckAction('skip'), [runDeckAction]);
-=======
-  const skipDeckCard = useCallback(async () => {
-    const sessionId = sessionIdRef.current;
-    if (!sessionId) return;
-    try {
-      await sessionService.skipDeckCard(sessionId);
-      const deck = await sessionService.getDeck(sessionId);
-      setCurrentDeck(deck);
-      if (deck) {
-        if (deck.status === 'in_progress' && deck.cards[deck.current_card_index]) {
-          // Mid-deck skip: AI introduces the next card's task.
-          void processTurn('');
-        } else if (deck.status === 'completed' || deck.status === 'ended_early') {
-          // Skipping the LAST card of a lesson also finalizes — otherwise the
-          // user has to press End manually after skipping the final boss.
-          if (deck.lesson_attempt_id) {
-            void endSessionRef.current('user_clicked');
-            return;
-          }
-          // Last card skipped: AI asks what was difficult or if user wants another topic.
-          void processTurn('');
-        }
-      }
-    } catch (err) {
-      console.error('[skipDeckCard]', err);
-    }
-  }, [processTurn]);
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   const acceptDeckChallenge = useCallback(async () => {
     const sessionId = sessionIdRef.current;

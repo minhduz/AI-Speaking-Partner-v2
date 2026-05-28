@@ -132,10 +132,7 @@ export interface ExerciseDeck {
   lesson_id?: string | null;
   lesson_attempt_id?: string | null;
   lesson_title?: string | null;
-<<<<<<< HEAD
   level?: string | null;
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   pass_score?: number | null;
 }
 

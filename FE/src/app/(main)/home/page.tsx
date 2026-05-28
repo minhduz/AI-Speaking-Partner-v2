@@ -26,10 +26,7 @@ function nodeIcon(state: LessonState, isReview: boolean, size = 22) {
   if (state === 'locked') return <Lock size={size} strokeWidth={2.5} />;
   if (state === 'completed') return <CheckCircle2 size={size} strokeWidth={2.5} />;
   if (state === 'needs_retry') return <RotateCcw size={size} strokeWidth={2.5} />;
-<<<<<<< HEAD
   if (state === 'under_review') return <ListChecks size={size} strokeWidth={2.5} />;
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   if (state === 'in_progress') return <Play size={size} strokeWidth={2.5} />;
   if (isReview) return <Star size={size} strokeWidth={2.5} />;
   return <BookOpen size={size} strokeWidth={2.5} />;
@@ -40,10 +37,7 @@ function nodeColors(state: LessonState) {
     case 'locked':      return { bg: '#e2e2e2', border: '#c8c8c8', shadow: '#b0b0b0', icon: '#9e9e9e', ring: 'none' };
     case 'completed':   return { bg: '#58cc02', border: '#46a302', shadow: '#3a8700', icon: '#ffffff', ring: '0 0 0 4px rgba(88,204,2,0.2)' };
     case 'needs_retry': return { bg: '#ff9c27', border: '#e0851a', shadow: '#c07010', icon: '#ffffff', ring: '0 0 0 4px rgba(255,156,39,0.2)' };
-<<<<<<< HEAD
     case 'under_review': return { bg: '#dceaff', border: '#9bbcff', shadow: '#6f94e8', icon: '#1e3a7a', ring: '0 0 0 4px rgba(115,150,232,0.22)' };
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     case 'in_progress': return { bg: '#2fb8ff', border: '#1c93d1', shadow: '#1577a8', icon: '#ffffff', ring: '0 0 0 4px rgba(47,184,255,0.25)' };
     case 'unlocked':    return { bg: '#ffffff', border: '#58cc02', shadow: '#46a302', icon: '#58cc02', ring: '0 0 0 4px rgba(88,204,2,0.15)' };
     default:            return { bg: '#ffffff', border: '#e2e2e2', shadow: '#c8c8c8', icon: '#6f7b64', ring: 'none' };
@@ -54,10 +48,7 @@ function nodeColors(state: LessonState) {
 function pickUnitCurrent(lessons: LessonPathItem[]): LessonPathItem | null {
   return (
     lessons.find((l) => l.state === 'in_progress') ??
-<<<<<<< HEAD
     lessons.find((l) => l.state === 'under_review') ??
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     lessons.find((l) => l.state === 'unlocked') ??
     lessons.find((l) => l.state === 'needs_retry') ??
     null
@@ -75,16 +66,11 @@ function unitProgressLabel(group: LessonGroup): { completed: number; total: numb
 
 function NodeTooltip({ item, onOpen }: { item: LessonPathItem; onOpen: () => void }) {
   const locked = item.state === 'locked';
-<<<<<<< HEAD
   const reviewing = item.state === 'under_review';
   const actionable = !locked && !reviewing;
   const actionLabel =
     item.state === 'in_progress' ? 'Continue lesson'
     : reviewing ? 'Reviewing'
-=======
-  const actionLabel =
-    item.state === 'in_progress' ? 'Continue lesson'
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     : item.state === 'completed' ? 'Review lesson'
     : item.state === 'needs_retry' ? 'Retry lesson'
     : 'Start lesson';
@@ -113,11 +99,7 @@ function NodeTooltip({ item, onOpen }: { item: LessonPathItem; onOpen: () => voi
             <p className="text-sm font-black mt-0.5 leading-snug" style={{ color: '#1a1c1c' }}>{item.title}</p>
             <p className="text-[11px] font-semibold mt-1 leading-snug" style={{ color: '#6f7b64' }}>{item.objective}</p>
           </div>
-<<<<<<< HEAD
           {actionable && (
-=======
-          {!locked && (
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
             <button
               onClick={onOpen}
               className="w-full h-9 rounded-xl text-xs font-extrabold transition active:translate-y-0.5 flex items-center justify-center gap-1.5"
@@ -126,14 +108,11 @@ function NodeTooltip({ item, onOpen }: { item: LessonPathItem; onOpen: () => voi
               <Play size={13} /> {actionLabel}
             </button>
           )}
-<<<<<<< HEAD
           {reviewing && (
             <p className="rounded-xl px-3 py-2 text-[11px] font-bold text-center" style={{ background: '#e6efff', color: '#1e3a7a' }}>
               Teacher review pending. You can continue after the teacher finishes.
             </p>
           )}
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           {locked && (
             <p className="text-[11px] font-bold text-center" style={{ color: '#9e9e9e' }}>
               Complete previous lesson to unlock
@@ -161,30 +140,21 @@ function LessonNode({
   item,
   isCurrent,
   onOpen,
-<<<<<<< HEAD
   xOffset,
   yOffset,
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 }: {
   item: LessonPathItem;
   isCurrent: boolean;
   onOpen: (id: string) => void;
-<<<<<<< HEAD
   xOffset: number;
   yOffset: number;
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 }) {
   const [hovered, setHovered] = useState(false);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const colors = nodeColors(item.state);
   const locked = item.state === 'locked';
-<<<<<<< HEAD
   const reviewing = item.state === 'under_review';
   const blocked = locked || reviewing;
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
   const openTooltip = useCallback(() => {
     if (closeTimerRef.current) {
@@ -210,7 +180,6 @@ function LessonNode({
 
   return (
     <div
-<<<<<<< HEAD
       className="absolute flex items-center justify-center"
       style={{
         left: xOffset,
@@ -218,9 +187,6 @@ function LessonNode({
         transform: 'translate(-50%, -50%)',
         zIndex: hovered ? 30 : 10,
       }}
-=======
-      className="relative flex items-center justify-center"
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       onMouseEnter={openTooltip}
       onMouseLeave={closeTooltip}
     >
@@ -233,11 +199,7 @@ function LessonNode({
 
       <button
         type="button"
-<<<<<<< HEAD
         aria-disabled={blocked}
-=======
-        aria-disabled={locked}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         onClick={(event) => {
           event.stopPropagation();
           openTooltip();
@@ -249,17 +211,10 @@ function LessonNode({
           height: isCurrent ? 72 : 60,
           background: colors.bg,
           border: `3px solid ${colors.border}`,
-<<<<<<< HEAD
           boxShadow: blocked ? 'none' : `0 ${isCurrent ? 6 : 4}px 0 ${colors.shadow}${colors.ring !== 'none' ? `, ${colors.ring}` : ''}`,
           color: colors.icon,
           cursor: blocked ? 'not-allowed' : 'pointer',
           transform: hovered && !blocked ? 'translateY(-2px)' : 'translateY(0)',
-=======
-          boxShadow: locked ? 'none' : `0 ${isCurrent ? 6 : 4}px 0 ${colors.shadow}${colors.ring !== 'none' ? `, ${colors.ring}` : ''}`,
-          color: colors.icon,
-          cursor: locked ? 'not-allowed' : 'pointer',
-          transform: hovered && !locked ? 'translateY(-2px)' : 'translateY(0)',
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           transition: 'transform 0.15s ease, box-shadow 0.15s ease',
           opacity: locked ? 0.65 : 1,
         }}
@@ -282,7 +237,6 @@ function LessonNode({
             Continue
           </span>
         )}
-<<<<<<< HEAD
         {(isCurrent || reviewing) && item.state === 'under_review' && (
           <span
             className="absolute -top-3 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider whitespace-nowrap"
@@ -293,10 +247,6 @@ function LessonNode({
         )}
 
         {item.state !== 'under_review' && item.best_score != null && (
-=======
-
-        {item.best_score != null && (
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           <span
             className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded-full text-[9px] font-extrabold whitespace-nowrap"
             style={{ background: '#e8f9d3', color: '#1e5000', border: '2px solid #bdee8c' }}
@@ -307,11 +257,7 @@ function LessonNode({
       </button>
 
       <div className="absolute top-full mt-5 left-1/2 -translate-x-1/2 text-center w-28 pointer-events-none">
-<<<<<<< HEAD
         <p className="text-[11px] font-bold leading-tight" style={{ color: locked ? '#becbb1' : reviewing ? '#1e3a7a' : '#3f4a36' }}>
-=======
-        <p className="text-[11px] font-bold leading-tight" style={{ color: locked ? '#becbb1' : '#3f4a36' }}>
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           {item.title.length > 22 ? item.title.slice(0, 20) + '…' : item.title}
         </p>
       </div>
@@ -572,10 +518,7 @@ function ActiveUnitCard({
   const current = pickUnitCurrent(group.lessons);
   const allCompleted = total > 0 && completed === total;
   const allLocked = group.lessons.every((l) => l.state === 'locked');
-<<<<<<< HEAD
   const currentReviewing = current?.state === 'under_review';
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   return (
     <div
       className="rounded-3xl p-5 flex flex-col gap-3"
@@ -609,11 +552,7 @@ function ActiveUnitCard({
       {current ? (
         <div className="flex flex-col gap-2 mt-1">
           <p className="text-[10px] font-extrabold uppercase tracking-widest" style={{ color: '#6f7b64' }}>
-<<<<<<< HEAD
             {current.state === 'under_review' ? 'Reviewing' : current.state === 'in_progress' ? 'Continue' : current.state === 'needs_retry' ? 'Retry' : 'Up next'}
-=======
-            {current.state === 'in_progress' ? 'Continue' : current.state === 'needs_retry' ? 'Retry' : 'Up next'}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           </p>
           <p className="text-sm font-extrabold leading-snug" style={{ color: '#1a1c1c' }}>
             {current.title}
@@ -622,7 +561,6 @@ function ActiveUnitCard({
             {current.objective}
           </p>
           <button
-<<<<<<< HEAD
             onClick={() => {
               if (!currentReviewing) onOpenLesson(current.lesson_id);
             }}
@@ -635,13 +573,6 @@ function ActiveUnitCard({
             {current.state === 'under_review' ? (
               <><ListChecks size={14} /> Teacher review pending</>
             ) : current.state === 'in_progress' ? (
-=======
-            onClick={() => onOpenLesson(current.lesson_id)}
-            className="mt-1 h-10 rounded-xl text-sm font-extrabold transition active:translate-y-0.5 flex items-center justify-center gap-2"
-            style={{ background: '#58cc02', color: '#1e5000', boxShadow: '0 3px 0 #46a302' }}
-          >
-            {current.state === 'in_progress' ? (
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
               <><Play size={14} /> Continue</>
             ) : current.state === 'needs_retry' ? (
               <><RotateCcw size={14} /> Retry</>
@@ -1108,7 +1039,6 @@ export default function HomePage() {
                               (path?.continue_lesson == null && lesson.lesson_id === path?.recommended_lesson?.lesson_id);
 
                             return (
-<<<<<<< HEAD
                               <LessonNode
                                 key={lesson.lesson_id}
                                 item={lesson}
@@ -1117,23 +1047,6 @@ export default function HomePage() {
                                 xOffset={xOffset}
                                 yOffset={yOffset}
                               />
-=======
-                              <div
-                                key={lesson.lesson_id}
-                                className="absolute"
-                                style={{
-                                  left: xOffset,
-                                  top: yOffset,
-                                  transform: 'translate(-50%, -50%)',
-                                }}
-                              >
-                                <LessonNode
-                                  item={lesson}
-                                  isCurrent={isCurrent}
-                                  onOpen={handleOpenLesson}
-                                />
-                              </div>
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                             );
                           })}
                         </div>

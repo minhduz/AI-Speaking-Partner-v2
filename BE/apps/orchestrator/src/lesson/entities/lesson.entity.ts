@@ -18,11 +18,8 @@ export class Lesson {
   @Column({ name: 'mini_plan_text', type: 'text', default: '' }) miniPlanText: string;
   @Column({ name: 'pass_score', type: 'int', default: 70 }) passScore: number;
   @Column({ name: 'is_review', default: false }) isReview: boolean;
-<<<<<<< HEAD
   // 'practice' | 'checkpoint' | 'level_final' (see scoring.constants TaskType).
   @Column({ name: 'task_type', default: 'practice' }) taskType: string;
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   @Column({ name: 'is_published', default: true }) isPublished: boolean;
   @Column({ name: 'next_lesson_id', type: 'uuid', nullable: true }) nextLessonId: string | null;
   @CreateDateColumn({ name: 'created_at' }) createdAt: Date;

@@ -14,7 +14,6 @@ import { useChat } from '@/hooks/use-chat';
 import { useDictionary } from '@/hooks/use-dictionary';
 import type { ChatMessage, SessionSummary } from '@/types/session.types';
 import { sessionService, type DeckCard, type ExerciseDeck, type SessionEvaluation } from '@/services/session.service';
-<<<<<<< HEAD
 import {
   lessonService,
   type LessonAttemptResult,
@@ -25,11 +24,6 @@ import {
 import { LessonToolbox, LessonToolboxTrigger } from '@/components/chat/lesson-toolbox/lesson-toolbox';
 import type { LessonToolboxContext } from '@/components/chat/lesson-toolbox/lesson-toolbox';
 import { httpClient } from '@/lib/http-client';
-=======
-import { lessonService, type LessonAttemptResult } from '@/services/lesson.service';
-import { LessonToolbox, LessonToolboxTrigger } from '@/components/chat/lesson-toolbox/lesson-toolbox';
-import type { LessonToolboxContext } from '@/components/chat/lesson-toolbox/lesson-toolbox';
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 
 const POPUP_W = 320;
 const POPUP_H = 440;
@@ -298,18 +292,11 @@ export default function ChatPage() {
   const toolboxCtx: LessonToolboxContext = {
     sessionId: currentSessionId ?? undefined,
     topic: currentDeck?.lesson_title ?? currentDeck?.mission_source ?? undefined,
-<<<<<<< HEAD
     level: currentDeck?.level ?? undefined,
     currentTask: activeDeckCard?.task
       ?? (currentDeck?.status === 'in_progress' ? currentDeck.cards[currentDeck.current_card_index]?.task : undefined)
       ?? undefined,
     cardIndex: currentDeck?.current_card_index ?? 0,
-=======
-    level: (currentDeck as any)?.level ?? undefined,
-    currentTask: activeDeckCard?.task
-      ?? (currentDeck?.status === 'in_progress' ? currentDeck.cards[currentDeck.current_card_index]?.task : undefined)
-      ?? undefined,
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   };
   // After an eval, the card shows Next/Finish (next_action 'next_card' | 'finish_session').
   // 'retry' is excluded — there the user must speak again, so the mic stays open.
@@ -453,11 +440,7 @@ export default function ChatPage() {
           className="absolute top-0 left-0 right-0 z-50 grid grid-cols-[118px_1fr_118px] items-start px-4 pb-2 pointer-events-none"
           style={{ paddingTop: 'max(24px, env(safe-area-inset-top, 24px))' }}
         >
-<<<<<<< HEAD
           <div className="flex items-start pt-1 pointer-events-auto">
-=======
-          <div className="flex items-start pt-1">
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
             {isLiveLessonSession && (
               <LessonToolboxTrigger
                 onClick={() => setToolboxOpen((v) => !v)}
@@ -465,15 +448,10 @@ export default function ChatPage() {
               />
             )}
           </div>
-<<<<<<< HEAD
           <div className="pointer-events-auto justify-self-center">
             <AiPresence isRecording={isRecording} status={status} />
           </div>
           <div className="flex justify-end pointer-events-auto">
-=======
-          <AiPresence isRecording={isRecording} status={status} />
-          <div className="flex justify-end">
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
             <EndSessionButton onClick={() => setConfirmEnd(true)} />
           </div>
         </div>
@@ -481,13 +459,8 @@ export default function ChatPage() {
         {/* Exercise dock — compact floating card so it never takes over the chat.
             Centered horizontally so wider phones don't leave a lopsided gap on the right. */}
         {(lessonDeckLoading || deckVisible) && (
-<<<<<<< HEAD
           <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-[104px] z-40 w-[min(360px,calc(100vw-48px))] md:left-8 md:translate-x-0 lg:left-10">
             <div className="pointer-events-auto max-h-[calc(100dvh-250px)] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-[28px]" style={{ paddingBottom: '4px' }}>
-=======
-          <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 top-24 z-30 w-[min(360px,calc(100vw-48px))] md:left-8 md:translate-x-0 lg:left-10">
-            <div className="pointer-events-auto">
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
               {lessonDeckLoading ? (
                 <LessonDeckLoading />
               ) : (
@@ -495,11 +468,7 @@ export default function ChatPage() {
                   key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}`}
                   deck={currentDeck!}
                   isLighter={lighterMode}
-<<<<<<< HEAD
                   isProcessing={status === 'processing' || status === 'greeting' || isSpeaking}
-=======
-                  isProcessing={status === 'processing' || isSpeaking}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                   onAccept={() => void acceptDeckChallenge()}
                   onReject={() => void rejectDeckChallenge()}
                   onFreeTalk={() => void chooseDeckFreeTalk()}
@@ -507,11 +476,8 @@ export default function ChatPage() {
                   onEnd={() => void chooseDeckEnd()}
                   onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                   onSkip={() => void skipDeckCard()}
-<<<<<<< HEAD
                   isAdvancing={isAdvancingDeck}
                   sessionId={currentSessionId ?? undefined}
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                 />
               )}
             </div>
@@ -619,10 +585,7 @@ export default function ChatPage() {
                   onClose={() => setToolboxOpen(false)}
                   ctx={toolboxCtx}
                   mode="panel"
-<<<<<<< HEAD
                   onAddFlashcard={handleToolboxAddFlashcard}
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                 />
               </div>
             )}
@@ -632,10 +595,7 @@ export default function ChatPage() {
                 onClose={() => setToolboxOpen(false)}
                 ctx={toolboxCtx}
                 mode="sheet"
-<<<<<<< HEAD
                 onAddFlashcard={handleToolboxAddFlashcard}
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
               />
             </div>
           </>
@@ -723,11 +683,7 @@ export default function ChatPage() {
                     key={`${currentDeck!.id}-${currentDeck!.current_card_index}-${currentDeck!.status}-inline`}
                     deck={currentDeck!}
                     isLighter={lighterMode}
-<<<<<<< HEAD
                     isProcessing={status === 'processing' || status === 'greeting' || isSpeaking}
-=======
-                    isProcessing={status === 'processing' || isSpeaking}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                     onAccept={() => void acceptDeckChallenge()}
                     onReject={() => void rejectDeckChallenge()}
                     onFreeTalk={() => void chooseDeckFreeTalk()}
@@ -735,11 +691,8 @@ export default function ChatPage() {
                     onEnd={() => void chooseDeckEnd()}
                     onNext={() => lighterMode ? void completeLighterDeck() : void advanceDeckCard()}
                     onSkip={() => void skipDeckCard()}
-<<<<<<< HEAD
                     isAdvancing={isAdvancingDeck}
                     sessionId={currentSessionId ?? undefined}
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
                   />
                 </div>
               )}
@@ -1459,7 +1412,6 @@ function EvaluationContent({
   );
 }
 
-<<<<<<< HEAD
 // ── Score breakdown: AI vs Teacher ──────────────────────────────────────────
 // Two tabs over the same graph layout: the AI's fast feedback, and the optional
 // human review. The teacher tab NEVER reuses AI data — it shows a clear empty /
@@ -1816,8 +1768,6 @@ function LessonScoreBreakdown({
   );
 }
 
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
 function EvaluationBoard({
   evaluation,
   lessonAttemptId,
@@ -1843,11 +1793,7 @@ function EvaluationBoard({
     <main className="flex flex-1 flex-col bg-[#f9f9f9]" style={{ fontFamily: 'Lexend, sans-serif' }}>
       <div className="flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
         <div className="mx-auto w-full max-w-5xl flex flex-col gap-5">
-<<<<<<< HEAD
           {lessonAttemptId && <LessonResultCard attemptId={lessonAttemptId} reviewRequested={effectiveReviewRequested} />}
-=======
-          {lessonAttemptId && <LessonResultCard attemptId={lessonAttemptId} />}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           {isFreeTalk
             ? <FreeTalkRecap evaluation={evaluation} />
             : <EvaluationContent evaluation={evaluation} reviewRequested={effectiveReviewRequested} onReviewRequested={markRequested} />}
@@ -1874,11 +1820,7 @@ function EvaluationBoard({
 // Curriculum-first: shown above the breakdown for sessions that backed a
 // lesson attempt. Pulls /lessons/attempts/:id, then renders status/score/next-
 // action/teacher-review-status with a CTA to the next lesson or retry.
-<<<<<<< HEAD
 function LessonResultCard({ attemptId, reviewRequested = false }: { attemptId: string; reviewRequested?: boolean }) {
-=======
-function LessonResultCard({ attemptId }: { attemptId: string }) {
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   const router = useRouter();
   const [result, setResult] = useState<LessonAttemptResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1920,7 +1862,6 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
   }
   if (!result) return null;
 
-<<<<<<< HEAD
   const status =
     reviewRequested && result.attempt.status !== 'under_review'
       ? 'under_review'
@@ -1939,21 +1880,6 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
     abandoned:    'Paused',
     in_progress:  'In progress',
     under_review: 'Under teacher review',
-=======
-  const status = result.attempt.status;
-  const tone =
-    status === 'passed'      ? { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' } :
-    status === 'needs_retry' ? { bg: '#fff3c4', border: '#ffe28a', fg: '#5b3f00' } :
-    status === 'failed'      ? { bg: '#fde2e2', border: '#ffc1c1', fg: '#7a1e1e' } :
-    status === 'abandoned'   ? { bg: '#f3f3f3', border: '#e2e2e2', fg: '#6f7b64' } :
-                               { bg: '#e8f9d3', border: '#bdee8c', fg: '#1e5000' };
-  const statusText: Record<typeof status, string> = {
-    passed:      'Passed',
-    needs_retry: 'Needs retry',
-    failed:      'Failed',
-    abandoned:   'Paused',
-    in_progress: 'In progress',
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   };
 
   const nextActionLabel: Record<LessonAttemptResult['attempt']['next_action'], string> = {
@@ -1963,15 +1889,10 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
     continue_later: 'Continue later',
     none:           'Back to lessons',
   };
-<<<<<<< HEAD
   const effectiveNextAction = status === 'under_review' ? 'none' : result.attempt.next_action;
   const scoreDisplay = status === 'under_review' ? '–' : (result.attempt.score ?? 0);
   const handleNext = () => {
     const na = effectiveNextAction;
-=======
-  const handleNext = () => {
-    const na = result.attempt.next_action;
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     if (na === 'next_lesson' && result.lesson?.next_lesson_id) {
       router.push(`/lessons/${result.lesson.next_lesson_id}`);
     } else if (na === 'retry_lesson' && result.lesson) {
@@ -1981,11 +1902,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
     }
   };
 
-<<<<<<< HEAD
   const reviewStatus = reviewRequested ? 'pending' : result.attempt.teacher_review_status;
-=======
-  const reviewStatus = result.attempt.teacher_review_status;
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
   const reviewLabel =
     reviewStatus === 'pending'     ? 'Teacher review pending' :
     reviewStatus === 'approved'    ? 'Teacher review: approved' :
@@ -2008,11 +1925,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
       </h3>
       <div className="grid grid-cols-3 gap-2 sm:gap-3">
         <div className="rounded-2xl p-3 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
-<<<<<<< HEAD
           <p className="text-2xl font-black tabular-nums" style={{ color: tone.fg }}>{scoreDisplay}</p>
-=======
-          <p className="text-2xl font-black tabular-nums" style={{ color: tone.fg }}>{result.attempt.score ?? 0}</p>
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           <p className="text-[11px] font-bold uppercase tracking-wider" style={{ color: '#6f7b64' }}>Score</p>
         </div>
         <div className="rounded-2xl p-3 text-center" style={{ background: '#f9f9f9', border: '2px solid #e2e2e2' }}>
@@ -2037,11 +1950,7 @@ function LessonResultCard({ attemptId }: { attemptId: string }) {
         className="self-end mt-1 inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl font-extrabold transition active:translate-y-0.5"
         style={{ background: '#58cc02', color: '#1e5000', boxShadow: '0 4px 0 #46a302' }}
       >
-<<<<<<< HEAD
         {nextActionLabel[effectiveNextAction]}
-=======
-        {nextActionLabel[result.attempt.next_action]}
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
       </button>
     </section>
   );
@@ -2454,7 +2363,6 @@ function DeckCardView({
 
       <div className="flex flex-col gap-2">
         <h2 className="text-lg font-black leading-snug" style={{ color: '#1a1c1c' }}>{card.title}</h2>
-<<<<<<< HEAD
         <div className="flex flex-col gap-1">
           <p className="text-sm font-semibold leading-relaxed" style={{ color: '#6f7b64' }}>{card.task}</p>
           {taskTranslation && (
@@ -2479,9 +2387,6 @@ function DeckCardView({
             </button>
           )}
         </div>
-=======
-        <p className="text-sm font-semibold leading-relaxed" style={{ color: '#6f7b64' }}>{card.task}</p>
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         {isLesson && deck.status === 'not_started' && (
           <p className="text-xs font-bold leading-snug rounded-2xl px-3 py-2" style={{ background: '#e8f9d3', color: '#1e5000', border: '2px solid #d7ffb8' }}>
             Start this exercise first. After I read the task, answer with the mic.

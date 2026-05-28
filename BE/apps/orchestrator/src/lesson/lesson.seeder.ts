@@ -750,7 +750,6 @@ export class LessonSeeder implements OnModuleInit {
   private async seed() {
     const orderIndices = DEMO_A1_LESSONS.map((l) => l.order_index);
 
-<<<<<<< HEAD
     // task_type per lesson: review lessons are checkpoints; the LAST review of
     // each level is the level_final (always human-reviewed); everything else is
     // practice. Computed by (level → max order_index among review lessons).
@@ -767,8 +766,6 @@ export class LessonSeeder implements OnModuleInit {
       return lastReviewOrderByLevel.get(l.level) === l.order_index ? 'level_final' : 'checkpoint';
     };
 
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
     // 1. Upsert each lesson row by (level, topic, order_index).
     const persisted: Lesson[] = [];
     for (const seed of DEMO_A1_LESSONS) {
@@ -786,10 +783,7 @@ export class LessonSeeder implements OnModuleInit {
           miniPlanText: seed.mini_plan_text,
           passScore: seed.pass_score,
           isReview: seed.is_review,
-<<<<<<< HEAD
           taskType: taskTypeFor(seed),
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
           isPublished: true,
           nextLessonId: null,
         });
@@ -800,10 +794,7 @@ export class LessonSeeder implements OnModuleInit {
         lesson.miniPlanText = seed.mini_plan_text;
         lesson.passScore = seed.pass_score;
         lesson.isReview = seed.is_review;
-<<<<<<< HEAD
         lesson.taskType = taskTypeFor(seed);
-=======
->>>>>>> 02b8b59 (feat: add lesson detail page and toolbox components)
         lesson.isPublished = true;
       }
       await this.lessons.save(lesson);
